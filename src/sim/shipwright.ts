@@ -1,6 +1,6 @@
 import { VOXEL_SIZE, VOXEL_VOLUME } from "../core/constants";
 import { createGrid, type VoxelGrid } from "./voxelGrid";
-import { EMPTY, OAK, PINE } from "./materials";
+import { EMPTY, IRON, OAK, PINE } from "./materials";
 import { findCompartments, type Compartment } from "./compartments";
 
 /**
@@ -70,6 +70,17 @@ export function buildSloop(): ShipBuild {
           !inside(x, y, z + 1);
         if (onShell) grid.set(x, y, z, OAK);
       }
+    }
+  }
+
+  // iron ballast along the keel: without it the deck makes the ship top-heavy
+  // and she turtles (negative metacentric height) — discovered empirically
+  for (let x = 0; x < nx; x++) {
+    const t = stationT(x);
+    if (t < 0.08 || t > 0.92) continue;
+    const by = keelY(t) + 1;
+    for (const z of [11, 12]) {
+      if (inside(x, by, z) && grid.get(x, by, z) === EMPTY) grid.set(x, by, z, IRON);
     }
   }
 
