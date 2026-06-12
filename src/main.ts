@@ -13,7 +13,7 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
-import { muzzleWorld } from "./game/gunnery";
+import { muzzleWorld, pivotLocal, velocityAtPoint } from "./game/gunnery";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -91,6 +91,27 @@ async function main() {
   const climbTarget = new THREE.Vector3();
   let ladderHinted = false;
   const banner = document.getElementById("banner")!;
+
+  // index of the player-ship cannon within arm's reach of the captain
+  // (deck gunnery: fire and aim a single gun from beside it)
+  const gunTmpA = new THREE.Vector3();
+  const gunTmpB = new THREE.Vector3();
+  const nearestCannonIdx = (): number => {
+    if (!boarding.player) return -1;
+    const pp = boarding.player.body.translation();
+    let best = -1;
+    let bestD = 2.6;
+    for (let p = 0; p < sloop.build.cannonPorts.length; p++) {
+      pivotLocal(sloop, p, gunTmpA);
+      sloop.localToWorld([gunTmpA.x, gunTmpA.y, gunTmpA.z], gunTmpB);
+      const d = Math.hypot(gunTmpB.x - pp.x, gunTmpB.y - pp.y, gunTmpB.z - pp.z);
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
+  };
   let gameOver = false;
   let plugChannel = 0; // seconds remaining on the current plank repair
 
@@ -138,10 +159,9 @@ async function main() {
       controls.interactPressed = false;
       if (atWheel) {
         atWheel = false;
-        // the watch douses sail while the captain is off the helm — also
-        // keeps deck-walking sane (12 m/s under your boots is a lot)
-        sailing.sailSet = Math.min(sailing.sailSet, 0.25);
-        boarding.message = "you leave the wheel — the watch shortens sail";
+        // sails and rudder HOLD as set — leaving the helm changes nothing
+        // (playtest round 5); the ship-frame carry keeps deck walking safe
+        boarding.message = "you leave the wheel — she holds her course";
       } else if (boarding.player) {
         const pp = boarding.player.body.translation();
         if (Math.hypot(pp.x - wheelWorld.x, pp.y - wheelWorld.y, pp.z - wheelWorld.z) < 2.4) {
@@ -152,7 +172,9 @@ async function main() {
           Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4
         ) {
           boarding.player.ship = sloop;
-          boarding.player.teleport(sloop.localToWorld([2.6, 5.3, 4.0], climbTarget));
+          boarding.player.teleport(
+            sloop.localToWorld([2.6, (sloop.build.deckY + 1) * 0.25 + 1.05, 4.0], climbTarget),
+          );
           boarding.message = "you haul yourself up the stern ladder";
         } else {
           interact = true;
@@ -165,12 +187,20 @@ async function main() {
     sailing.apply(sloop, wind);
     if (!gameOver) captain.update(dt, t, waves, wind, sloop);
 
-    // F: broadside at the wheel, sword off it
+    // F: broadside at the wheel; beside a gun on deck, fire THAT gun;
+    // otherwise it's a sword swing
     const mv = onFoot ? controls.footMove() : { x: 0, z: 0, jump: false };
     let slash = false;
     if (onFoot && controls.firePressed) {
       controls.firePressed = false;
-      slash = boarding.canFight();
+      const gi = nearestCannonIdx();
+      if (gi !== -1 && plugChannel <= 0) {
+        if (cannons.fireOne(sloop, gi, t, controls.elevationDeg, controls.traverseDeg)) {
+          boarding.message = "you touch off the gun!";
+        }
+      } else {
+        slash = boarding.canFight();
+      }
     }
     let kick = false;
     if (controls.kickPressed) {
@@ -267,7 +297,7 @@ async function main() {
   // instead of glowing white skybox-below-the-sea
   const abyss = new THREE.Mesh(
     new THREE.CircleGeometry(70, 40),
-    new THREE.MeshBasicMaterial({ color: 0x04181f }),
+    new THREE.MeshBasicMaterial({ color: 0x0a2832 }),
   );
   abyss.geometry.rotateX(-Math.PI / 2);
   abyss.position.y = -9;
@@ -290,6 +320,7 @@ async function main() {
     if (e.code === "KeyV" && boarding.player) {
       firstPerson = !firstPerson;
       boarding.player.setFirstPerson(firstPerson);
+      controls.syncFirstPerson(firstPerson);
     }
     if (e.code === "KeyX") {
       cutaway = !cutaway;
@@ -332,6 +363,7 @@ async function main() {
     gold: $("gold"),
     rose: $("rose"),
     hdg: $("hdg"),
+    rudderInd: $("rudder-ind"),
     enemyMarker: $("enemy-marker"),
     windMarker: $("wind-marker"),
     toast: $("toast"),
@@ -359,8 +391,10 @@ async function main() {
     const windBearing = Math.atan2(-wind.dirZ, -wind.dirX) - heading;
     hudEls.windMarker.style.transform = `rotate(${(windBearing * 180) / Math.PI}deg)`;
 
-    const reload = Math.max(cannons.reloadAt - world.simTime, 0);
-    hudEls.gunBar.style.width = `${(1 - reload / Cannons.RELOAD) * 100}%`;
+    const readiness = cannons.sideReadiness(sloop, aimSide(), world.simTime);
+    hudEls.gunBar.style.width = `${readiness * 100}%`;
+    // helm indicator: where the rudder is SET (it holds until changed)
+    hudEls.rudderInd.style.left = `${50 - sailing.rudder * 42}%`;
 
     // toast lifecycle
     if (boarding.message && boarding.message !== lastToast) {
@@ -392,15 +426,16 @@ async function main() {
       `${boarding.grappled ? " · GRAPPLED" : ""}` +
       `${plugChannel > 0 ? ` · plugging ${plugChannel.toFixed(1)}s` : ""}`;
 
+    const ready2 = cannons.sideReadiness(sloop, aimSide(), world.simTime);
     if (plugChannel > 0) {
       hudEls.gunStatus.textContent = "REPAIRING";
       hudEls.gunStatus.className = "";
-    } else if (reload > 0) {
-      hudEls.gunStatus.textContent = `${reload.toFixed(1)}s`;
-      hudEls.gunStatus.className = "";
-    } else {
+    } else if (ready2 >= 0.999) {
       hudEls.gunStatus.textContent = "GUNS READY";
       hudEls.gunStatus.className = "ready";
+    } else {
+      hudEls.gunStatus.textContent = `LOADING ${Math.round(ready2 * 4)}/4`;
+      hudEls.gunStatus.className = "";
     }
     hudEls.gunSub.textContent =
       `elev ${controls.elevationDeg.toFixed(1)}° · trav ${controls.traverseDeg >= 0 ? "+" : ""}${controls.traverseDeg.toFixed(0)}°` +
@@ -412,8 +447,8 @@ async function main() {
 
     const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
     hudEls.hints.textContent = onFoot
-      ? `${lockHint}WASD move · Space jump · F slash · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : `${lockHint}W/S sails · A/D rudder · F fire · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway`;
+      ? `${lockHint}WASD move · Space jump · F slash (fire beside a gun) · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
+      : `${lockHint}W/S sails · A/D helm (holds where set) · F broadside · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
@@ -446,16 +481,21 @@ async function main() {
   }
 
   const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
+  const arcVel = new THREE.Vector3();
   function updateAimArc(): void {
-    if (!controls.aiming || onFoot) {
-      for (const a of aimLines) a.line.visible = false;
-      return;
+    // at the wheel: the whole broadside; on deck beside a gun: that gun
+    let portIdxs: number[] = [];
+    if (controls.aiming && !gameOver) {
+      if (!onFoot) {
+        const side = aimSide();
+        sloop.build.cannonPorts.forEach((p, i) => {
+          if (p.side === side) portIdxs.push(i);
+        });
+      } else {
+        const gi = nearestCannonIdx();
+        if (gi !== -1) portIdxs = [gi];
+      }
     }
-    const side = aimSide();
-    const portIdxs: number[] = [];
-    sloop.build.cannonPorts.forEach((p, i) => {
-      if (p.side === side) portIdxs.push(i);
-    });
 
     for (let pi = 0; pi < aimLines.length; pi++) {
       const arc = aimLines[pi];
@@ -464,9 +504,11 @@ async function main() {
         continue;
       }
       arc.line.visible = true;
-      // arc starts at the barrel TIP and follows the true firing solution
+      // arc starts at the barrel TIP and follows the true firing solution —
+      // including the ship's own velocity at the muzzle, like the real shot
       muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
-      const v = arcMuzzle.dir.clone().multiplyScalar(55);
+      velocityAtPoint(sloop, arcMuzzle.pos, arcVel);
+      const v = arcMuzzle.dir.clone().multiplyScalar(55).add(arcVel);
       const p = arcMuzzle.pos.clone();
       const step = 0.06;
       for (let i = 0; i < ARC_PTS; i++) {
@@ -528,14 +570,16 @@ async function main() {
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
     if (firstPerson && boarding.player) {
-      // eye-level camera; drag to look around
+      // eye-level camera — at the model's eye line, not its collar
+      // (playtest round 5: "really only shows the inside of the uniform")
       const pt = boarding.player.body.translation();
-      camera.position.set(pt.x, pt.y + 0.78, pt.z);
+      const eyeY = pt.y + 0.95;
+      camera.position.set(pt.x, eyeY, pt.z);
       const yaw = controls.cameraYaw();
       const pitch = controls.lookPitch();
       camera.lookAt(
         pt.x + Math.cos(yaw) * Math.cos(pitch),
-        pt.y + 0.78 + Math.sin(pitch),
+        eyeY + Math.sin(pitch),
         pt.z + Math.sin(yaw) * Math.cos(pitch),
       );
     } else {

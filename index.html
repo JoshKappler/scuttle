@@ -19,6 +19,9 @@
       .bar > div { height: 100%; background: #2e8b9e; border-radius: 4px; width: 0%; transition: width 0.2s; }
       .bar.flood > div { background: #3a7ec2; }
       .bar.hp > div { background: #b03a2e; }
+      .bar.rudder { position: relative; overflow: visible; }
+      .bar.rudder::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: rgba(207,224,216,0.5); }
+      .bar.rudder > div { position: absolute; top: -1px; width: 10px; height: 10px; left: 50%; transform: translateX(-50%); background: #e3b341; border-radius: 3px; transition: left 0.1s linear; }
       #gun-panel { right: 14px; bottom: 14px; min-width: 190px; text-align: center; }
       #gun-status { font: 700 22px/1.1 Georgia, serif; color: #e3b341; letter-spacing: 0.08em; }
       #gun-status.ready { color: #7ec97e; }
@@ -51,6 +54,7 @@
     <div id="ship-panel" class="panel">
       <div class="speed"><span id="spd">0.0</span> <small>kn</small></div>
       <div class="row"><span class="lbl">Sails</span><div class="bar"><div id="sails-bar"></div></div></div>
+      <div class="row"><span class="lbl">Rudder</span><div class="bar rudder"><div id="rudder-ind"></div></div></div>
       <div class="row"><span class="lbl">Flood</span>
         <div class="bar flood"><div id="fl0"></div></div>
         <div class="bar flood"><div id="fl1"></div></div>

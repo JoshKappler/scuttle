@@ -120,18 +120,21 @@ uniform vec4 uCutPlane; // xyz = normal, w = constant (THREE.Plane form)
 void main() {
   #include <clipping_planes_fragment>
 
-  // cutaway: open the sea over the hull and in a bounded wedge on the
-  // camera side of the cut, so you can see down to the true water level
+  // cutaway: the sea over the hull footprint is removed outright (the hold
+  // is air, not water); the bounded wedge on the camera side of the cut
+  // goes TRANSLUCENT — "make the ocean transparent … so that you can see
+  // down to where the water level is" (playtest), with no black void
+  float cutAlpha = 1.0;
   if (uCutOn > 0.5) {
     vec2 rel = vWorldPos.xz - uShipPos;
     float along = dot(rel, uFwd);
     float across = dot(rel, vec2(-uFwd.y, uFwd.x));
     if (abs(along) < uHalf.x) {
-      bool inHole = abs(across) < uHalf.y;
-      bool nearCut =
-        abs(across) < uHalf.y * 4.5 &&
-        dot(vWorldPos, uCutPlane.xyz) + uCutPlane.w < 0.0;
-      if (inHole || nearCut) discard;
+      if (abs(across) < uHalf.y) discard;
+      if (abs(across) < uHalf.y * 4.5 &&
+          dot(vWorldPos, uCutPlane.xyz) + uCutPlane.w < 0.0) {
+        cutAlpha = 0.22;
+      }
     }
   }
 
@@ -183,7 +186,7 @@ void main() {
   float fog = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
   col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
 
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(col, cutAlpha);
 }
 `;
 
@@ -198,6 +201,8 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
     vertexShader: VERT,
     fragmentShader: FRAG,
     clipping: true,
+    transparent: true, // the cutaway wedge fades to glass; alpha 1 elsewhere
+    depthWrite: true,
     side: THREE.DoubleSide, // a submerged camera must see the surface above
     // it, not a missing polygon that cuts straight to the skybox (playtest)
     uniforms: {

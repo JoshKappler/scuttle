@@ -54,7 +54,8 @@ export class AICaptain {
       angleOffWindDeg: this.sailing.angleOffWind,
       windBearingDeg,
       floodFrac: worstFlood,
-      reloadReady: t >= this.cannons.reloadAt,
+      // ready when the likelier broadside (target's side) is mostly loaded
+      reloadReady: this.cannons.sideReadiness(this.ship, rel.z >= 0 ? 1 : -1, t) >= 0.99,
     });
 
     this.sailing.sailSet = d.sailSet;

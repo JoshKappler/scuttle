@@ -47,6 +47,23 @@ export function pivotLocal(ship: Ship, portIndex: number, out: THREE.Vector3): T
   );
 }
 
+/** Velocity of the ship's hull AT a world point (linear + ω×r). A fired
+ *  ball starts with this plus muzzle velocity — shooting "from stationary"
+ *  made moving gunnery unaimable (playtest round 5). */
+export function velocityAtPoint(ship: Ship, worldPt: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+  const v = ship.body.linvel();
+  const om = ship.body.angvel();
+  const c = ship.body.worldCom();
+  const rx = worldPt.x - c.x;
+  const ry = worldPt.y - c.y;
+  const rz = worldPt.z - c.z;
+  return out.set(
+    v.x + om.y * rz - om.z * ry,
+    v.y + om.z * rx - om.x * rz,
+    v.z + om.x * ry - om.y * rx,
+  );
+}
+
 /** World-space muzzle position + firing direction for one cannon. */
 export function muzzleWorld(
   ship: Ship,

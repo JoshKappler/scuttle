@@ -160,3 +160,46 @@ All 19 round-4 items addressed. New hard-won findings (do not relearn):
 Deferred: billow doesn't flip by tack; FP hands; enemy crew look great but
 boarding combat anims unverified under grapple; kick-over-rail needs hop
 tuning; lute pirates would honestly be funnier.
+
+## Round-5 playtest response — m8 "helm and trim" (branch dev/m8-helm-and-trim)
+
+User refs: tall-ship cross-sections — hull = wide oval, top ~20% cut for the
+deck, waterline near the widest belt. Findings (do not relearn):
+
+- **ALIASING BIT AGAIN (3rd time)**: `rotUp = this.tmpF.set(0,1,0)…` aliased
+  `fwd` in sailing.apply — thrust pointed straight UP; both ships drifted at
+  2 kn. Every cached temp vector gets ONE job per call. Grep for `tmp` reuse
+  whenever a force silently vanishes.
+- **Restoring controllers, not one-signed boosts**: the round-4 "bow lift"
+  (∝v², bow-up only) torqued her past vertical at full sail — she looped.
+  Replaced with a saturating trim term: ±4° error band around level, force
+  ∝ v² · clamp(−pitch). Verified 45 s at 100% sail: max tilt 8.8°, upY never
+  < 0.99. Thrust also gates on up.y so a capsized rig can't push.
+- **Egg hull section** (oval widest at 62% of depth, 32% bottom, 76% deck
+  tumblehome) + deckY 16→20 (5 m hold) + 4 iron tiers + effective densities
+  430/310 → waterline at 47% of hull height, 0.375 envelope submerged,
+  22-26 kn at full sail (thrust 0.016→0.019 pays the wetted drag). All 71
+  tests held through the reshape unchanged.
+- **G-force banking**: ALL lateral drag at keel depth (2.2 m below COM,
+  coeff 1.7) + lateral wind force on the canvas applied 3.5 m up the mast =
+  18.9° lean in a hard turn at speed, ~0° on a dead run. The old split
+  (some lateral at COM + 60% extra at keel) double-counted and felt random.
+- **Ballistics inherit velocityAtPoint(muzzle)** (linear + ω×r); aim arcs
+  integrate the same vector, so the preview IS the shot. Per-port reload
+  clocks (Map by ship+port); broadside = all loaded guns on the side;
+  fireOne for deck gunnery (F beside a cannon, arcs show that gun).
+- **Helm set-and-hold**: A/D walk the rudder, it stays; no auto-center; HUD
+  needle (#rudder-ind). Leaving the wheel changes nothing now.
+- **FP look**: separate fpYaw/fpPitch (orbit mapping inverted left-right —
+  orbit drag convention ≠ FPS), ±1.5 rad pitch, eye at +0.95, whole model
+  hidden in FP (head-shrink left the uniform interior visible at eye level).
+- **Jump anchor**: hold ship-frame attach the WHOLE air time (2.5 s cap),
+  detach only outside the hull footprint — the 0.5 s timeout expired
+  mid-jump and flung players off the stern at ship speed.
+- Mast = real cylinder collider on the ship body (KCC respects it).
+- Water boxes render only during cutaway (could bleed through hull from
+  below otherwise); ocean cutaway wedge is now TRANSLUCENT (alpha 0.22)
+  over a brighter abyss disc — "see down to the water level", no void.
+- Quaternius cannon GLB on articulated pivots (yaw-then-pitch Euler — a
+  shortest-arc quaternion flipped port carriages upside down); rig wood +
+  sail fabric use real ambientCG photos.
