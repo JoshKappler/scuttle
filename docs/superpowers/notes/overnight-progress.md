@@ -54,16 +54,21 @@ compartment. Fully flooded ship sinks at ~0.7 m/s terminal. All emergent.
 
 ## Remaining in this plan
 
-- Task 12: cutaway view (X), perf pass vs 16.6 ms budget, tag `m2-it-sinks`.
-- Task 13: character-on-deck spike (`?spike=char`).
-- Then: superpowers:finishing-a-development-branch → merge to main.
+ALL DONE — M1+M2 merged to main (tag `m2-it-sinks`), plus M3 (tag
+`m3-it-fights-back`): AI captain duels (pure tested brain in
+`sim/aiBrain.ts`, adapter `game/ai.ts`), RMB elevation aiming, Q spyglass,
+R plank repairs (4 s channel), P pump, win/lose banners + Enter restart.
+Verified live: AI closed from 104 m, maneuvered abeam, landed broadsides;
+player flooded to 20 % and was plugged + pumped dry. 69 tests green.
 
-## M3+ (next plan docs, not started)
+## M4+ (next plan docs, not started)
 
-AI captain duels; repairs (planks/pumps); spyglass; boarding + melee
-(weapons/armor, ragdolls); gold chests; swimming/diving; sharks; ports +
-upgrades + parrot; roguelite run + leaderboard + daily seed. Spec:
+Boarding + melee (weapons/armor, ragdolls, blood), gold chests (physical,
+carryable), swimming/diving + wreck salvage, sharks, ship-stealing, ports +
+upgrades + parrot, roguelite run + leaderboard + daily seed. Spec:
 `docs/superpowers/specs/2026-06-12-scuttle-design.md` (user-approved).
+Start M4 from the char-spike findings (`notes/char-spike.md`): per-chunk
+trimesh colliders rebuilt on damage, swim state, lateral-drift fix.
 
 ## Known rough edges / tuning debt
 
