@@ -75,7 +75,13 @@ async function main() {
 
   const captain = new AICaptain(enemy, scene, effects);
   const boarding = new BoardingSystem(physics, scene, effects, sloop, enemy);
-  let onFoot = false;
+  // helm model (playtest round 2): you ARE a pirate on deck at all times.
+  // Steering only happens at the wheel (E to take/leave it); V toggles
+  // first person. Third person keeps a bird's-eye orbit on the ship.
+  let atWheel = true;
+  let onFoot = false; // derived each step: !atWheel
+  let firstPerson = false;
+  const wheelWorld = new THREE.Vector3();
   const banner = document.getElementById("banner")!;
   let gameOver = false;
   let plugChannel = 0; // seconds remaining on the current plank repair
@@ -94,22 +100,40 @@ async function main() {
   });
 
   world.onFixedStep = (t, dt) => {
-    // T: step away from / back to the helm
-    if (controls.modePressed) {
-      controls.modePressed = false;
-      boarding.spawnPlayer();
-      onFoot = !onFoot;
-    }
+    controls.modePressed = false; // legacy T — the wheel gates the helm now
     if (controls.grapplePressed) {
       controls.grapplePressed = false;
       boarding.toggleGrapple();
     }
 
-    if (!onFoot) controls.updateSailing(sailing, dt);
+    // wheel position in world (for E proximity + pinning)
+    sloop.localToWorld(sloopVisual.wheelLocal, wheelWorld);
+
+    // E: take/leave the wheel when close to it; otherwise it's the
+    // interact key (chest) handled by the boarding system below
+    let interact = false;
+    if (controls.interactPressed) {
+      controls.interactPressed = false;
+      if (atWheel) {
+        atWheel = false;
+        boarding.message = "you leave the wheel";
+      } else if (boarding.player) {
+        const pp = boarding.player.body.translation();
+        if (Math.hypot(pp.x - wheelWorld.x, pp.y - wheelWorld.y, pp.z - wheelWorld.z) < 2.4) {
+          atWheel = true;
+          boarding.message = "you take the wheel";
+        } else {
+          interact = true;
+        }
+      }
+    }
+    onFoot = !atWheel;
+
+    if (atWheel) controls.updateSailing(sailing, dt);
     sailing.apply(sloop, wind);
     if (!gameOver) captain.update(dt, t, waves, wind, sloop);
 
-    // on-foot combat input (F doubles as slash when off the helm)
+    // F: broadside at the wheel, sword off it
     const mv = onFoot ? controls.footMove() : { x: 0, z: 0, jump: false };
     let slash = false;
     if (onFoot && controls.firePressed) {
@@ -121,12 +145,20 @@ async function main() {
       controls.kickPressed = false;
       kick = onFoot;
     }
-    let interact = false;
-    if (controls.interactPressed) {
-      controls.interactPressed = false;
-      interact = onFoot;
-    }
     boarding.update(dt, t, waves, { moveX: mv.x, moveZ: mv.z, jump: mv.jump, slash, kick, interact }, onFoot);
+
+    // pin the captain to the wheel while steering
+    if (atWheel && boarding.player) {
+      const rot2 = sloop.body.rotation();
+      const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(
+        new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w),
+      );
+      const stand = wheelWorld.clone();
+      stand.x -= fwd.x * 0.75;
+      stand.z -= fwd.z * 0.75;
+      stand.y += 0.25;
+      boarding.player.pin(stand, Math.atan2(fwd.z, fwd.x));
+    }
 
     // plank repair channel: 4s, blocks firing
     if (controls.plugPressed) {
@@ -201,6 +233,10 @@ async function main() {
   let cutaway = false;
   const cutPlane = new THREE.Plane();
   window.addEventListener("keydown", (e) => {
+    if (e.code === "KeyV" && boarding.player) {
+      firstPerson = !firstPerson;
+      boarding.player.setFirstPerson(firstPerson);
+    }
     if (e.code === "KeyX") {
       cutaway = !cutaway;
       for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
@@ -310,8 +346,8 @@ async function main() {
     if (onFoot) hudEls.hpBar.style.width = `${(boarding.playerHp / 5) * 100}%`;
 
     hudEls.hints.textContent = onFoot
-      ? `WASD move · Space jump · F slash · C kick · E grab · T helm${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : "W/S sails · A/D rudder · F fire · RMB aim · Q spyglass · R plank · P pump · G grapple · T board · X cutaway";
+      ? `WASD move · Space jump · F slash · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
+      : "W/S sails · A/D rudder · F fire · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway";
   }
 
   // broadside trajectory preview while aiming (RMB) — playtest: "can't tell
@@ -404,11 +440,20 @@ async function main() {
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
-    if (onFoot && boarding.player) {
+    if (firstPerson && boarding.player) {
+      // eye-level camera; drag to look around
       const pt = boarding.player.body.translation();
-      controls.updateCamera(camera, new THREE.Vector3(pt.x, pt.y, pt.z));
+      camera.position.set(pt.x, pt.y + 0.78, pt.z);
+      const yaw = controls.cameraYaw();
+      const pitch = controls.lookPitch();
+      camera.lookAt(
+        pt.x + Math.cos(yaw) * Math.cos(pitch),
+        pt.y + 0.78 + Math.sin(pitch),
+        pt.z + Math.sin(yaw) * Math.cos(pitch),
+      );
     } else {
-      controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y, tr.z));
+      // bird's-eye orbit on the ship; your pirate stays visible on deck
+      controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y + 1.5, tr.z));
     }
 
     // spyglass zoom (Q)

@@ -88,6 +88,11 @@ export class PlayerControls {
     return this.orbitYaw + Math.PI; // orbit offset points FROM target TO camera
   }
 
+  /** Vertical look angle for first person (inverted orbit pitch). */
+  lookPitch(): number {
+    return -this.orbitPitch + 0.45;
+  }
+
   /** On-foot movement from WASD, camera-relative. */
   footMove(): { x: number; z: number; jump: boolean } {
     let fwd = 0;

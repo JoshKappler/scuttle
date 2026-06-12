@@ -162,18 +162,17 @@ export class BoardingSystem {
       this.enemyShip.body.addForce({ x: -rvx * damp * dt * 60, y: 0, z: -rvz * damp * dt * 60 }, true);
     }
 
+    // the captain is always aboard once the world settles
+    if (!this.player && simTime > 6) this.spawnPlayer();
+
     // ---- player pirate ----
     if (this.player) {
       // ride whichever hull is underfoot
       this.player.ship = this.nearestShip(this.player);
-      this.player.step(
-        dt,
-        onFoot ? input.moveX : 0,
-        onFoot ? input.moveZ : 0,
-        onFoot && input.jump,
-        waves,
-        simTime,
-      );
+      if (onFoot) {
+        this.player.step(dt, input.moveX, input.moveZ, input.jump, waves, simTime);
+      }
+      // while at the wheel (not onFoot) the caller pins the body — no step
 
       if (onFoot && input.slash && this.slashCd <= 0) {
         this.slashCd = PLAYER_SLASH_CD;
@@ -190,8 +189,10 @@ export class BoardingSystem {
       // drowning / overboard with no rescue is non-lethal for now: respawn aboard
       const pt = this.player.worldPos(this.tmpA);
       const st = this.playerShip.body.translation();
-      if (pt.y < st.y - 14) {
+      const adrift = Math.hypot(pt.x - st.x, pt.z - st.z);
+      if (pt.y < st.y - 14 || (this.player.swimming && adrift > 30)) {
         this.respawnPlayer();
+        this.message = "your crew fishes you out of the sea";
       }
     }
 

@@ -85,6 +85,21 @@ export class Pirate {
     return out.set(t.x, t.y, t.z);
   }
 
+  /** First-person: hide the head so the camera doesn't sit inside it. */
+  setFirstPerson(fp: boolean): void {
+    this.mesh.children[1].visible = !fp; // head
+    this.mesh.children[2].visible = !fp; // sash sits at eye height too
+  }
+
+  /** Pin to a world position with a fixed facing (used while at the wheel). */
+  pin(pos: THREE.Vector3, facing: number): void {
+    this.body.setNextKinematicTranslation({ x: pos.x, y: pos.y, z: pos.z });
+    this.facing = facing;
+    const t = this.body.translation();
+    this.mesh.position.set(t.x, t.y - 0.78, t.z);
+    this.mesh.rotation.set(0, -facing, 0);
+  }
+
   /** Move one fixed step. moveX/moveZ are a world-space direction (≤1). */
   step(dt: number, moveX: number, moveZ: number, jump: boolean, waves: Wave[], simTime: number): void {
     if (!this.alive) {
