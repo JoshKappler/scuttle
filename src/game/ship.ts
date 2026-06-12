@@ -355,19 +355,26 @@ export class Ship {
       // angular damping decomposed in the SHIP frame: pitch is damped
       // hardest — a real hull's waterplane kills porpoising almost dead, and
       // without this the brig pitched violently instead of cutting through
-      // the waves (playtest round 4)
+      // the waves (playtest round 4). Gated on "is she in the water at all"
+      // (wet), NOT on submergedFrac directly: a healthy ship only draws ~0.18
+      // of her envelope, which silently throttled the damping to nothing.
+      const wet = Math.min(sub * 5, 1);
       const om = body.angvel();
       const [ix, iy, iz] = this.inertia;
       const fx = fwd.x;
       const fz = fwd.z;
       const wRoll = om.x * fx + om.z * fz; // rate about the fore-aft axis
       const wPitch = om.x * lat.x + om.z * lat.z; // rate about the beam axis
-      const tRoll = -wRoll * sub * 1.1 * ix;
-      const tPitch = -wPitch * sub * 3.0 * iz;
+      const tRoll = -wRoll * wet * 1.2 * ix;
+      // dynamic bow lift: under way the bow buries into wave backs and she
+      // trimmed ~4° down at speed — hull planing + wave-making moment lifts
+      // the bow back toward level, growing with speed²
+      const bowLift = wet * vF * Math.abs(vF) * mass * 0.5;
+      const tPitch = -wPitch * wet * 3.0 * iz + bowLift;
       body.addTorque(
         {
           x: tRoll * fx + tPitch * lat.x,
-          y: -om.y * sub * 0.66 * iy,
+          y: -om.y * wet * 0.7 * iy,
           z: tRoll * fz + tPitch * lat.z,
         },
         true,

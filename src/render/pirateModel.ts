@@ -22,10 +22,13 @@ const MODEL_URLS: Record<ModelName, string> = {
   skeleton: "/assets/characters/skeleton.glb",
 };
 
-/** captain.glb ships two characters in one file; keep only Barbarossa. */
-const KEEP_IN_FILE: Partial<Record<ModelName, string>> = {
-  captain: "barbarossa",
+/** captain.glb ships two characters in one file; hide the spare. */
+const HIDE_IN_FILE: Partial<Record<ModelName, string[]>> = {
+  captain: ["ernest"],
 };
+
+/** Props that read wrong on a boarding party (Henry ships with a lute). */
+const WEAPON_ALLOW = ["cutlass", "sword", "sabre", "hook", "axe", "dagger", "pistol", "gun", "blunder"];
 
 const CLIP_PATTERNS: Record<ClipKey, { include: string; exclude?: string[] }> = {
   idle: { include: "idle", exclude: ["jump", "sword", "punch"] },
@@ -88,37 +91,43 @@ export function createPirateRig(name: ModelName, heightM = 1.72): PirateRig | nu
 
   const inner = cloneSkeleton(gltf.scene) as THREE.Group;
 
-  // multi-character files: prune every sibling character we don't want
-  const keep = KEEP_IN_FILE[name];
-  if (keep) {
-    const doomed: THREE.Object3D[] = [];
-    for (const child of inner.children) {
-      const hasSkin = (() => {
-        let found = false;
-        child.traverse((o) => {
-          if ((o as THREE.SkinnedMesh).isSkinnedMesh) found = true;
-        });
-        return found;
-      })();
-      if (hasSkin && !child.name.toLowerCase().includes(keep)) doomed.push(child);
-    }
-    for (const d of doomed) inner.remove(d);
-  }
-
+  // multi-character files: HIDE the spare character (removing nodes breaks
+  // animation bindings — round-1 attempt pruned the captain to nothing).
+  // Also hide non-weapon hand props (a boarder strumming a lute reads wrong).
+  const hide = HIDE_IN_FILE[name] ?? [];
   inner.traverse((o) => {
+    const n = o.name.toLowerCase();
+    if (hide.some((h) => n.includes(h))) o.visible = false;
+    if (n.startsWith("weapon_") && !WEAPON_ALLOW.some((w) => n.includes(w))) o.visible = false;
     if ((o as THREE.Mesh).isMesh) {
       o.castShadow = true;
       o.frustumCulled = false; // skinned bounds lag the animation
     }
   });
 
-  // normalize: feet on y=0, standard height, facing +x
-  const box = new THREE.Box3().setFromObject(inner);
+  // normalize: feet on y=0, standard height, facing +x — measured over the
+  // VISIBLE meshes only (the hidden sibling would skew the bounds)
+  inner.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const meshBox = new THREE.Box3();
+  const expand = (o: THREE.Object3D): void => {
+    if (!o.visible) return;
+    const mesh = o as THREE.Mesh;
+    if (mesh.isMesh && mesh.geometry) {
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+      meshBox.copy(mesh.geometry.boundingBox!).applyMatrix4(mesh.matrixWorld);
+      box.union(meshBox);
+    }
+    for (const c of o.children) expand(c);
+  };
+  expand(inner);
   const size = new THREE.Vector3();
   box.getSize(size);
   const s = size.y > 0.01 ? heightM / size.y : 1;
   inner.scale.setScalar(s);
   inner.position.y = -box.min.y * s;
+  inner.position.x = -((box.min.x + box.max.x) / 2) * s; // sibling chars sit off-center
+  inner.position.z = -((box.min.z + box.max.z) / 2) * s;
   const root = new THREE.Group();
   root.rotation.y = Math.PI / 2; // GLTF convention faces +z; the game uses +x
   root.add(inner);
@@ -127,17 +136,9 @@ export function createPirateRig(name: ModelName, heightM = 1.72): PirateRig | nu
   const actions = new Map<ClipKey, THREE.AnimationAction>();
   const oneShot: ClipKey[] = ["attack", "punch", "hit", "death", "jump"];
   for (const key of Object.keys(CLIP_PATTERNS) as ClipKey[]) {
-    // tracks may reference pruned siblings; keep only resolvable tracks
     const clip = pickClip(gltf.animations, key);
     if (!clip) continue;
-    const usable = keep
-      ? new THREE.AnimationClip(
-          clip.name,
-          clip.duration,
-          clip.tracks.filter((t) => inner.getObjectByName(t.name.split(".")[0]) !== undefined),
-        )
-      : clip;
-    const action = mixer.clipAction(usable);
+    const action = mixer.clipAction(clip);
     if (oneShot.includes(key)) {
       action.setLoop(THREE.LoopOnce, 1);
       action.clampWhenFinished = true;

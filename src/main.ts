@@ -263,27 +263,27 @@ async function main() {
   // clip-plane intersection can express; the enemy hull is inspected from afar)
   let cutaway = false;
   const cutPlane = new THREE.Plane();
-  const holePlanes = [new THREE.Plane(), new THREE.Plane(), new THREE.Plane(), new THREE.Plane()];
+  // dark abyss disc under the ship: the cutaway trench shows "the depths"
+  // instead of glowing white skybox-below-the-sea
+  const abyss = new THREE.Mesh(
+    new THREE.CircleGeometry(70, 40),
+    new THREE.MeshBasicMaterial({ color: 0x04181f }),
+  );
+  abyss.geometry.rotateX(-Math.PI / 2);
+  abyss.position.y = -9;
+  abyss.visible = false;
+  scene.add(abyss);
   const holeQ = new THREE.Quaternion();
   const holeFwd = new THREE.Vector3();
-  const holeLat = new THREE.Vector3();
-  const holeN = new THREE.Vector3();
   const holeCenter = new THREE.Vector3();
-  const holePt = new THREE.Vector3();
   const updateHole = () => {
     const rotS = sloop.body.rotation();
     holeQ.set(rotS.x, rotS.y, rotS.z, rotS.w);
     holeFwd.set(1, 0, 0).applyQuaternion(holeQ);
     holeFwd.y = 0;
     holeFwd.normalize();
-    holeLat.set(-holeFwd.z, 0, holeFwd.x);
     sloop.localToWorld([13, 2, 4], holeCenter);
-    const HX = 13.6; // half-length of the hole, m
-    const HZ = 4.5; // half-width
-    holePlanes[0].setFromNormalAndCoplanarPoint(holeFwd, holePt.copy(holeCenter).addScaledVector(holeFwd, HX));
-    holePlanes[1].setFromNormalAndCoplanarPoint(holeN.copy(holeFwd).negate(), holePt.copy(holeCenter).addScaledVector(holeFwd, -HX));
-    holePlanes[2].setFromNormalAndCoplanarPoint(holeLat, holePt.copy(holeCenter).addScaledVector(holeLat, HZ));
-    holePlanes[3].setFromNormalAndCoplanarPoint(holeN.copy(holeLat).negate(), holePt.copy(holeCenter).addScaledVector(holeLat, -HZ));
+    ocean.updateCutaway(holeCenter, holeFwd.x, holeFwd.z, cutPlane);
   };
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
@@ -294,8 +294,8 @@ async function main() {
     if (e.code === "KeyX") {
       cutaway = !cutaway;
       for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
-      if (cutaway) updateHole();
-      ocean.setCutawayHole(cutaway ? holePlanes : null);
+      ocean.setCutaway(cutaway);
+      abyss.visible = cutaway;
     }
   });
 
@@ -307,6 +307,8 @@ async function main() {
     cannons,
     captain,
     boarding,
+    controls,
+    camera,
     get character() {
       return character;
     },
@@ -537,8 +539,10 @@ async function main() {
         pt.z + Math.sin(yaw) * Math.cos(pitch),
       );
     } else {
-      // bird's-eye orbit on the ship; your pirate stays visible on deck
-      controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y + 1.5, tr.z));
+      // bird's-eye orbit on the ship's CENTER (the body origin is the grid
+      // corner, 13 m aft — orbiting that made every view sit off-center)
+      const c0 = sloop.body.worldCom();
+      controls.updateCamera(camera, new THREE.Vector3(c0.x, c0.y + 2.5, c0.z));
     }
 
     // spyglass zoom (Q)
@@ -559,12 +563,14 @@ async function main() {
     }
 
     if (cutaway) {
-      // hide the half of each hull facing the camera; keep the ocean hole
+      // hide the half of each hull facing the camera; keep the ocean trench
       // tracking the hull footprint
       const com = sloop.body.worldCom();
       const n = new THREE.Vector3(com.x - camera.position.x, 0, com.z - camera.position.z).normalize();
       cutPlane.setFromNormalAndCoplanarPoint(n, new THREE.Vector3(com.x, com.y, com.z));
       updateHole();
+      abyss.position.x = com.x;
+      abyss.position.z = com.z;
     }
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);

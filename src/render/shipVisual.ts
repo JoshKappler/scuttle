@@ -84,8 +84,9 @@ export class ShipVisual {
             } else {
               tex = texture2D(uHullTex, vShipLocal.zy * 0.22).rgb; // bow/stern
             }
-            // normalize the photo around its mean so vertex tint + AO stay in charge
-            diffuseColor.rgb *= tex * 2.2;
+            // modulate AROUND 1 so the photo adds plank detail without
+            // crushing the base tint to black (first attempt did exactly that)
+            diffuseColor.rgb *= 0.55 + tex * 1.5;
           }`,
         );
     };
@@ -100,11 +101,15 @@ export class ShipVisual {
 
   /** One translucent box per compartment, scaled to its fill level. */
   private addWaterPlanes(): void {
+    // self-lit: the hull interior is in deep shadow during cutaway, and an
+    // unlit water box read as just more darkness (playtest round 4)
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x16424c,
+      color: 0x2e8aa0,
+      emissive: 0x1a5a6a,
+      emissiveIntensity: 0.85,
       transparent: true,
-      opacity: 0.82,
-      roughness: 0.25,
+      opacity: 0.85,
+      roughness: 0.2,
       depthWrite: false,
     });
     const geo = new THREE.BoxGeometry(1, 1, 1);
