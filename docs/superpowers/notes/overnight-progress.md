@@ -203,3 +203,19 @@ deck, waterline near the widest belt. Findings (do not relearn):
 - Quaternius cannon GLB on articulated pivots (yaw-then-pitch Euler — a
   shortest-arc quaternion flipped port carriages upside down); rig wood +
   sail fabric use real ambientCG photos.
+
+## m9 — brig and broadsides (rounds 6 + 6.5) — do not relearn
+
+- Quaternius cannon GLB is ONE merged mesh with ~37 deg of elevation baked into the sculpt: it can NEVER articulate. Replaced with a procedural trunnion gun BUILT FROM gunnery.ts constants (BORE_UP/TRUNNION_OUT/TIP_FROM_TRUNNION) — the math and the model share the numbers by construction. Ball-vs-arc drift 0.01 m; origin within ~0.2 m of the visible bore.
+- Broadside STAGGER made later balls launch from a muzzle that had MOVED since the arc was drawn — stagger is now 0 (round 6 wanted simultaneous fire anyway).
+- Aim arcs include inherited ship velocity, so at speed the line tilts off the barrel axis BY DESIGN (it is the true splash prediction). Round 6.5 made it red+dashed. If the lead keeps reading as a bug, offer a barrel-true toggle.
+- Player ship = buildBrig (34 m, deckY 24, qDeckY 33, 5 ports/side, 2 masts, 571 t, draft 43%, 24.1 kn, 6 deg hard-turn lean). Enemy keeps buildSloop. ShipBuild now carries deckYAt/quarterdeck/wheelM/footprint — NOTHING may hardcode hull dims (the crew overboard check, boarding spawns, bowsprit, cutaway hole all did and broke).
+- qX1 must be the last station with t < qT (floor(x0 + qT*(L-1) - eps)) — round() put the break wall one station outside the quarterdeck and the door carved air.
+- Even-nz grids: cz is *.5 — Math.round(cz±k) breaks port/starboard mirror symmetry (round half-up). Use floor/ceil pairs.
+- Idle characters now ride the anchor EXACTLY (skip KCC when grounded+no input) — collide-and-slide shaved centimeters per step during hard turns. Caveat: a blast hole under a perfectly idle character won't drop them until they move.
+- Combat clips strip .position tracks (root motion displaced the mesh off the capsule — "clips you towards the back").
+- AI: fire check runs BEFORE the chase branch (passing broadsides); in-irons bear-away only at range > 120 or it reads as fleeing; close to 55 m at full sail then dance abeam at 0.85.
+- Wake: ocean shader, not sprites — stern-path ring buffer (31 pts/ship, vec4 x,z,age,strength) laced with foam in FRAG (width starts at SHIP BEAM), bow mound + flank ridge in VERT. Hard along-bands read as "abruptly cuts off" — use smoothstep develop/taper everywhere.
+- Sail billow must scale per sail (aBelly vertex attribute = width*0.17) — a fixed 1 m belly on a 15 m course reads flat.
+- Helmsman: pin 0.45 m aft of the wheel + post-mixer arm pose (UpperArm/LowerArm L/R bones, rotation.x -= ~1.05) — poses applied in idleTick stick for the frame; setInterval experiments race the mixer.
+- Cutaway on the brig: interior reads VERY dark + a boxy shadow ring + hull outline through the sea floor remain — user says pivot away for now; revisit with proper interior lighting later.
