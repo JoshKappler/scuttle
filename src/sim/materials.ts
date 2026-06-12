@@ -14,7 +14,7 @@ export interface Material {
 }
 
 export const MATERIALS: Record<number, Material> = {
-  [OAK]: { name: "oak", density: 700, color: [0.28, 0.19, 0.12], strength: 3 },
-  [PINE]: { name: "pine", density: 500, color: [0.45, 0.34, 0.22], strength: 2 },
-  [IRON]: { name: "iron", density: 7800, color: [0.16, 0.16, 0.18], strength: 8 },
+  [OAK]: { name: "oak", density: 700, color: [0.13, 0.085, 0.052], strength: 3 },
+  [PINE]: { name: "pine", density: 500, color: [0.21, 0.152, 0.095], strength: 2 },
+  [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
 };
