@@ -82,10 +82,12 @@ export class Ship {
     const h = ny * VOXEL_SIZE;
     const w = nz * VOXEL_SIZE;
 
-    // box-approximated principal inertia about the COM
+    // box-approximated principal inertia about the COM. Pitch/yaw carry a
+    // 1.45× added-mass factor: a hull drags entrained water with it when it
+    // pitches, and the bare box value let the brig hobby-horse in the swell
     const ixx = (mass / 12) * (w * w + h * h);
-    const iyy = (mass / 12) * (l * l + w * w);
-    const izz = (mass / 12) * (l * l + h * h);
+    const iyy = (mass / 12) * (l * l + w * w) * 1.45;
+    const izz = (mass / 12) * (l * l + h * h) * 1.45;
     this.inertia = [ixx, iyy, izz];
 
     const desc = R.RigidBodyDesc.dynamic()
@@ -350,10 +352,33 @@ export class Ship {
         true,
       );
 
+      // angular damping decomposed in the SHIP frame: pitch is damped
+      // hardest — a real hull's waterplane kills porpoising almost dead, and
+      // without this the brig pitched violently instead of cutting through
+      // the waves (playtest round 4). Gated on "is she in the water at all"
+      // (wet), NOT on submergedFrac directly: a healthy ship only draws ~0.18
+      // of her envelope, which silently throttled the damping to nothing.
+      const wet = Math.min(sub * 5, 1);
       const om = body.angvel();
-      const ka = sub * 1.1;
       const [ix, iy, iz] = this.inertia;
-      body.addTorque({ x: -om.x * ka * ix, y: -om.y * ka * iy * 0.6, z: -om.z * ka * iz }, true);
+      const fx = fwd.x;
+      const fz = fwd.z;
+      const wRoll = om.x * fx + om.z * fz; // rate about the fore-aft axis
+      const wPitch = om.x * lat.x + om.z * lat.z; // rate about the beam axis
+      const tRoll = -wRoll * wet * 1.2 * ix;
+      // dynamic bow lift: under way the bow buries into wave backs and she
+      // trimmed ~4° down at speed — hull planing + wave-making moment lifts
+      // the bow back toward level, growing with speed²
+      const bowLift = wet * vF * Math.abs(vF) * mass * 0.5;
+      const tPitch = -wPitch * wet * 3.0 * iz + bowLift;
+      body.addTorque(
+        {
+          x: tRoll * fx + tPitch * lat.x,
+          y: -om.y * wet * 0.7 * iy,
+          z: tRoll * fz + tPitch * lat.z,
+        },
+        true,
+      );
     }
   }
 
@@ -459,6 +484,16 @@ export class Ship {
     out.x += tr.x;
     out.y += tr.y;
     out.z += tr.z;
+    return out;
+  }
+
+  /** Ship-local position of a world point (meters). Alias-safe: `out` may
+   *  be the same vector as `world`. */
+  worldToLocal(world: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    const tr = this.body.translation();
+    const rot = this.body.rotation();
+    this.tmpQ.set(rot.x, rot.y, rot.z, rot.w).invert();
+    out.set(world.x - tr.x, world.y - tr.y, world.z - tr.z).applyQuaternion(this.tmpQ);
     return out;
   }
 

@@ -3,17 +3,27 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import { G } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
+import { createPirateRig, type ModelName, type PirateRig, type ClipKey } from "../render/pirateModel";
 import type { Physics } from "./physics";
 import type { Ship } from "./ship";
 
 /**
- * Pirates. Kinematic capsules driven by rapier character controllers, riding
- * ship decks via the deck-carry velocity field (validated in the M1 spike).
- * Combat: slash (cone, damage) and kick (impulse — physics decides if they
- * swim). Death = ragdoll-lite: the capsule goes dynamic, bleeds, and is
- * claimed by the sea.
+ * Pirates. Kinematic capsules driven by rapier character controllers.
+ *
+ * Deck riding is TRANSFORM-FOLLOWING: while a pirate stands on a ship, their
+ * position is anchored in the SHIP's frame, and each step begins by carrying
+ * them wherever the ship carried that anchor — heave, surge, pitch, roll,
+ * all of it. Velocity-based carry (the old model) lagged the deck by a frame
+ * and let it rise through your boots in a seaway (playtest round 4: "clips
+ * directly through the deck when it bobs … eventually falls out the back").
+ *
+ * Combat: slash (cone, damage) and kick (shove burst resolved through the
+ * character controller). Death = ragdoll-lite: the capsule goes dynamic.
  */
 const WALK_SPEED = 3.4;
+
+const tmpCarry = new THREE.Vector3();
+const tmpAnchor = new THREE.Vector3();
 
 export type Faction = "player" | "enemy";
 
@@ -32,6 +42,14 @@ export class Pirate {
   private ragdollAge = 0;
   swimming = false;
 
+  /** Ship whose frame we're anchored in (null = free fall / swimming). */
+  private attachShip: Ship | null = null;
+  /** Anchor position in that ship's local frame (meters). */
+  private attachLocal = new THREE.Vector3();
+  private airTime = 0;
+  /** Kick burst (m/s), consumed through the controller so walls still block. */
+  private pendingShove = new THREE.Vector3();
+
   constructor(
     private phys: Physics,
     scene: THREE.Scene,
@@ -40,12 +58,17 @@ export class Pirate {
     deckLocal: [number, number, number],
     bodyColor: number,
     sashColor: number,
+    model?: ModelName,
   ) {
     const { world, RAPIER: R } = phys;
     const spawn = ship.localToWorld(deckLocal, new THREE.Vector3());
     this.body = world.createRigidBody(
       R.RigidBodyDesc.kinematicPositionBased().setTranslation(spawn.x, spawn.y + 1.2, spawn.z),
     );
+    // anchored to the deck from the very first frame — spawning during the
+    // ship's splash-down settle is safe now, we just ride it out
+    this.attachShip = ship;
+    this.attachLocal.set(deckLocal[0], deckLocal[1] + 1.2, deckLocal[2]);
     // SENSOR: a kinematic capsule with a solid collider has infinite
     // effective mass and will physically shove (and capsize!) the dynamic
     // ship it stands on. Sensors generate no contact forces; the character
@@ -58,9 +81,16 @@ export class Pirate {
     this.controller.enableSnapToGround(0.6); // generous: decks drop with the swell
     this.controller.setMaxSlopeClimbAngle((50 * Math.PI) / 180);
 
-    // built pirate: legs, torso, arms, head, hat/bandana, cutlass — placeholder
-    // until a real CC0 character pack lands, but no longer a pill
+    // visual body: a real rigged CC0 pirate (Quaternius) when the library
+    // loaded; the old hand-built figure stands in if we're offline
     this.mesh = new THREE.Group();
+    this.rig = createPirateRig(model ?? (faction === "player" ? "captain" : "henry"));
+    if (this.rig) {
+      this.mesh.add(this.rig.root);
+      this.rig.play("idle");
+      scene.add(this.mesh);
+      return;
+    }
     const skin = new THREE.MeshStandardMaterial({ color: 0xc8a07a, roughness: 0.7 });
     const cloth = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.85 });
     const accent = new THREE.MeshStandardMaterial({ color: sashColor, roughness: 0.8 });
@@ -120,26 +150,44 @@ export class Pirate {
     scene.add(this.mesh);
   }
 
-  private swordArm!: THREE.Group;
+  private swordArm: THREE.Group | null = null;
   private headParts: THREE.Object3D[] = [];
+  /** Rigged GLB character (null → procedural fallback body). */
+  rig: PirateRig | null = null;
+  private animKey: ClipKey | "" = "";
+  private fpHide = false;
   /** Set by combat when this pirate swings; drives the chop animation. */
   attackTimer = 0;
   /** Set by combat on kick; drives the lunge animation. */
   kickTimer = 0;
+
+  private setAnim(key: ClipKey): void {
+    if (!this.rig || this.animKey === key) return;
+    this.animKey = key;
+    this.rig.play(key);
+  }
 
   worldPos(out: THREE.Vector3): THREE.Vector3 {
     const t = this.body.translation();
     return out.set(t.x, t.y, t.z);
   }
 
-  /** First-person: hide the head + hat so the camera doesn't sit inside them. */
+  /** First-person: hide the head (+hat) so the camera doesn't sit inside it.
+   *  For rigged models the head BONE is shrunk — and re-shrunk after every
+   *  mixer update, since animation tracks may write bone scale back. */
   setFirstPerson(fp: boolean): void {
+    this.fpHide = fp;
+    if (!fp && this.rig?.head) this.rig.head.scale.setScalar(1);
     for (const part of this.headParts) part.visible = !fp;
   }
 
   /** Pin to a world position with a fixed facing (used while at the wheel). */
   pin(pos: THREE.Vector3, facing: number): void {
     this.body.setNextKinematicTranslation({ x: pos.x, y: pos.y, z: pos.z });
+    // keep the anchor current so stepping away from the wheel doesn't yank
+    // us back to where we first grabbed it
+    this.attachShip = this.ship;
+    this.ship.worldToLocal(tmpAnchor.copy(pos), this.attachLocal);
     this.facing = facing;
     const t = this.body.translation();
     this.mesh.position.set(t.x, t.y - 0.78, t.z);
@@ -150,6 +198,8 @@ export class Pirate {
   step(dt: number, moveX: number, moveZ: number, jump: boolean, waves: Wave[], simTime: number): void {
     this.attackTimer = Math.max(this.attackTimer - dt, 0);
     this.kickTimer = Math.max(this.kickTimer - dt, 0);
+    this.rig?.update(dt);
+    if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
     if (!this.alive) {
       this.syncMesh();
       this.ragdollAge += dt;
@@ -162,58 +212,120 @@ export class Pirate {
     // (playtest: bow dipped, walking/jumping died because swim engaged early)
     this.swimming = tr.y < surf - 0.45;
     if (this.swimming) {
+      this.attachShip = null; // the sea owns you now
       // damped spring to the surface — undamped buoyancy made swimmers
       // oscillate into 50-foot breaches (playtest bug)
       this.vy += ((surf - 0.45 - tr.y) * 5 - this.vy * 3.2) * dt;
       this.vy = Math.min(Math.max(this.vy, -3), 3);
       const k = 0.55;
       this.body.setNextKinematicTranslation({
-        x: tr.x + moveX * WALK_SPEED * k * dt,
+        x: tr.x + (moveX * WALK_SPEED * k + this.pendingShove.x) * dt,
         y: tr.y + this.vy * dt,
-        z: tr.z + moveZ * WALK_SPEED * k * dt,
+        z: tr.z + (moveZ * WALK_SPEED * k + this.pendingShove.z) * dt,
       });
+      this.decayShove(dt);
+      if (moveX * moveX + moveZ * moveZ > 0.01) this.facing = Math.atan2(moveZ, moveX);
+      this.setAnim(this.attackTimer > 0 ? "attack" : "walk"); // doggy paddle
       this.syncMesh();
       return;
+    }
+
+    // platform carry: wherever the ship moved our anchor since last step,
+    // we move too — full 6-DOF, so a heaving deck can never rise through us
+    let carryX = 0;
+    let carryY = 0;
+    let carryZ = 0;
+    if (this.attachShip === this.ship) {
+      this.ship.localToWorld(
+        [this.attachLocal.x, this.attachLocal.y, this.attachLocal.z],
+        tmpCarry,
+      );
+      carryX = tmpCarry.x - tr.x;
+      carryY = tmpCarry.y - tr.y;
+      carryZ = tmpCarry.z - tr.z;
     }
 
     const grounded = this.controller!.computedGrounded();
     if (grounded) {
       this.vy = jump ? 5.6 : Math.max(this.vy, -0.5);
+      this.airTime = 0;
     } else {
       this.vy = Math.max(this.vy - G * dt, -18);
+      this.airTime += dt;
     }
 
-    // deck-carry from this pirate's ship — HORIZONTAL only: vertical deck
-    // motion is handled by ground collision + snap-to-ground; adding it to
-    // the desired movement double-counts and makes characters hop in waves
-    const sv = this.ship.body.linvel();
-    const om = this.ship.body.angvel();
-    const com = this.ship.body.worldCom();
-    const ry = tr.y - com.y;
-    const rz = tr.z - com.z;
     const desired = {
-      x: (moveX * WALK_SPEED + sv.x + om.y * rz - om.z * ry) * dt,
-      y: this.vy * dt,
-      z: (moveZ * WALK_SPEED + sv.z + om.x * ry - om.y * (tr.x - com.x)) * dt,
+      x: carryX + (moveX * WALK_SPEED + this.pendingShove.x) * dt,
+      y: carryY + this.vy * dt,
+      z: carryZ + (moveZ * WALK_SPEED + this.pendingShove.z) * dt,
     };
+    this.decayShove(dt);
     this.controller!.computeColliderMovement(this.collider, desired);
     const m = this.controller!.computedMovement();
-    this.body.setNextKinematicTranslation({ x: tr.x + m.x, y: tr.y + m.y, z: tr.z + m.z });
+    const nx = tr.x + m.x;
+    const ny = tr.y + m.y;
+    const nz = tr.z + m.z;
+    this.body.setNextKinematicTranslation({ x: nx, y: ny, z: nz });
+
+    // re-anchor against the deck we're on; brief air (jumps, wave drops)
+    // keeps the anchor so the jump arc happens in the SHIP's frame
+    if (grounded || this.airTime < 0.5) {
+      this.attachShip = this.ship;
+      tmpAnchor.set(nx, ny, nz);
+      this.ship.worldToLocal(tmpAnchor, this.attachLocal);
+    } else {
+      this.attachShip = null; // genuinely falling — world frame
+    }
 
     if (moveX * moveX + moveZ * moveZ > 0.01) this.facing = Math.atan2(moveZ, moveX);
+
+    // animation: combat one-shots win, then airtime, then locomotion
+    if (this.attackTimer > 0) this.setAnim("attack");
+    else if (this.kickTimer > 0) this.setAnim("punch");
+    else if (!grounded && this.airTime > 0.18) this.setAnim("jump");
+    else if (moveX * moveX + moveZ * moveZ > 0.01) this.setAnim("run");
+    else this.setAnim("idle");
+
     this.syncMesh();
+  }
+
+  /** Mixer-only tick for frames when the body is externally pinned (wheel). */
+  idleTick(dt: number): void {
+    this.attackTimer = Math.max(this.attackTimer - dt, 0);
+    this.kickTimer = Math.max(this.kickTimer - dt, 0);
+    this.setAnim("idle");
+    this.rig?.update(dt);
+    if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
+  }
+
+  private decayShove(dt: number): void {
+    const f = Math.max(1 - dt * 4, 0);
+    this.pendingShove.x *= f;
+    this.pendingShove.z *= f;
+  }
+
+  /** Hard relocation (respawn, ladder climb): move AND re-anchor, so the
+   *  carry doesn't yank us back to the stale anchor next step. */
+  teleport(pos: THREE.Vector3): void {
+    this.body.setTranslation({ x: pos.x, y: pos.y, z: pos.z }, true);
+    this.attachShip = this.ship;
+    this.ship.worldToLocal(pos, this.attachLocal);
+    this.vy = 0;
   }
 
   private syncMesh(): void {
     const t = this.body.translation();
     this.mesh.position.set(t.x, t.y - 0.78, t.z);
     if (this.alive) {
-      // kick: brief forward lunge of the whole body
-      const kickP = this.kickTimer > 0 ? Math.sin((1 - this.kickTimer / 0.3) * Math.PI) : 0;
+      // kick: brief forward lunge of the whole body (procedural body only —
+      // the rigged model has a real Punch clip)
+      const kickP = this.kickTimer > 0 && !this.rig ? Math.sin((1 - this.kickTimer / 0.3) * Math.PI) : 0;
       this.mesh.rotation.set(0, -this.facing, kickP * 0.28);
-      // slash: overhead chop of the sword arm
-      const swingP = this.attackTimer > 0 ? Math.sin((1 - this.attackTimer / 0.28) * Math.PI) : 0;
-      this.swordArm.rotation.x = 0.18 - swingP * 1.9;
+      // slash: overhead chop of the stand-in's sword arm
+      if (this.swordArm) {
+        const swingP = this.attackTimer > 0 ? Math.sin((1 - this.attackTimer / 0.28) * Math.PI) : 0;
+        this.swordArm.rotation.x = 0.18 - swingP * 1.9;
+      }
     } else {
       const r = this.body.rotation();
       this.mesh.position.set(t.x, t.y, t.z);
@@ -234,16 +346,15 @@ export class Pirate {
     return false;
   }
 
-  /** Physics shove. Strong enough kicks send pirates overboard. */
+  /** Physics shove: a decaying burst consumed through the character
+   *  controller (the old instant-teleport version was silently overwritten
+   *  by the same step's own movement — kicks did nothing). The hop lets a
+   *  hard kick carry someone over a low rail. */
   shove(dirX: number, dirZ: number): void {
     if (!this.alive) return;
-    // kinematic bodies ignore impulses — go ragdoll-lite briefly via velocity
-    const tr = this.body.translation();
-    this.body.setNextKinematicTranslation({
-      x: tr.x + dirX * 0.55,
-      y: tr.y + 0.1,
-      z: tr.z + dirZ * 0.55,
-    });
+    this.pendingShove.x += dirX * 5.5;
+    this.pendingShove.z += dirZ * 5.5;
+    this.vy = Math.max(this.vy, 3.6);
   }
 
   /** Ragdoll-lite: swap the kinematic capsule for a tumbling dynamic one. */
@@ -265,6 +376,7 @@ export class Pirate {
     );
     this.collider = world.createCollider(R.ColliderDesc.capsule(0.5, 0.28).setDensity(985), this.body);
     this.controller = null;
+    this.rig?.play("death");
   }
 
   /** True once a corpse can be cleaned up (sunk or 8 s old). */

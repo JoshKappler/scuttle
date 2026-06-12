@@ -74,9 +74,10 @@ export class BoardingSystem {
     return (ship.build.deckY + 2) * 0.25;
   }
 
-  /** Spawn crews once the world has settled. Called from update(). */
+  /** Spawn crews shortly after launch — pirates are anchored in their
+   *  ship's frame now, so they ride the splash-down instead of missing it. */
   private ensureCrew(simTime: number): void {
-    if (this.crewSpawned || simTime < 6) return;
+    if (this.crewSpawned || simTime < 1.5) return;
     this.crewSpawned = true;
     const dt = this.deckTop(this.enemyShip);
     const posts: [number, number, number][] = [
@@ -85,11 +86,12 @@ export class BoardingSystem {
       [17, dt, 4.8],
       [12, dt, 5.2],
     ];
-    for (const p of posts) {
-      const pirate = new Pirate(this.phys, this.scene, this.enemyShip, "enemy", p, 0x4a2330, 0x802020);
+    const looks = ["henry", "mako", "sharky", "anne"] as const;
+    posts.forEach((p, i) => {
+      const pirate = new Pirate(this.phys, this.scene, this.enemyShip, "enemy", p, 0x4a2330, 0x802020, looks[i % looks.length]);
       pirate.slashCd = Math.random() * ENEMY_SLASH_CD; // desync the mob
       this.enemies.push(pirate);
-    }
+    });
     this.chest.position.set(4.2, dt, 4);
   }
 
@@ -104,6 +106,7 @@ export class BoardingSystem {
       [4.2, this.deckTop(this.playerShip), 4],
       0x1d3a52,
       0x1c6e6e,
+      "captain",
     );
   }
 
@@ -162,8 +165,8 @@ export class BoardingSystem {
       this.enemyShip.body.addForce({ x: -rvx * damp * dt * 60, y: 0, z: -rvz * damp * dt * 60 }, true);
     }
 
-    // the captain is always aboard once the world settles
-    if (!this.player && simTime > 6) this.spawnPlayer();
+    // the captain is always aboard once the ship is in the water
+    if (!this.player && simTime > 1.5) this.spawnPlayer();
 
     // ---- player pirate ----
     if (this.player) {
@@ -171,8 +174,10 @@ export class BoardingSystem {
       this.player.ship = this.nearestShip(this.player);
       if (onFoot) {
         this.player.step(dt, input.moveX, input.moveZ, input.jump, waves, simTime);
+      } else {
+        // at the wheel the caller pins the body — keep the animation alive
+        this.player.idleTick(dt);
       }
-      // while at the wheel (not onFoot) the caller pins the body — no step
 
       if (onFoot && input.slash && this.slashCd <= 0) {
         this.slashCd = PLAYER_SLASH_CD;
@@ -260,8 +265,9 @@ export class BoardingSystem {
       this.chest.position.set(4.2, this.deckTop(this.enemyShip), 3);
       this.message = "you lost the chest overboard!";
     }
+    this.player.ship = this.playerShip;
     const p = this.playerShip.localToWorld([4.2, this.deckTop(this.playerShip) + 1, 4], this.tmpA);
-    this.player.body.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
+    this.player.teleport(p);
   }
 
   private nearestShip(p: Pirate): Ship {

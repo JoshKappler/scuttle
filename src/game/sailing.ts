@@ -2,9 +2,9 @@ import * as THREE from "three";
 import type { Ship } from "./ship";
 
 /**
- * Wind + sail thrust + rudder. Arcade-tuned but honest in shape: no thrust
- * in irons (bow into the wind), peak power on a broad reach, thrust applied
- * at the mast base so beam winds heel the ship.
+ * Wind + sail thrust + rudder. Arcade model (playtest round 4): the wind is
+ * a BOOST, never a wall — at least half power on every heading, peaking on a
+ * broad reach. Thrust applies at COM height; heel comes from the keel.
  */
 export interface Wind {
   dirX: number; // direction the wind blows TOWARD (unit)
@@ -42,15 +42,15 @@ export class SailingController {
     const a = Math.acos(Math.min(Math.max(cosA, -1), 1));
     this.angleOffWind = (a * 180) / Math.PI;
 
-    // near-zero in irons (±24°), rising to 1 at ~105-150°. A small steerage
-    // floor remains even in irons so you're never anchored bow-to-wind
-    // (playtest: "essentially anchored" — no fun)
+    // half power floor on every heading (playtest round 4: "you should still
+    // be able to go at least half speed facing into the wind" — being
+    // realistic here just strands people), rising to full at ~105-150°
     const deg = this.angleOffWind;
-    let wf = 0.08;
+    let wf = 0.5;
     if (deg > 24) {
       const x = Math.min((deg - 24) / 81, 1);
       const runFade = deg > 150 ? 1 - ((deg - 150) / 30) * 0.25 : 1;
-      wf = Math.max(Math.pow(Math.sin((x * Math.PI) / 2), 1.2) * runFade, 0.08);
+      wf = Math.max(Math.pow(Math.sin((x * Math.PI) / 2), 1.2) * runFade, 0.5);
     }
 
     // thrust ∝ wind pressure on set canvas; tuned for ~7-8 m/s top speed

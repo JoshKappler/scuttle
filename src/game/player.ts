@@ -26,10 +26,14 @@ export class PlayerControls {
   grapplePressed = false;
   /** Set on KeyT keydown (helm/foot toggle). */
   modePressed = false;
-  /** True while RMB is held — mouse Y trims broadside elevation. */
+  /** True while RMB is held — the mouse works the guns, not the camera. */
   aiming = false;
   /** Broadside elevation in degrees. */
   elevationDeg = 4;
+  /** Gun traverse in degrees (+ = muzzles swing toward the bow). */
+  traverseDeg = 0;
+  /** Pointer-lock state — when locked, the camera follows the bare mouse. */
+  locked = false;
   /** True while Q is held — spyglass zoom. */
   get spyglass(): boolean {
     return this.keys.has("KeyQ");
@@ -49,9 +53,19 @@ export class PlayerControls {
     });
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
     dom.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // pointer lock: the camera answers the bare mouse, no click-dragging
+    // (playtest round 4). Esc releases; clicking the sea captures again.
+    dom.addEventListener("click", () => {
+      if (!this.locked) dom.requestPointerLock();
+    });
+    document.addEventListener("pointerlockchange", () => {
+      this.locked = document.pointerLockElement === dom;
+    });
+
     dom.addEventListener("mousedown", (e) => {
       if (e.button === 2) this.aiming = true;
-      else this.dragging = true;
+      else if (!this.locked) this.dragging = true; // drag fallback when unlocked
     });
     window.addEventListener("mouseup", (e) => {
       if (e.button === 2) this.aiming = false;
@@ -59,12 +73,15 @@ export class PlayerControls {
     });
     window.addEventListener("mousemove", (e) => {
       if (this.aiming) {
+        // RMB held: mouse Y lays the guns, mouse X swings them
         this.elevationDeg = Math.min(Math.max(this.elevationDeg - e.movementY * 0.05, 0), 14);
+        this.traverseDeg = Math.min(Math.max(this.traverseDeg + e.movementX * 0.06, -12), 12);
         return;
       }
-      if (!this.dragging) return;
-      this.orbitYaw -= e.movementX * 0.005;
-      this.orbitPitch = Math.min(Math.max(this.orbitPitch + e.movementY * 0.004, 0.05), 1.25);
+      if (!this.locked && !this.dragging) return;
+      const k = this.locked ? 0.0026 : 0.005;
+      this.orbitYaw -= e.movementX * k;
+      this.orbitPitch = Math.min(Math.max(this.orbitPitch + e.movementY * (k * 0.8), 0.05), 1.25);
     });
     dom.addEventListener("wheel", (e) => {
       this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 7), 85);

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { G, VOXEL_SIZE } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
+import { muzzleWorld, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
 
 /**
@@ -26,12 +27,20 @@ interface Ball {
 
 export class Cannons {
   private balls: Ball[] = [];
-  private pendingShots: { delay: number; side: 1 | -1; portIndex: number; owner: Ship; elevation: number }[] = [];
+  private pendingShots: {
+    delay: number;
+    side: 1 | -1;
+    portIndex: number;
+    owner: Ship;
+    elevation: number;
+    traverse: number;
+  }[] = [];
   reloadAt = 0; // simTime when the next broadside is allowed
   static RELOAD = 6; // s
 
   private tmpV = new THREE.Vector3();
   private tmpDir = new THREE.Vector3();
+  private tmpMuzzle: MuzzleOut = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
 
   constructor(
     scene: THREE.Scene,
@@ -55,13 +64,20 @@ export class Cannons {
   }
 
   /** Queue a full broadside from one side of the ship. */
-  fireBroadside(ship: Ship, side: 1 | -1, simTime: number, elevationDeg = 5): boolean {
+  fireBroadside(ship: Ship, side: 1 | -1, simTime: number, elevationDeg = 5, traverseDeg = 0): boolean {
     if (simTime < this.reloadAt) return false;
     this.reloadAt = simTime + Cannons.RELOAD;
     let i = 0;
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
       if (ship.build.cannonPorts[p].side !== side) continue;
-      this.pendingShots.push({ delay: i * STAGGER, side, portIndex: p, owner: ship, elevation: elevationDeg });
+      this.pendingShots.push({
+        delay: i * STAGGER,
+        side,
+        portIndex: p,
+        owner: ship,
+        elevation: elevationDeg,
+        traverse: traverseDeg,
+      });
       i++;
     }
     return true;
@@ -75,26 +91,10 @@ export class Cannons {
       const shot = this.pendingShots[s];
       if (shot.delay > 0) continue;
       this.pendingShots.splice(s, 1);
-      const port = shot.owner.build.cannonPorts[shot.portIndex];
-      const muzzleLocal: [number, number, number] = [
-        (port.x + 0.5) * VOXEL_SIZE,
-        (port.y + 0.5) * VOXEL_SIZE,
-        (port.z + 0.5 + shot.side * 1.2) * VOXEL_SIZE,
-      ];
-      const muzzle = shot.owner.localToWorld(muzzleLocal, this.tmpV.clone());
-
-      // fire perpendicular to the hull on the chosen side, elevated
-      const rot = shot.owner.body.rotation();
-      const q = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
-      const dir = this.tmpDir.set(0, 0, shot.side).applyQuaternion(q);
-      dir.y = 0;
-      dir.normalize();
-      const el = (shot.elevation * Math.PI) / 180;
-      dir.y = Math.tan(el);
-      dir.normalize();
-
-      this.launch(muzzle, dir);
-      this.effects.muzzleSmoke(muzzle, dir);
+      // the ball leaves the actual barrel tip, along the actual barrel axis
+      const m = muzzleWorld(shot.owner, shot.portIndex, shot.elevation, shot.traverse, this.tmpMuzzle);
+      this.launch(m.pos, m.dir);
+      this.effects.muzzleSmoke(m.pos, m.dir);
     }
 
     // integrate balls

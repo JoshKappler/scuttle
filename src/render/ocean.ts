@@ -15,9 +15,13 @@ const SEGMENTS = 400;
 export interface Ocean {
   mesh: THREE.Mesh;
   update(time: number, cameraPos: THREE.Vector3): void;
-  /** Cutaway support: clip the sea on the camera side of the plane so the
-   *  hull interior reads dry instead of "full of ocean". */
-  setClipPlane(plane: THREE.Plane | null): void;
+  /** Cutaway support (playtest rounds 2–4): discard the sea (a) inside the
+   *  ship's footprint, so the hull never reads "full of ocean", and (b) in a
+   *  BOUNDED wedge on the camera side of the cut plane, so the exterior sea
+   *  can't occlude the view into the hull from low angles. Unlike clip
+   *  planes this never splits the ocean to the horizon. */
+  setCutaway(on: boolean): void;
+  updateCutaway(shipPos: THREE.Vector3, fwdX: number, fwdZ: number, cutPlane: THREE.Plane): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -107,8 +111,30 @@ float noise(vec2 p) {
              mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
 }
 
+uniform float uCutOn;
+uniform vec2 uShipPos; // world xz of the cutaway ship
+uniform vec2 uFwd; // unit fore-aft axis, world xz
+uniform vec2 uHalf; // half-length, half-beam of the footprint
+uniform vec4 uCutPlane; // xyz = normal, w = constant (THREE.Plane form)
+
 void main() {
   #include <clipping_planes_fragment>
+
+  // cutaway: open the sea over the hull and in a bounded wedge on the
+  // camera side of the cut, so you can see down to the true water level
+  if (uCutOn > 0.5) {
+    vec2 rel = vWorldPos.xz - uShipPos;
+    float along = dot(rel, uFwd);
+    float across = dot(rel, vec2(-uFwd.y, uFwd.x));
+    if (abs(along) < uHalf.x) {
+      bool inHole = abs(across) < uHalf.y;
+      bool nearCut =
+        abs(across) < uHalf.y * 4.5 &&
+        dot(vWorldPos, uCutPlane.xyz) + uCutPlane.w < 0.0;
+      if (inHole || nearCut) discard;
+    }
+  }
+
   vec3 N = normalize(vNormal);
   vec3 V = normalize(uCameraPos - vWorldPos);
   vec3 L = normalize(uSunDir);
@@ -172,6 +198,8 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
     vertexShader: VERT,
     fragmentShader: FRAG,
     clipping: true,
+    side: THREE.DoubleSide, // a submerged camera must see the surface above
+    // it, not a missing polygon that cuts straight to the skybox (playtest)
     uniforms: {
       uTime: { value: 0 },
       uWaveA: { value: a },
@@ -185,6 +213,11 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
       uFogDensity: { value: 0.0016 },
       uAmpTotal: { value: ampTotal },
       uCameraPos: { value: new THREE.Vector3() },
+      uCutOn: { value: 0 },
+      uShipPos: { value: new THREE.Vector2() },
+      uFwd: { value: new THREE.Vector2(1, 0) },
+      uHalf: { value: new THREE.Vector2(12.9, 3.7) },
+      uCutPlane: { value: new THREE.Vector4(0, 0, 1, 0) },
     },
   });
 
@@ -193,9 +226,18 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
 
   return {
     mesh,
-    setClipPlane(plane) {
-      mat.clippingPlanes = plane ? [plane] : null;
-      mat.needsUpdate = true;
+    setCutaway(on) {
+      mat.uniforms.uCutOn.value = on ? 1 : 0;
+    },
+    updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
+      (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);
+      (mat.uniforms.uFwd.value as THREE.Vector2).set(fwdX, fwdZ);
+      (mat.uniforms.uCutPlane.value as THREE.Vector4).set(
+        cutPlane.normal.x,
+        cutPlane.normal.y,
+        cutPlane.normal.z,
+        cutPlane.constant,
+      );
     },
     update(time, cameraPos) {
       mat.uniforms.uTime.value = time;

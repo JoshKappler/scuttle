@@ -28,7 +28,13 @@
       #compass .ring { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(8,22,28,0.72) 58%, rgba(8,22,28,0.88)); border: 1px solid rgba(212,160,23,0.4); }
       #compass .rose { position: absolute; inset: 6px; border-radius: 50%; transition: transform 0.1s linear; }
       #compass .rose .n { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); color: #e3b341; font: 700 13px Georgia, serif; }
-      #compass .tick { position: absolute; left: 50%; top: 50%; width: 2px; height: 8px; background: rgba(207,224,216,0.5); transform-origin: 1px 0; }
+      #compass .rose .pt { position: absolute; color: #cfe0d8; font: 700 11px Georgia, serif; }
+      #compass .rose .e { top: 50%; right: 3px; transform: translateY(-50%); }
+      #compass .rose .s { bottom: 2px; left: 50%; transform: translateX(-50%); }
+      #compass .rose .w { top: 50%; left: 3px; transform: translateY(-50%); }
+      #compass .tick { position: absolute; left: 50%; top: 50%; width: 2px; height: 7px; background: rgba(207,224,216,0.45); transform-origin: 1px 0; margin-left: -1px; }
+      #hdg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #e9e1cd; font: 700 14px Georgia, serif; text-shadow: 0 1px 4px #000; }
+      #underwater { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity 0.25s; background: radial-gradient(ellipse at center, rgba(12,58,68,0.45), rgba(5,30,38,0.75)); }
       #compass .marker { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-origin: 0 0; }
       #compass .marker .dot { position: absolute; left: -4px; top: -38px; width: 8px; height: 8px; border-radius: 50%; }
       #compass .enemy .dot { background: #d64541; box-shadow: 0 0 6px #d64541; }
@@ -61,10 +67,21 @@
     <div id="gold-panel" class="panel">⛀ <span id="gold">0</span></div>
     <div id="compass">
       <div class="ring"></div>
-      <div class="rose" id="rose"><div class="n">N</div></div>
+      <div class="rose" id="rose">
+        <div class="n">N</div>
+        <div class="pt e">E</div>
+        <div class="pt s">S</div>
+        <div class="pt w">W</div>
+        <div class="tick" style="transform: rotate(45deg) translateY(-38px)"></div>
+        <div class="tick" style="transform: rotate(135deg) translateY(-38px)"></div>
+        <div class="tick" style="transform: rotate(225deg) translateY(-38px)"></div>
+        <div class="tick" style="transform: rotate(315deg) translateY(-38px)"></div>
+      </div>
+      <div id="hdg">0°</div>
       <div class="marker enemy" id="enemy-marker"><div class="dot"></div></div>
       <div class="marker wind" id="wind-marker"><div class="dot"></div></div>
     </div>
+    <div id="underwater"></div>
     <div id="toast"></div>
     <div id="hints"></div>
     <div id="banner"></div>

@@ -13,6 +13,7 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
+import { muzzleWorld } from "./game/gunnery";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -43,6 +44,10 @@ async function main() {
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
+  // rigged CC0 pirates (Quaternius) — loaded up front so every Pirate can be
+  // built synchronously; falls back to procedural bodies if it fails
+  const { loadPirateLibrary } = await import("./render/pirateModel");
+  await loadPirateLibrary();
   const world = new GameWorld(physics, waves, scene);
 
   // spawn the sloop just above the surface; it splashes down and settles
@@ -82,6 +87,9 @@ async function main() {
   let onFoot = false; // derived each step: !atWheel
   let firstPerson = false;
   const wheelWorld = new THREE.Vector3();
+  const ladderWorld = new THREE.Vector3();
+  const climbTarget = new THREE.Vector3();
+  let ladderHinted = false;
   const banner = document.getElementById("banner")!;
   let gameOver = false;
   let plugChannel = 0; // seconds remaining on the current plank repair
@@ -106,11 +114,25 @@ async function main() {
       boarding.toggleGrapple();
     }
 
-    // wheel position in world (for E proximity + pinning)
+    // wheel + ladder positions in world (for E proximity)
     sloop.localToWorld(sloopVisual.wheelLocal, wheelWorld);
+    sloop.localToWorld(sloopVisual.ladderLocal, ladderWorld);
 
-    // E: take/leave the wheel when close to it; otherwise it's the
-    // interact key (chest) handled by the boarding system below
+    // swimming near the stern ladder? surface the hint
+    if (boarding.player && boarding.player.swimming) {
+      const pp = boarding.player.body.translation();
+      const nearLadder =
+        Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4;
+      if (nearLadder && !ladderHinted) {
+        boarding.message = "press E — stern ladder";
+        ladderHinted = true;
+      } else if (!nearLadder) {
+        ladderHinted = false;
+      }
+    }
+
+    // E: take/leave the wheel when close to it; climb the stern ladder when
+    // swimming beside it; otherwise it's the interact key (chest)
     let interact = false;
     if (controls.interactPressed) {
       controls.interactPressed = false;
@@ -125,6 +147,13 @@ async function main() {
         if (Math.hypot(pp.x - wheelWorld.x, pp.y - wheelWorld.y, pp.z - wheelWorld.z) < 2.4) {
           atWheel = true;
           boarding.message = "you take the wheel";
+        } else if (
+          boarding.player.swimming &&
+          Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4
+        ) {
+          boarding.player.ship = sloop;
+          boarding.player.teleport(sloop.localToWorld([2.6, 5.3, 4.0], climbTarget));
+          boarding.message = "you haul yourself up the stern ladder";
         } else {
           interact = true;
         }
@@ -180,12 +209,9 @@ async function main() {
     if (controls.firePressed && !onFoot) {
       controls.firePressed = false;
       if (plugChannel <= 0) {
-        // fire the broadside on the side the camera looks across
-        const tr = sloop.body.translation();
-        const rot = sloop.body.rotation();
-        const inv = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w).invert();
-        const rel = new THREE.Vector3(tr.x - camera.position.x, 0, tr.z - camera.position.z).applyQuaternion(inv);
-        cannons.fireBroadside(sloop, rel.z >= 0 ? 1 : -1, t, controls.elevationDeg);
+        // fire the broadside on the side the camera looks across, with the
+        // player's laid elevation + traverse
+        cannons.fireBroadside(sloop, aimSide(), t, controls.elevationDeg, controls.traverseDeg);
       }
     }
     cannons.update(dt, t, waves, [enemy]);
@@ -232,9 +258,33 @@ async function main() {
   new ResizeObserver(fitViewport).observe(app);
 
   // cutaway damage view (X): clips the near half of each hull so compartment
-  // water levels read at a glance — flooding legibility is a core spec feature
+  // water levels read at a glance — flooding legibility is a core spec feature.
+  // The ocean gets a box hole around the PLAYER ship (one hole is all the
+  // clip-plane intersection can express; the enemy hull is inspected from afar)
   let cutaway = false;
   const cutPlane = new THREE.Plane();
+  // dark abyss disc under the ship: the cutaway trench shows "the depths"
+  // instead of glowing white skybox-below-the-sea
+  const abyss = new THREE.Mesh(
+    new THREE.CircleGeometry(70, 40),
+    new THREE.MeshBasicMaterial({ color: 0x04181f }),
+  );
+  abyss.geometry.rotateX(-Math.PI / 2);
+  abyss.position.y = -9;
+  abyss.visible = false;
+  scene.add(abyss);
+  const holeQ = new THREE.Quaternion();
+  const holeFwd = new THREE.Vector3();
+  const holeCenter = new THREE.Vector3();
+  const updateHole = () => {
+    const rotS = sloop.body.rotation();
+    holeQ.set(rotS.x, rotS.y, rotS.z, rotS.w);
+    holeFwd.set(1, 0, 0).applyQuaternion(holeQ);
+    holeFwd.y = 0;
+    holeFwd.normalize();
+    sloop.localToWorld([13, 2, 4], holeCenter);
+    ocean.updateCutaway(holeCenter, holeFwd.x, holeFwd.z, cutPlane);
+  };
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
     if (e.code === "KeyV" && boarding.player) {
@@ -244,7 +294,8 @@ async function main() {
     if (e.code === "KeyX") {
       cutaway = !cutaway;
       for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
-      ocean.setClipPlane(cutaway ? cutPlane : null);
+      ocean.setCutaway(cutaway);
+      abyss.visible = cutaway;
     }
   });
 
@@ -256,6 +307,8 @@ async function main() {
     cannons,
     captain,
     boarding,
+    controls,
+    camera,
     get character() {
       return character;
     },
@@ -278,15 +331,19 @@ async function main() {
     gunSub: $("gun-sub"),
     gold: $("gold"),
     rose: $("rose"),
+    hdg: $("hdg"),
     enemyMarker: $("enemy-marker"),
     windMarker: $("wind-marker"),
     toast: $("toast"),
     hints: $("hints"),
+    underwater: $("underwater"),
   };
   let lastToast = "";
   let toastTimer = 0;
   const hdgQ = new THREE.Quaternion();
   const hdgV = new THREE.Vector3();
+  let wasUnder = false;
+  const underFog = new THREE.FogExp2(0x0c3a44, 0.055);
 
   function updateHud(dt: number, tr: { x: number; y: number; z: number }): void {
     // smooth elements every frame
@@ -295,6 +352,7 @@ async function main() {
     hdgV.set(1, 0, 0).applyQuaternion(hdgQ);
     const heading = Math.atan2(hdgV.z, hdgV.x); // world yaw of the bow
     hudEls.rose.style.transform = `rotate(${(-heading * 180) / Math.PI}deg)`;
+    hudEls.hdg.textContent = `${Math.round(((heading * 180) / Math.PI + 360) % 360)}°`;
     const et = enemy.body.translation();
     const enemyBearing = Math.atan2(et.z - tr.z, et.x - tr.x) - heading;
     hudEls.enemyMarker.style.transform = `rotate(${(enemyBearing * 180) / Math.PI}deg)`;
@@ -344,15 +402,18 @@ async function main() {
       hudEls.gunStatus.textContent = "GUNS READY";
       hudEls.gunStatus.className = "ready";
     }
-    hudEls.gunSub.textContent = `elevation ${controls.elevationDeg.toFixed(1)}°${controls.aiming ? " — AIMING" : ""}`;
+    hudEls.gunSub.textContent =
+      `elev ${controls.elevationDeg.toFixed(1)}° · trav ${controls.traverseDeg >= 0 ? "+" : ""}${controls.traverseDeg.toFixed(0)}°` +
+      `${controls.aiming ? " — AIMING" : ""}`;
     hudEls.gold.textContent = String(boarding.gold);
 
     hudEls.hpRow.style.display = onFoot ? "flex" : "none";
     if (onFoot) hudEls.hpBar.style.width = `${(boarding.playerHp / 5) * 100}%`;
 
+    const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
     hudEls.hints.textContent = onFoot
-      ? `WASD move · Space jump · F slash · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : "W/S sails · A/D rudder · F fire · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway";
+      ? `${lockHint}WASD move · Space jump · F slash · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
+      : `${lockHint}W/S sails · A/D rudder · F fire · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
@@ -374,44 +435,39 @@ async function main() {
     aimLines.push({ line, pos });
   }
 
+  // which broadside the camera is looking ACROSS — from the camera's look
+  // direction, so it works identically in first person and orbit views
+  const lookV = new THREE.Vector3();
   function aimSide(): 1 | -1 {
-    const tr2 = sloop.body.translation();
     const rot2 = sloop.body.rotation();
     const inv = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w).invert();
-    const rel = new THREE.Vector3(tr2.x - camera.position.x, 0, tr2.z - camera.position.z).applyQuaternion(inv);
-    return rel.z >= 0 ? 1 : -1;
+    camera.getWorldDirection(lookV).applyQuaternion(inv);
+    return lookV.z >= 0 ? 1 : -1;
   }
 
+  const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
   function updateAimArc(): void {
     if (!controls.aiming || onFoot) {
       for (const a of aimLines) a.line.visible = false;
       return;
     }
-    const rot2 = sloop.body.rotation();
-    const q2 = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w);
     const side = aimSide();
-    const ports = sloop.build.cannonPorts.filter((p) => p.side === side);
-    const el = (controls.elevationDeg * Math.PI) / 180;
+    const portIdxs: number[] = [];
+    sloop.build.cannonPorts.forEach((p, i) => {
+      if (p.side === side) portIdxs.push(i);
+    });
 
     for (let pi = 0; pi < aimLines.length; pi++) {
       const arc = aimLines[pi];
-      const port = ports[pi];
-      if (!port) {
+      if (pi >= portIdxs.length) {
         arc.line.visible = false;
         continue;
       }
       arc.line.visible = true;
-      const muzzle = sloop.localToWorld(
-        [(port.x + 0.5) * 0.25, (port.y + 0.5) * 0.25, (port.z + 0.5 + side * 1.2) * 0.25],
-        new THREE.Vector3(),
-      );
-      const dir = new THREE.Vector3(0, 0, side).applyQuaternion(q2);
-      dir.y = 0;
-      dir.normalize();
-      dir.y = Math.tan(el);
-      dir.normalize();
-      const v = dir.multiplyScalar(55);
-      const p = muzzle.clone();
+      // arc starts at the barrel TIP and follows the true firing solution
+      muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
+      const v = arcMuzzle.dir.clone().multiplyScalar(55);
+      const p = arcMuzzle.pos.clone();
       const step = 0.06;
       for (let i = 0; i < ARC_PTS; i++) {
         arc.pos[i * 3] = p.x;
@@ -463,7 +519,9 @@ async function main() {
       world.simTime,
       sailing.rudder,
       sailing.sailSet,
-      controls.aiming && !onFoot ? { side: aimSide(), elevationDeg: controls.elevationDeg } : null,
+      controls.aiming && !onFoot
+        ? { side: aimSide(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
+        : null,
     );
     enemyVisual.animate(world.simTime, captain.sailing.rudder, captain.sailing.sailSet);
 
@@ -481,8 +539,10 @@ async function main() {
         pt.z + Math.sin(yaw) * Math.cos(pitch),
       );
     } else {
-      // bird's-eye orbit on the ship; your pirate stays visible on deck
-      controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y + 1.5, tr.z));
+      // bird's-eye orbit on the ship's CENTER (the body origin is the grid
+      // corner, 13 m aft — orbiting that made every view sit off-center)
+      const c0 = sloop.body.worldCom();
+      controls.updateCamera(camera, new THREE.Vector3(c0.x, c0.y + 2.5, c0.z));
     }
 
     // spyglass zoom (Q)
@@ -492,11 +552,25 @@ async function main() {
       camera.updateProjectionMatrix();
     }
 
+    // submerged camera: the sea closes over the lens — teal murk + dense fog
+    // instead of a clean cut to the skybox (playtest round 4)
+    const camUnder =
+      camera.position.y < surfaceHeight(waves, camera.position.x, camera.position.z, world.simTime) - 0.05;
+    if (camUnder !== wasUnder) {
+      wasUnder = camUnder;
+      hudEls.underwater.style.opacity = camUnder ? "1" : "0";
+      scene.fog = camUnder ? underFog : null;
+    }
+
     if (cutaway) {
-      // hide the half of each hull facing the camera
+      // hide the half of each hull facing the camera; keep the ocean trench
+      // tracking the hull footprint
       const com = sloop.body.worldCom();
       const n = new THREE.Vector3(com.x - camera.position.x, 0, com.z - camera.position.z).normalize();
       cutPlane.setFromNormalAndCoplanarPoint(n, new THREE.Vector3(com.x, com.y, com.z));
+      updateHole();
+      abyss.position.x = com.x;
+      abyss.position.z = com.z;
     }
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);

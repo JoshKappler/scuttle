@@ -99,18 +99,36 @@ export function buildSloop(): ShipBuild {
     }
   }
 
-  // bulwark rail: three cells (~0.75 m, waist-high) of PINE above the deck
-  // edge — you should not be able to simply step off a fighting ship
+  // cannon ports are decided BEFORE the rail so the fence can leave
+  // embrasures for the barrels (playtest: "cannon barrels clipping directly
+  // through the railing … should be slotted in between gaps in the fence")
+  const portXs = [0.3, 0.45, 0.6, 0.75].map((f) => x0 + Math.round(L * f));
+
+  // bulwark as a FENCE, not a solid wall: continuous toe course at the deck,
+  // posts every third cell, continuous cap rail at chest height. The 0.5 m
+  // gaps read as railing but are too narrow to fall through (capsule ⌀0.56).
   for (let x = 0; x < nx; x++) {
     for (let z = 0; z < nz; z++) {
       if (!inside(x, deckY, z)) continue;
       const onEdge =
         !inside(x - 1, deckY, z) || !inside(x + 1, deckY, z) || !inside(x, deckY, z - 1) || !inside(x, deckY, z + 1);
-      if (onEdge) {
-        grid.set(x, deckY + 1, z, PINE);
+      if (!onEdge) continue;
+      // embrasure: leave the rail fully open around each cannon port so the
+      // barrel pokes through a real gap in the fence
+      const nearPort = portXs.some((px) => Math.abs(x - px) <= 1);
+      if (nearPort) continue;
+      grid.set(x, deckY + 1, z, PINE); // toe course (waterway)
+      grid.set(x, deckY + 4, z, PINE); // cap rail, chest-high
+      // posts: every third cell on straight runs, and at every staircase
+      // corner of the curved bow/stern taper — there the rail ring steps
+      // diagonally, and a cap cell without a post under it would float
+      // (6-connectivity: it would sever as debris on the first hit anywhere)
+      const corner =
+        (!inside(x - 1, deckY, z) || !inside(x + 1, deckY, z)) &&
+        (!inside(x, deckY, z - 1) || !inside(x, deckY, z + 1));
+      if (corner || (x + Math.round(Math.abs(z - cz))) % 3 === 0) {
         grid.set(x, deckY + 2, z, PINE);
         grid.set(x, deckY + 3, z, PINE);
-        grid.set(x, deckY + 4, z, PINE); // a full meter — chest-high rail
       }
     }
   }
@@ -154,8 +172,8 @@ export function buildSloop(): ShipBuild {
     }
   }
 
-  // cannon ports: 4 per side, midship spread, at deck level on the bulwark line
-  const portXs = [0.3, 0.45, 0.6, 0.75].map((f) => x0 + Math.round(L * f));
+  // cannon ports: 4 per side, midship spread, at deck level on the bulwark
+  // line (portXs declared above, where the fence leaves embrasures for them)
   const cannonPorts: ShipBuild["cannonPorts"] = [];
   for (const px of portXs) {
     const t = stationT(px);
