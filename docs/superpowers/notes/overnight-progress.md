@@ -61,14 +61,34 @@ R plank repairs (4 s channel), P pump, win/lose banners + Enter restart.
 Verified live: AI closed from 104 m, maneuvered abeam, landed broadsides;
 player flooded to 20 % and was plugged + pumped dry. 69 tests green.
 
-## M4+ (next plan docs, not started)
+## M4 core DONE (tag `m4-boarding`) + playtest polish
 
-Boarding + melee (weapons/armor, ragdolls, blood), gold chests (physical,
-carryable), swimming/diving + wreck salvage, sharks, ship-stealing, ports +
-upgrades + parrot, roguelite run + leaderboard + daily seed. Spec:
-`docs/superpowers/specs/2026-06-12-scuttle-design.md` (user-approved).
-Start M4 from the char-spike findings (`notes/char-spike.md`): per-chunk
-trimesh colliders rebuilt on damage, swim state, lateral-drift fix.
+Post-playtest polish: visible cannons at ports, 2x sail speed (~20 kn full
+sail), bigger seas + whitecaps, bow wake spray, hatch coamings raised 0.55 m.
+M4: `game/crew.ts` (Pirate: kinematic capsule + deck-carry + swim-ish state +
+ragdoll-lite death), `game/boarding.ts` (enemy crew AI, slash/kick combat,
+grapple via anchored pull forces, physical gold chest carry/bank ±500),
+ship deck trimesh colliders rebuilt on damage. On-foot mode: T toggle,
+WASD/Space/F slash/C kick/E grab. Win: bank the chest + clear the deck, or
+sink her (forfeits most gold). All verified via staged browser telemetry.
+
+## Remaining from spec (M5+)
+
+Weapons/armor loadouts + swim-weight rules, muskets, first-person toggle,
+swimming/diving + wreck salvage, sharks, ship-stealing, ports + upgrade
+tree + parrot + crew hiring, roguelite voyage chain + leaderboard + daily
+seed, real character models (Quaternius CC0), sound. Spec:
+`docs/superpowers/specs/2026-06-12-scuttle-design.md`.
+
+## M4 balance/feel debt
+
+- Enemy crew don't pursue across ships until grappled/close (by design) but
+  also never retreat; no telegraphs on slashes (cd-only balance).
+- Kick is displacement-burst, not impulse — works but reads subtle; consider
+  brief ragdoll on kick for comedy/physics payoff.
+- Carried chest renders hoisted overhead (cartoony per spec) — could swap to
+  two-handed front carry with slow-walk anim later.
+- Crew don't ride ship teleports (irrelevant in production; affects tests).
 
 ## Known rough edges / tuning debt
 
