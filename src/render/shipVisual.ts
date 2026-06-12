@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
-import { barrelDirLocal } from "../game/gunnery";
+import { barrelDirLocal, setMuzzleGeometry } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
 import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
@@ -256,6 +256,7 @@ export class ShipVisual {
    *  resolves, simple cylinder barrels stand in. */
   private static cannonGltf: THREE.Group | null = null;
   private static cannonLoading = false;
+  private static muzzleMeasured = false;
   private static onCannonReady: (() => void)[] = [];
   private static loadCannon(cb: () => void): void {
     if (ShipVisual.cannonGltf) {
@@ -452,8 +453,35 @@ export class ShipVisual {
         if (protoSize.x >= protoSize.z) holder.rotation.y = -Math.PI / 2; // long axis → +z
         holder.scale.setScalar(scale);
         const hb = new THREE.Box3().setFromObject(holder);
-        holder.position.y = -0.62 - hb.min.y; // wheels on the deck
-        holder.position.z = -(hb.min.z + hb.max.z) / 2 + 0.35; // breech in, muzzle out
+        const yOff = -0.62 - hb.min.y; // wheels on the deck
+        const zOff = -(hb.min.z + hb.max.z) / 2 + 0.35; // breech in, muzzle out
+        // calibrate the gunnery math to the VISIBLE bore, once: average the
+        // vertices at the muzzle face (holder still parentless — the same
+        // frame hb was measured in) to find the bore center, so the preview
+        // arc starts inside the barrel — not "slightly below" it (round 6)
+        if (!ShipVisual.muzzleMeasured) {
+          ShipVisual.muzzleMeasured = true;
+          let ySum = 0;
+          let n = 0;
+          const v = new THREE.Vector3();
+          holder.traverse((o) => {
+            const mesh = o as THREE.Mesh;
+            if (!mesh.isMesh) return;
+            const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
+            for (let i = 0; i < pos.count; i++) {
+              v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+              if (v.z > hb.max.z - 0.18) {
+                ySum += v.y;
+                n++;
+              }
+            }
+          });
+          if (n > 0) {
+            setMuzzleGeometry(hb.max.z + zOff - 0.04, ySum / n + yOff);
+          }
+        }
+        holder.position.y = yOff;
+        holder.position.z = zOff;
         b.mesh.add(holder);
       }
     });

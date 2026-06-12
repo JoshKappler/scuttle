@@ -13,7 +13,11 @@ import type { Ship } from "./ship";
 const MUZZLE_SPEED = 55; // m/s
 const BALL_DRAG = 0.006;
 const MAX_BALLS = 64;
-const STAGGER = 0.11; // s between barrels in a broadside
+// no stagger: every loaded gun fires the tick you click. Staggered barrels
+// launched later balls from a muzzle that had MOVED since the preview was
+// drawn — "it's not really firing along where the trajectory line is"
+// (playtest round 6: "fire all simultaneously with the left click")
+const STAGGER = 0;
 const BLAST_RADIUS_VOX = 1.7;
 
 interface Ball {
@@ -38,7 +42,7 @@ export class Cannons {
   /** Per-port reload clocks (simTime when that gun is loaded again) —
    *  firing one gun from the deck must not lock the whole battery. */
   private portReloadAt = new Map<string, number>();
-  static RELOAD = 6; // s
+  static RELOAD = 6; // s — player battery; AI crews pass a slower reload
 
   private portKey(ship: Ship, portIndex: number): string {
     return `${this.shipId(ship)}:${portIndex}`;
@@ -80,6 +84,7 @@ export class Cannons {
   constructor(
     scene: THREE.Scene,
     private effects: Effects,
+    private reloadS = Cannons.RELOAD,
   ) {
     const geo = new THREE.SphereGeometry(0.16, 8, 8);
     const mat = new THREE.MeshStandardMaterial({ color: 0x1a1a1c, roughness: 0.5, metalness: 0.6 });
@@ -104,7 +109,7 @@ export class Cannons {
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
       if (ship.build.cannonPorts[p].side !== side) continue;
       if (this.portReload(ship, p, simTime) > 0) continue;
-      this.portReloadAt.set(this.portKey(ship, p), simTime + Cannons.RELOAD);
+      this.portReloadAt.set(this.portKey(ship, p), simTime + this.reloadS);
       this.pendingShots.push({
         delay: i * STAGGER,
         side,
@@ -116,21 +121,6 @@ export class Cannons {
       i++;
     }
     return i > 0;
-  }
-
-  /** Fire a single gun (deck gunnery: F beside a cannon). */
-  fireOne(ship: Ship, portIndex: number, simTime: number, elevationDeg = 5, traverseDeg = 0): boolean {
-    if (this.portReload(ship, portIndex, simTime) > 0) return false;
-    this.portReloadAt.set(this.portKey(ship, portIndex), simTime + Cannons.RELOAD);
-    this.pendingShots.push({
-      delay: 0,
-      side: ship.build.cannonPorts[portIndex].side,
-      portIndex,
-      owner: ship,
-      elevation: elevationDeg,
-      traverse: traverseDeg,
-    });
-    return true;
   }
 
   /** Advance projectiles + pending shots one fixed step. */

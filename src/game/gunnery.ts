@@ -11,7 +11,18 @@ import type { Ship } from "./ship";
  */
 export const BARREL_PIVOT_UP = 0.62; // m above the deck surface (trunnion height)
 export const BARREL_INBOARD = 2.6; // voxels the carriage sits inboard of the port cell
-export const BARREL_TIP = 1.6; // m from the trunnion pivot to the muzzle face
+
+// Muzzle geometry is MEASURED from the loaded cannon model (shipVisual scans
+// the vertices at the muzzle face and reports bore height + tip distance in
+// pivot space). Defaults match the cylinder placeholder; once the GLB loads,
+// the preview arc and the ball genuinely leave the VISIBLE bore (playtest
+// round 6: "the trajectory line originates from slightly below the barrel").
+let MUZZLE_TIP = 1.6; // m from the pivot origin to the muzzle face, along the bore
+let MUZZLE_UP = 0.0; // bore height above the pivot origin
+export function setMuzzleGeometry(tipM: number, upM: number): void {
+  MUZZLE_TIP = tipM;
+  MUZZLE_UP = upM;
+}
 
 export interface MuzzleOut {
   pos: THREE.Vector3;
@@ -75,7 +86,8 @@ export function muzzleWorld(
   const port = ship.build.cannonPorts[portIndex];
   barrelDirLocal(port.side, elevationDeg, traverseDeg, out.dir);
   pivotLocal(ship, portIndex, out.pos);
-  out.pos.addScaledVector(out.dir, BARREL_TIP);
+  out.pos.y += MUZZLE_UP;
+  out.pos.addScaledVector(out.dir, MUZZLE_TIP);
   const rot = ship.body.rotation();
   tmpQ.set(rot.x, rot.y, rot.z, rot.w);
   out.pos.applyQuaternion(tmpQ);

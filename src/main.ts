@@ -13,7 +13,7 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
-import { muzzleWorld, pivotLocal, velocityAtPoint } from "./game/gunnery";
+import { muzzleWorld, velocityAtPoint } from "./game/gunnery";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -92,26 +92,6 @@ async function main() {
   let ladderHinted = false;
   const banner = document.getElementById("banner")!;
 
-  // index of the player-ship cannon within arm's reach of the captain
-  // (deck gunnery: fire and aim a single gun from beside it)
-  const gunTmpA = new THREE.Vector3();
-  const gunTmpB = new THREE.Vector3();
-  const nearestCannonIdx = (): number => {
-    if (!boarding.player) return -1;
-    const pp = boarding.player.body.translation();
-    let best = -1;
-    let bestD = 2.6;
-    for (let p = 0; p < sloop.build.cannonPorts.length; p++) {
-      pivotLocal(sloop, p, gunTmpA);
-      sloop.localToWorld([gunTmpA.x, gunTmpA.y, gunTmpA.z], gunTmpB);
-      const d = Math.hypot(gunTmpB.x - pp.x, gunTmpB.y - pp.y, gunTmpB.z - pp.z);
-      if (d < bestD) {
-        bestD = d;
-        best = p;
-      }
-    }
-    return best;
-  };
   let gameOver = false;
   let plugChannel = 0; // seconds remaining on the current plank repair
 
@@ -187,18 +167,18 @@ async function main() {
     sailing.apply(sloop, wind);
     if (!gameOver) captain.update(dt, t, waves, wind, sloop);
 
-    // F: broadside at the wheel; beside a gun on deck, fire THAT gun;
-    // otherwise it's a sword swing
+    // one action button (round 6): LMB fires the broadside while RMB-aiming
+    // — from the wheel, the deck, first or third person, all identically —
+    // and swings the sword on foot otherwise
     const mv = onFoot ? controls.footMove() : { x: 0, z: 0, jump: false };
     let slash = false;
-    if (onFoot && controls.firePressed) {
-      controls.firePressed = false;
-      const gi = nearestCannonIdx();
-      if (gi !== -1 && plugChannel <= 0) {
-        if (cannons.fireOne(sloop, gi, t, controls.elevationDeg, controls.traverseDeg)) {
-          boarding.message = "you touch off the gun!";
+    if (controls.lmbPressed) {
+      controls.lmbPressed = false;
+      if (controls.aiming) {
+        if (plugChannel <= 0 && !gameOver) {
+          cannons.fireBroadside(sloop, aimSide(), t, controls.elevationDeg, controls.traverseDeg);
         }
-      } else {
+      } else if (onFoot) {
         slash = boarding.canFight();
       }
     }
@@ -236,14 +216,6 @@ async function main() {
       sloop.pumpOn = !sloop.pumpOn;
     }
 
-    if (controls.firePressed && !onFoot) {
-      controls.firePressed = false;
-      if (plugChannel <= 0) {
-        // fire the broadside on the side the camera looks across, with the
-        // player's laid elevation + traverse
-        cannons.fireBroadside(sloop, aimSide(), t, controls.elevationDeg, controls.traverseDeg);
-      }
-    }
     cannons.update(dt, t, waves, [enemy]);
     debris.update(dt, t, waves);
     character?.update(dt, controls.cameraYaw());
@@ -434,7 +406,8 @@ async function main() {
       hudEls.gunStatus.textContent = "GUNS READY";
       hudEls.gunStatus.className = "ready";
     } else {
-      hudEls.gunStatus.textContent = `LOADING ${Math.round(ready2 * 4)}/4`;
+      const sideGuns = sloop.build.cannonPorts.filter((p) => p.side === aimSide()).length;
+      hudEls.gunStatus.textContent = `LOADING ${Math.round(ready2 * sideGuns)}/${sideGuns}`;
       hudEls.gunStatus.className = "";
     }
     hudEls.gunSub.textContent =
@@ -447,16 +420,20 @@ async function main() {
 
     const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
     hudEls.hints.textContent = onFoot
-      ? `${lockHint}WASD move · Space jump · F slash (fire beside a gun) · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : `${lockHint}W/S sails · A/D helm (holds where set) · F broadside · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway`;
+      ? `${lockHint}WASD move · Space jump · LMB slash · hold RMB aim guns + LMB fire · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
+      : `${lockHint}W/S sails · A/D helm (holds where set) · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
   // the aiming side (playtest: "all four cannons … should show their
   // trajectory as well and articulate")
   const ARC_PTS = 48;
+  const gunsPerSide = Math.max(
+    sloop.build.cannonPorts.filter((p) => p.side === 1).length,
+    sloop.build.cannonPorts.filter((p) => p.side === -1).length,
+  );
   const aimLines: { line: THREE.Line; pos: Float32Array }[] = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < gunsPerSide; i++) {
     const pos = new Float32Array(ARC_PTS * 3);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
@@ -483,18 +460,16 @@ async function main() {
   const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
   const arcVel = new THREE.Vector3();
   function updateAimArc(): void {
-    // at the wheel: the whole broadside; on deck beside a gun: that gun
-    let portIdxs: number[] = [];
+    // the WHOLE broadside, wherever you stand — looking across a side while
+    // holding RMB lays every gun on it (playtest round 6: "regardless of
+    // where you are standing on the ship, it should enter aiming mode for
+    // all cannons and then fire all simultaneously")
+    const portIdxs: number[] = [];
     if (controls.aiming && !gameOver) {
-      if (!onFoot) {
-        const side = aimSide();
-        sloop.build.cannonPorts.forEach((p, i) => {
-          if (p.side === side) portIdxs.push(i);
-        });
-      } else {
-        const gi = nearestCannonIdx();
-        if (gi !== -1) portIdxs = [gi];
-      }
+      const side = aimSide();
+      sloop.build.cannonPorts.forEach((p, i) => {
+        if (p.side === side) portIdxs.push(i);
+      });
     }
 
     for (let pi = 0; pi < aimLines.length; pi++) {
@@ -561,7 +536,7 @@ async function main() {
       world.simTime,
       sailing.rudder,
       sailing.sailSet,
-      controls.aiming && !onFoot
+      controls.aiming
         ? { side: aimSide(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
         : null,
     );
