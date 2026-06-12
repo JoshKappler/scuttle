@@ -347,20 +347,47 @@ export function buildBrig(): ShipBuild {
     const t = stationT(x);
     if (t < 0.12 || t > 0.95) continue;
     const by = keelY(t) + 1;
-    for (const z of ballastZ(3)) {
+    for (const z of ballastZ(4)) {
       if (inside(x, by, z) && grid.get(x, by, z) === EMPTY) grid.set(x, by, z, IRON);
     }
-    if (t < 0.18 || t > 0.9) continue;
-    for (const z of ballastZ(3)) {
+    if (t < 0.16 || t > 0.92) continue;
+    for (const z of ballastZ(4)) {
       if (inside(x, by + 1, z) && grid.get(x, by + 1, z) === EMPTY) grid.set(x, by + 1, z, IRON);
     }
-    if (t < 0.28 || t > 0.82) continue;
-    for (const z of ballastZ(2)) {
+    if (t < 0.24 || t > 0.86) continue;
+    for (const z of ballastZ(3)) {
       if (inside(x, by + 2, z) && grid.get(x, by + 2, z) === EMPTY) grid.set(x, by + 2, z, IRON);
     }
-    if (t < 0.38 || t > 0.72) continue;
-    for (const z of ballastZ(1)) {
+    if (t < 0.34 || t > 0.76) continue;
+    for (const z of ballastZ(2)) {
       if (inside(x, by + 3, z) && grid.get(x, by + 3, z) === EMPTY) grid.set(x, by + 3, z, IRON);
+    }
+    // tiers 5-6 read as stores/shot lockers: the brig needs ~530 t to float
+    // at the belt like the round-5 reference cutaways
+    if (t < 0.3 || t > 0.8) continue;
+    for (const z of ballastZ(3)) {
+      if (inside(x, by + 4, z) && grid.get(x, by + 4, z) === EMPTY) grid.set(x, by + 4, z, IRON);
+    }
+    if (t < 0.4 || t > 0.7) continue;
+    for (const z of ballastZ(2)) {
+      if (inside(x, by + 5, z) && grid.get(x, by + 5, z) === EMPTY) grid.set(x, by + 5, z, IRON);
+    }
+  }
+  // shot lockers + water casks amidships (tiers 7-8): the last ~150 t that
+  // put the waterline at the belt — all still well below it, so the COM
+  // stays deep and she stiffens rather than tips
+  for (let x = 0; x < nx; x++) {
+    const t = stationT(x);
+    const by = keelY(t) + 1;
+    if (t >= 0.22 && t <= 0.86) {
+      for (const z of ballastZ(4)) {
+        if (inside(x, by + 6, z) && grid.get(x, by + 6, z) === EMPTY) grid.set(x, by + 6, z, IRON);
+      }
+    }
+    if (t >= 0.32 && t <= 0.78) {
+      for (const z of ballastZ(3)) {
+        if (inside(x, by + 7, z) && grid.get(x, by + 7, z) === EMPTY) grid.set(x, by + 7, z, IRON);
+      }
     }
   }
 
