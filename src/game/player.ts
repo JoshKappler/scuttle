@@ -12,8 +12,14 @@ export class PlayerControls {
   private dist = 22;
   private dragging = false;
 
+  /** Set on KeyF keydown; cleared by whoever consumes the shot. */
+  firePressed = false;
+
   constructor(dom: HTMLElement) {
-    window.addEventListener("keydown", (e) => this.keys.add(e.code));
+    window.addEventListener("keydown", (e) => {
+      this.keys.add(e.code);
+      if (e.code === "KeyF") this.firePressed = true;
+    });
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
     dom.addEventListener("mousedown", () => (this.dragging = true));
     window.addEventListener("mouseup", () => (this.dragging = false));

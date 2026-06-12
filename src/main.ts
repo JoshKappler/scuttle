@@ -10,6 +10,8 @@ import { Ship } from "./game/ship";
 import { GameWorld } from "./game/world";
 import { SailingController, type Wind } from "./game/sailing";
 import { PlayerControls } from "./game/player";
+import { Cannons } from "./game/cannons";
+import { Effects } from "./render/effects";
 
 async function main() {
   const app = document.getElementById("app")!;
@@ -45,14 +47,40 @@ async function main() {
   const sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
 
+  // practice hulk: an anchored sister ship downwind to shoot at
+  const hulkBuild = buildSloop();
+  const hulkVisual = new ShipVisual(hulkBuild);
+  const hulk = new Ship(physics, hulkBuild, hulkVisual, {
+    x: -9 + waves[0].dirX * 70,
+    y: -1.2,
+    z: -3 + waves[0].dirZ * 70,
+  });
+  world.addShip(hulk);
+
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
   const sailing = new SailingController();
   const controls = new PlayerControls(renderer.domElement);
 
-  world.onFixedStep = (_t, dt) => {
+  const effects = new Effects();
+  scene.add(effects.points);
+  const cannons = new Cannons(scene, effects);
+
+  world.onFixedStep = (t, dt) => {
     controls.updateSailing(sailing, dt);
     sailing.apply(sloop, wind);
+
+    if (controls.firePressed) {
+      controls.firePressed = false;
+      // fire the broadside facing the hulk
+      const tr = sloop.body.translation();
+      const rot = sloop.body.rotation();
+      const inv = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w).invert();
+      const ht = hulk.body.translation();
+      const rel = new THREE.Vector3(ht.x - tr.x, 0, ht.z - tr.z).applyQuaternion(inv);
+      cannons.fireBroadside(sloop, rel.z >= 0 ? 1 : -1, t);
+    }
+    cannons.update(dt, t, waves, [hulk]);
   };
 
   window.addEventListener("resize", () => {
@@ -61,12 +89,16 @@ async function main() {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
+  // dev console handle (also used by Playwright-driven verification)
+  (window as unknown as Record<string, unknown>).DEBUG = { sloop, hulk, world, cannons };
+
   const clock = new THREE.Clock();
   let hudTimer = 0;
 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
     world.step(dt);
+    effects.update(dt);
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
@@ -88,7 +120,7 @@ async function main() {
         `${kn} kn   sails ${(sailing.sailSet * 100).toFixed(0)}%   wind ${sailing.angleOffWind.toFixed(0)}° off bow\n` +
         `roll ${THREE.MathUtils.radToDeg(e.x).toFixed(1)}°  pitch ${THREE.MathUtils.radToDeg(e.z).toFixed(1)}°  ` +
         `draft ${sloop.submergedFrac.toFixed(2)}\n` +
-        `W/S sails  A/D rudder  drag orbit  wheel zoom`;
+        `W/S sails  A/D rudder  F broadside  drag orbit  wheel zoom`;
     }
   });
 }

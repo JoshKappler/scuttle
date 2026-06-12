@@ -3,6 +3,8 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import { VOXEL_SIZE, WATER_DENSITY } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeProbes, probeForce, submergedFraction, type Probe } from "../sim/buoyancy";
+import { sphereCells } from "../sim/ballistics";
+import { IRON } from "../sim/materials";
 import type { ShipBuild } from "../sim/shipwright";
 import type { ShipVisual } from "../render/shipVisual";
 import type { Physics } from "./physics";
@@ -148,6 +150,47 @@ export class Ship {
     const rot = this.body.rotation();
     this.visual.group.position.set(tr.x, tr.y, tr.z);
     this.visual.group.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+  }
+
+  /**
+   * Remove voxels in a blast radius around a hit cell. Returns the number of
+   * cells destroyed. Mass properties and buoyancy probes are recomputed so
+   * handling and flotation genuinely change with damage.
+   */
+  applyDamage(cell: [number, number, number], radiusVox: number): number {
+    const grid = this.build.grid;
+    let removed = 0;
+    for (const [x, y, z] of sphereCells(cell, radiusVox)) {
+      const mat = grid.get(x, y, z);
+      if (mat === 0) continue;
+      if (mat === IRON) {
+        const d = Math.hypot(x - cell[0], y - cell[1], z - cell[2]);
+        if (d > radiusVox * 0.55) continue; // iron shrugs off the blast fringe
+      }
+      grid.remove(x, y, z);
+      removed++;
+    }
+    if (removed > 0) this.recomputeMassProperties();
+    return removed;
+  }
+
+  /** Refresh rapier mass props + buoyancy probes from the current grid. */
+  recomputeMassProperties(): void {
+    const grid = this.build.grid;
+    const mass = Math.max(grid.totalMass(), 1);
+    const com = grid.centerOfMass();
+    const [ix, iy, iz] = this.inertia;
+    // rescale the box inertia with the new mass (shape change is second-order)
+    const scale = mass / Math.max(this.body.mass(), 1);
+    this.inertia = [ix * scale, iy * scale, iz * scale];
+    this.body.setAdditionalMassProperties(
+      mass,
+      { x: com[0], y: com[1], z: com[2] },
+      { x: this.inertia[0], y: this.inertia[1], z: this.inertia[2] },
+      { x: 0, y: 0, z: 0, w: 1 },
+      true,
+    );
+    this.probes = makeProbes(grid, this.build.compartments);
   }
 
   /** World-space position of the ship-local point (meters). */
