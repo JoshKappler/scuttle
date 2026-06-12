@@ -212,6 +212,8 @@ export class ShipVisual {
   private lastAnimT = 0;
   /** Local position of the ship's wheel — gameplay anchors helm control here. */
   wheelLocal: [number, number, number] = [0, 0, 0];
+  /** Local position of the stern ladder — swimmers climb aboard here. */
+  ladderLocal: [number, number, number] = [0, 0, 0];
 
   /** Procedural canvas-cloth texture: seams + thread noise. */
   private static clothTexture(): THREE.CanvasTexture {
@@ -385,6 +387,29 @@ export class ShipVisual {
       this.group.add(barrel);
       this.barrels.push({ mesh: barrel, side: port.side });
     }
+
+    // stern ladder: rungs down the transom to the waterline, so going
+    // overboard is recoverable (playtest round 4: "no way to get back on")
+    const ladder = new THREE.Group();
+    const ladderTop = (this.build.deckY + 5) * VOXEL_SIZE; // cap-rail height
+    const ladderBot = 1.0; // dips under the waterline
+    const lz = (this.build.grid.dims[2] / 2) * VOXEL_SIZE;
+    const railGeo = new THREE.CylinderGeometry(0.035, 0.035, ladderTop - ladderBot, 6);
+    for (const s of [-1, 1]) {
+      const rail = new THREE.Mesh(railGeo, woodMat);
+      rail.position.set(0, (ladderTop + ladderBot) / 2, lz + s * 0.28);
+      ladder.add(rail);
+    }
+    const rungGeo = new THREE.CylinderGeometry(0.028, 0.028, 0.56, 6);
+    rungGeo.rotateX(Math.PI / 2);
+    for (let ry = ladderBot + 0.15; ry < ladderTop; ry += 0.42) {
+      const rung = new THREE.Mesh(rungGeo, woodMat);
+      rung.position.set(0, ry, lz);
+      ladder.add(rung);
+    }
+    ladder.position.x = 0.88; // proud of the transom
+    this.group.add(ladder);
+    this.ladderLocal = [0.88, 2.0, lz];
 
     // bowsprit at the bow (max-x end), angled slightly upward
     const [nx] = this.build.grid.dims;

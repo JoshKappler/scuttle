@@ -83,6 +83,9 @@ async function main() {
   let onFoot = false; // derived each step: !atWheel
   let firstPerson = false;
   const wheelWorld = new THREE.Vector3();
+  const ladderWorld = new THREE.Vector3();
+  const climbTarget = new THREE.Vector3();
+  let ladderHinted = false;
   const banner = document.getElementById("banner")!;
   let gameOver = false;
   let plugChannel = 0; // seconds remaining on the current plank repair
@@ -107,11 +110,25 @@ async function main() {
       boarding.toggleGrapple();
     }
 
-    // wheel position in world (for E proximity + pinning)
+    // wheel + ladder positions in world (for E proximity)
     sloop.localToWorld(sloopVisual.wheelLocal, wheelWorld);
+    sloop.localToWorld(sloopVisual.ladderLocal, ladderWorld);
 
-    // E: take/leave the wheel when close to it; otherwise it's the
-    // interact key (chest) handled by the boarding system below
+    // swimming near the stern ladder? surface the hint
+    if (boarding.player && boarding.player.swimming) {
+      const pp = boarding.player.body.translation();
+      const nearLadder =
+        Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4;
+      if (nearLadder && !ladderHinted) {
+        boarding.message = "press E — stern ladder";
+        ladderHinted = true;
+      } else if (!nearLadder) {
+        ladderHinted = false;
+      }
+    }
+
+    // E: take/leave the wheel when close to it; climb the stern ladder when
+    // swimming beside it; otherwise it's the interact key (chest)
     let interact = false;
     if (controls.interactPressed) {
       controls.interactPressed = false;
@@ -126,6 +143,13 @@ async function main() {
         if (Math.hypot(pp.x - wheelWorld.x, pp.y - wheelWorld.y, pp.z - wheelWorld.z) < 2.4) {
           atWheel = true;
           boarding.message = "you take the wheel";
+        } else if (
+          boarding.player.swimming &&
+          Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4
+        ) {
+          boarding.player.ship = sloop;
+          boarding.player.teleport(sloop.localToWorld([2.6, 5.3, 4.0], climbTarget));
+          boarding.message = "you haul yourself up the stern ladder";
         } else {
           interact = true;
         }

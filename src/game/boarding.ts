@@ -74,9 +74,10 @@ export class BoardingSystem {
     return (ship.build.deckY + 2) * 0.25;
   }
 
-  /** Spawn crews once the world has settled. Called from update(). */
+  /** Spawn crews shortly after launch — pirates are anchored in their
+   *  ship's frame now, so they ride the splash-down instead of missing it. */
   private ensureCrew(simTime: number): void {
-    if (this.crewSpawned || simTime < 6) return;
+    if (this.crewSpawned || simTime < 1.5) return;
     this.crewSpawned = true;
     const dt = this.deckTop(this.enemyShip);
     const posts: [number, number, number][] = [
@@ -162,8 +163,8 @@ export class BoardingSystem {
       this.enemyShip.body.addForce({ x: -rvx * damp * dt * 60, y: 0, z: -rvz * damp * dt * 60 }, true);
     }
 
-    // the captain is always aboard once the world settles
-    if (!this.player && simTime > 6) this.spawnPlayer();
+    // the captain is always aboard once the ship is in the water
+    if (!this.player && simTime > 1.5) this.spawnPlayer();
 
     // ---- player pirate ----
     if (this.player) {
@@ -260,8 +261,9 @@ export class BoardingSystem {
       this.chest.position.set(4.2, this.deckTop(this.enemyShip), 3);
       this.message = "you lost the chest overboard!";
     }
+    this.player.ship = this.playerShip;
     const p = this.playerShip.localToWorld([4.2, this.deckTop(this.playerShip) + 1, 4], this.tmpA);
-    this.player.body.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
+    this.player.teleport(p);
   }
 
   private nearestShip(p: Pirate): Ship {

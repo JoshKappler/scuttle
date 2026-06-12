@@ -480,6 +480,16 @@ export class Ship {
     return out;
   }
 
+  /** Ship-local position of a world point (meters). Alias-safe: `out` may
+   *  be the same vector as `world`. */
+  worldToLocal(world: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    const tr = this.body.translation();
+    const rot = this.body.rotation();
+    this.tmpQ.set(rot.x, rot.y, rot.z, rot.w).invert();
+    out.set(world.x - tr.x, world.y - tr.y, world.z - tr.z).applyQuaternion(this.tmpQ);
+    return out;
+  }
+
   /** Density-ratio draft estimate (diagnostics): expected submerged fraction at rest. */
   expectedSubmergedFrac(): number {
     return this.build.grid.totalMass() / (WATER_DENSITY * this.build.envelopeVolume);
