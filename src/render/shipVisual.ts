@@ -166,6 +166,27 @@ export class ShipVisual {
       this.group.add(sail);
     }
 
+    // cannons: barrel + carriage at every port, pointing outboard
+    const ironMat = new THREE.MeshStandardMaterial({ color: 0x14151a, roughness: 0.45, metalness: 0.7 });
+    const carriageMat = new THREE.MeshStandardMaterial({ color: 0x2e2014, roughness: 0.9 });
+    const barrelGeo = new THREE.CylinderGeometry(0.07, 0.11, 1.25, 10);
+    barrelGeo.rotateX(Math.PI / 2); // along z (outboard axis)
+    const carriageGeo = new THREE.BoxGeometry(0.5, 0.32, 0.7);
+    for (const port of this.build.cannonPorts) {
+      const px = (port.x + 0.5) * VOXEL_SIZE;
+      const py = (this.build.deckY + 1) * VOXEL_SIZE;
+      const pz = (port.z + 0.5 - port.side * 1.6) * VOXEL_SIZE;
+      const carriage = new THREE.Mesh(carriageGeo, carriageMat);
+      carriage.position.set(px, py + 0.16, pz);
+      carriage.castShadow = true;
+      this.group.add(carriage);
+      const barrel = new THREE.Mesh(barrelGeo, ironMat);
+      barrel.position.set(px, py + 0.38, pz + port.side * 0.35);
+      if (port.side < 0) barrel.rotation.y = Math.PI;
+      barrel.castShadow = true;
+      this.group.add(barrel);
+    }
+
     // bowsprit at the bow (max-x end), angled slightly upward
     const [nx] = this.build.grid.dims;
     const spritLen = 3.2;

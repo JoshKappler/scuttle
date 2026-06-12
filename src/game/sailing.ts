@@ -53,7 +53,9 @@ export class SailingController {
 
     // thrust ∝ wind pressure on set canvas; tuned for ~7-8 m/s top speed
     const mass = body.mass();
-    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.008;
+    // arcade-tuned: ~12 m/s (23 kn) at full sail on a reach — playtest verdict
+    // was that realistic hull speeds are no fun
+    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.016;
 
     if (thrust > 0 && ship.submergedFrac > 0.02) {
       // applied at the mast base: beam reaches heel the ship

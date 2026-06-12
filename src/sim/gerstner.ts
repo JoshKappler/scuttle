@@ -21,8 +21,8 @@ export function makeWaves(rng: Rng, count = 4): Wave[] {
   const waves: Wave[] = [];
   for (let i = 0; i < count; i++) {
     // longest wave first; each subsequent wave roughly halves the wavelength
-    const wavelength = 60 / Math.pow(1.8, i) + rng.range(-2, 2);
-    const amplitude = 0.55 * Math.pow(0.62, i) + rng.range(-0.03, 0.03);
+    const wavelength = 70 / Math.pow(1.8, i) + rng.range(-2, 2);
+    const amplitude = 0.85 * Math.pow(0.62, i) + rng.range(-0.04, 0.04);
     const angle = primary + rng.range(-0.9, 0.9);
     waves.push({
       dirX: Math.cos(angle),
@@ -30,7 +30,7 @@ export function makeWaves(rng: Rng, count = 4): Wave[] {
       amplitude: Math.max(0.05, amplitude),
       wavelength: Math.max(6, wavelength),
       // keep Σ(Q·k·a) < 1 across the set to avoid self-intersecting loops
-      steepness: 0.7 / count,
+      steepness: 0.85 / count,
       phaseSpeed: 0, // filled below from dispersion
     });
   }

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Rng } from "./core/rng";
-import { makeWaves } from "./sim/gerstner";
+import { makeWaves, surfaceHeight } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
 import { createSky } from "./render/sky";
 import { buildSloop } from "./sim/shipwright";
@@ -179,9 +179,28 @@ async function main() {
   const clock = new THREE.Clock();
   let hudTimer = 0;
 
+  // bow wake so hulls don't phase silently through the sea (playtest feedback)
+  const wakeV = new THREE.Vector3();
+  const wakeF = new THREE.Vector3();
+  const emitBowWake = (ship: Ship) => {
+    const v = ship.body.linvel();
+    const speed = Math.hypot(v.x, v.z);
+    if (speed < 1.6 || ship.submergedFrac < 0.05) return;
+    const rot = ship.body.rotation();
+    wakeF.set(1, 0, 0).applyQuaternion(new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w));
+    wakeF.y = 0;
+    wakeF.normalize();
+    // stem position at the waterline
+    ship.localToWorld([17, 1.5, 3], wakeV);
+    wakeV.y = surfaceHeight(waves, wakeV.x, wakeV.z, world.simTime) + 0.05;
+    effects.bowWake(wakeV, wakeF, speed);
+  };
+
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
     world.step(dt);
+    emitBowWake(sloop);
+    emitBowWake(enemy);
     effects.update(dt);
 
     const tr = sloop.body.translation();

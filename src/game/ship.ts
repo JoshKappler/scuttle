@@ -174,7 +174,7 @@ export class Ship {
       // deck hatches downflood once the water tops the hatch coaming (a
       // raised lip): waves slopping across the deck don't flood the hold
       if (c.hatchArea > 0) {
-        const COAMING = 0.4; // m
+        const COAMING = 0.55; // m — raised with the bigger seas
         const hx = (c.bboxMin[0] + c.bboxMax[0]) / 2;
         this.localToWorld(
           [(hx + 0.5) * VOXEL_SIZE, (this.build.deckY + 0.5) * VOXEL_SIZE, (this.build.grid.dims[2] / 2) * VOXEL_SIZE],
@@ -270,7 +270,7 @@ export class Ship {
       const vL = v.x * lat.x + v.z * lat.z;
       const vY = v.y;
 
-      const fF = -mass * 0.06 * (1 + 0.1 * Math.abs(vF)) * vF * sub;
+      const fF = -mass * 0.04 * (1 + 0.08 * Math.abs(vF)) * vF * sub;
       const fL = -mass * 1.1 * vL * sub;
       const fY = -mass * 1.7 * vY * sub;
 

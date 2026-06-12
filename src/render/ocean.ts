@@ -134,12 +134,15 @@ void main() {
   float sss = pow(max(dot(V, -L), 0.0), 3.0) * smoothstep(0.3, 1.0, vCrest / uAmpTotal);
   col += vec3(0.05, 0.18, 0.16) * sss;
 
-  // crest foam, broken up by noise, fading with distance
+  // crest foam + whitecaps, broken up by noise
   float foamNoise = noise(vWorldPos.xz * 0.9 + uTime * 0.15) * 0.6
                   + noise(vWorldPos.xz * 3.1 - uTime * 0.1) * 0.4;
-  float foam = smoothstep(0.62, 0.95, vCrest / uAmpTotal) * smoothstep(0.35, 0.75, foamNoise);
+  float crestF = vCrest / uAmpTotal;
+  float foam = smoothstep(0.5, 0.85, crestF) * smoothstep(0.35, 0.72, foamNoise);
+  // hard whitecaps right at breaking crests (steep + high)
+  float cap = smoothstep(0.72, 0.92, crestF) * smoothstep(0.97, 0.88, N.y);
   float flat_ = smoothstep(0.94, 1.0, N.y);
-  col = mix(col, vec3(0.92, 0.96, 0.95), foam * (1.0 - flat_ * 0.5) * 0.6);
+  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9, 0.0, 1.0));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);
