@@ -101,3 +101,16 @@ seed, real character models (Quaternius CC0), sound. Spec:
 - Ocean foam is subtle; breach splash jets not yet at breach POSITIONS
   (particles only at impact time).
 - `npm run build` warns about chunk size (three.js) — fine for now.
+
+## Round-2 playtest response (tag `m5-playtest-round2`, on GitHub)
+
+Repo: https://github.com/JoshKappler/scuttle. All 15 feedback items addressed
+except: compass click-to-seek (passive enemy marker instead), arm animation
+on the wheel (capsule pirates have no arms yet), billow doesn't flip by tack.
+New control model: always-present captain, E takes/leaves the wheel (helm
+gated), V first person, 3P = bird's-eye on ship. Bugs fixed: swim oscillation
+(damped spring), crew spawn race, AI irons pinning (tested), cutaway
+ocean-through-hull (bilge backdrop), fullscreen sizing (ResizeObserver).
+Feel: +heel, +freeboard (deck raised — tests held), steerage floor in irons.
+Visuals: gaff rig laced to mast + cloth + billow, wood-grain shader, stern
+rudder + spoked wheel answering the helm, styled HUD + compass + aim arc.
