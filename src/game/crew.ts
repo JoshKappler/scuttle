@@ -272,10 +272,11 @@ export class Pirate {
     // (playtest round 5). Only genuinely leaving the hull breaks it.
     tmpAnchor.set(nx, ny, nz);
     this.ship.worldToLocal(tmpAnchor, this.attachLocal);
+    const fp = this.ship.build.footprint;
     const overboard =
-      this.attachLocal.x < -0.5 ||
-      this.attachLocal.x > 26.5 ||
-      Math.abs(this.attachLocal.z - 4) > 4.6;
+      this.attachLocal.x < fp.minX ||
+      this.attachLocal.x > fp.maxX ||
+      Math.abs(this.attachLocal.z - fp.zC) > fp.halfZ;
     if (!overboard && (grounded || this.airTime < 2.5)) {
       this.attachShip = this.ship;
     } else {

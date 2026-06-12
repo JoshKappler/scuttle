@@ -325,12 +325,15 @@ export class ShipVisual {
     };
 
     for (const m of this.build.masts) {
-      const mastH = 15;
-      const deckTop = (this.build.deckY + 1) * VOXEL_SIZE;
+      const mastH = m.h;
+      const deckTop = (this.build.deckYAt(m.x) + 1) * VOXEL_SIZE;
       const mx = (m.x + 0.5) * VOXEL_SIZE;
       const mz = (m.z + 0.5) * VOXEL_SIZE;
 
-      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.18, mastH, 8), woodMat);
+      const mast = new THREE.Mesh(
+        new THREE.CylinderGeometry(mastH * 0.006, mastH * 0.012, mastH, 8),
+        woodMat,
+      );
       mast.position.set(mx, deckTop + mastH / 2 - 0.5, mz);
       mast.castShadow = true;
       this.group.add(mast);
@@ -340,11 +343,12 @@ export class ShipVisual {
       // tight between consecutive yards. The whole cloth hangs forward of
       // the mast so the mast never cuts through it, and each yard's span
       // matches its sail edge (tiny symmetric yardarm overhang only).
+      // Everything scales with the mast's own height — the brig flies two.
       const yardOff = 0.3; // fore of the mast centerline
       const levels = [
-        { y: deckTop + 2.6, w: 10.6 }, // course yard
-        { y: deckTop + 8.4, w: 8.6 }, // topsail yard
-        { y: deckTop + 13.2, w: 6.4 }, // topgallant yard
+        { y: deckTop + mastH * 0.17, w: mastH * 0.71 }, // course yard
+        { y: deckTop + mastH * 0.56, w: mastH * 0.57 }, // topsail yard
+        { y: deckTop + mastH * 0.88, w: mastH * 0.43 }, // topgallant yard
       ];
       for (const lv of levels) {
         const yardGeo = new THREE.CylinderGeometry(0.07, 0.07, lv.w + 0.3, 6);
@@ -373,25 +377,29 @@ export class ShipVisual {
       }
     }
 
-    // stern rudder: hinged blade reaching below the keel line so its area is
-    // in clear flow (playtest: "blocked by the ship — it wouldn't be able to
-    // turn in reality"), broader at the bottom like a real barn-door rudder
+    // stern rudder: hinged blade reaching below the keel for clear flow, and
+    // UP the transom toward the deck so you can actually watch it answer the
+    // helm (round 6: "the rudder should extend further upwards so that you
+    // can actually see it turning when maneuvering")
     const sternX = 4 * VOXEL_SIZE;
+    const bladeH = this.build.deckY * VOXEL_SIZE * 0.78;
     this.rudderPivot = new THREE.Group();
     this.rudderPivot.position.set(sternX + 0.1, 1.8, (this.build.grid.dims[2] / 2) * VOXEL_SIZE);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(1.0, 3.1, 0.14), woodMat);
-    blade.position.set(-0.55, -0.6, 0);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(1.0, bladeH, 0.14), woodMat);
+    blade.position.set(-0.55, bladeH / 2 - 2.3, 0);
     const heel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.1, 0.14), woodMat);
     heel.position.set(-0.78, -1.55, 0);
     this.rudderPivot.add(blade, heel);
     this.group.add(this.rudderPivot);
 
-    // the wheel: classic spoked helm on the quarterdeck, clear of the rig
+    // the wheel: classic spoked helm where the build says the helm stands
+    // (the brig's quarterdeck — round 6: "the wheel being on that deck")
     const helm = new THREE.Group();
-    const deckTopY = (this.build.deckY + 1) * VOXEL_SIZE;
-    const wz = (this.build.grid.dims[2] / 2) * VOXEL_SIZE;
-    helm.position.set(3.4, deckTopY + 1.0, wz);
-    this.wheelLocal = [3.4, deckTopY + 1.0, wz];
+    const wx = this.build.wheelM.x;
+    const wz = this.build.wheelM.z;
+    const deckTopY = (this.build.deckYAt(Math.round(wx / VOXEL_SIZE)) + 1) * VOXEL_SIZE;
+    helm.position.set(wx, deckTopY + 1.0, wz);
+    this.wheelLocal = [wx, deckTopY + 1.0, wz];
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 1.0, 8), woodMat);
     post.position.y = -0.5;
     helm.add(post);
@@ -479,9 +487,10 @@ export class ShipVisual {
     }
 
     // stern ladder: rungs down the transom to the waterline, so going
-    // overboard is recoverable (playtest round 4: "no way to get back on")
+    // overboard is recoverable (playtest round 4: "no way to get back on").
+    // On the brig the transom carries the quarterdeck, so it climbs higher.
     const ladder = new THREE.Group();
-    const ladderTop = (this.build.deckY + 5) * VOXEL_SIZE; // cap-rail height
+    const ladderTop = (this.build.deckYAt(4) + 5) * VOXEL_SIZE; // stern cap-rail height
     const ladderBot = 1.0; // dips under the waterline
     const lz = (this.build.grid.dims[2] / 2) * VOXEL_SIZE;
     const railGeo = new THREE.CylinderGeometry(0.035, 0.035, ladderTop - ladderBot, 6);
@@ -501,12 +510,25 @@ export class ShipVisual {
     this.group.add(ladder);
     this.ladderLocal = [0.88, 2.0, lz];
 
-    // bowsprit at the bow (max-x end), angled slightly upward
+    // bowsprit at the bow (max-x end): a real spar now, scaled to the hull
+    // and steeved upward (round 6: "the front stick coming out … is now too
+    // low and too small for the new ship")
     const [nx] = this.build.grid.dims;
-    const spritLen = 3.2;
-    const sprit = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, spritLen, 6), woodMat);
-    sprit.rotation.z = -Math.PI / 2 + 0.22;
-    sprit.position.set(nx * VOXEL_SIZE - 1.2 + spritLen / 2 - 0.4, (this.build.deckY + 2) * VOXEL_SIZE, (this.build.grid.dims[2] / 2) * VOXEL_SIZE);
+    const spritLen = this.build.lengthM * 0.28;
+    const steeve = 0.3; // radians above horizontal
+    const sprit = new THREE.Mesh(
+      new THREE.CylinderGeometry(spritLen * 0.014, spritLen * 0.028, spritLen, 8),
+      woodMat,
+    );
+    sprit.rotation.z = -Math.PI / 2 + steeve;
+    const bowX = nx * VOXEL_SIZE - 1.0;
+    const bowDeckTop = (this.build.deckY + 2) * VOXEL_SIZE;
+    sprit.position.set(
+      bowX + Math.cos(steeve) * (spritLen / 2 - 1.6),
+      bowDeckTop + Math.sin(steeve) * (spritLen / 2 - 1.6),
+      (this.build.grid.dims[2] / 2) * VOXEL_SIZE,
+    );
+    sprit.castShadow = true;
     this.group.add(sprit);
   }
 }

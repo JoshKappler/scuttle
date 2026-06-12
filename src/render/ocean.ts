@@ -21,6 +21,9 @@ export interface Ocean {
    *  can't occlude the view into the hull from low angles. Unlike clip
    *  planes this never splits the ocean to the horizon. */
   setCutaway(on: boolean): void;
+  /** Size the cutaway hole/wedge for the ship being inspected (half-length,
+   *  half-beam in meters — the brig and the sloop differ). */
+  setFootprint(halfL: number, halfB: number): void;
   updateCutaway(shipPos: THREE.Vector3, fwdX: number, fwdZ: number, cutPlane: THREE.Plane): void;
 }
 
@@ -233,6 +236,9 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
     mesh,
     setCutaway(on) {
       mat.uniforms.uCutOn.value = on ? 1 : 0;
+    },
+    setFootprint(halfL, halfB) {
+      (mat.uniforms.uHalf.value as THREE.Vector2).set(halfL, halfB);
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

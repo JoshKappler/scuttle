@@ -3,7 +3,7 @@ import { Rng } from "./core/rng";
 import { makeWaves, surfaceHeight } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
 import { createSky } from "./render/sky";
-import { buildSloop } from "./sim/shipwright";
+import { buildBrig, buildSloop } from "./sim/shipwright";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
 import { Ship } from "./game/ship";
@@ -50,13 +50,18 @@ async function main() {
   await loadPirateLibrary();
   const world = new GameWorld(physics, waves, scene);
 
-  // spawn the sloop just above the surface; it splashes down and settles
-  const sloopBuild = buildSloop();
+  // the player's brig splashes down and settles (round 6: "a realistically
+  // sized sixteen-hundreds-era fighting vessel"); `sloop` names the player
+  // ship throughout for history's sake
+  const sloopBuild = buildBrig();
   const sloopVisual = new ShipVisual(sloopBuild);
   const sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
+  // the cutaway hole in the sea matches the player hull's footprint
+  ocean.setFootprint(sloopBuild.lengthM / 2 + 1.2, sloopBuild.beamM / 2 + 1.0);
 
-  // enemy captain: spawns upwind and runs down on you
+  // enemy captain: the old, smaller sloop — kept as the easier opponent
+  // (round 6) — spawns upwind and runs down on you
   const enemyBuild = buildSloop();
   const enemyVisual = new ShipVisual(enemyBuild);
   const enemy = new Ship(physics, enemyBuild, enemyVisual, {
@@ -153,7 +158,10 @@ async function main() {
         ) {
           boarding.player.ship = sloop;
           boarding.player.teleport(
-            sloop.localToWorld([2.6, (sloop.build.deckY + 1) * 0.25 + 1.05, 4.0], climbTarget),
+            sloop.localToWorld(
+              [2.6, (sloop.build.deckYAt(10) + 1) * 0.25 + 1.05, sloop.build.footprint.zC],
+              climbTarget,
+            ),
           );
           boarding.message = "you haul yourself up the stern ladder";
         } else {
@@ -520,7 +528,10 @@ async function main() {
     wakeF.y = 0;
     wakeF.normalize();
     // stem position at the waterline
-    ship.localToWorld([25.4, 1.8, 4], wakeV);
+    ship.localToWorld(
+      [ship.build.footprint.maxX - 2.5, ship.build.deckY * 0.25 * 0.45, ship.build.footprint.zC],
+      wakeV,
+    );
     wakeV.y = surfaceHeight(waves, wakeV.x, wakeV.z, world.simTime) + 0.05;
     effects.bowWake(wakeV, wakeF, speed);
   };

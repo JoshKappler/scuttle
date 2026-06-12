@@ -112,12 +112,9 @@ export class Ship {
     // the mast is solid — you should not be able to walk through it
     // (playtest round 5: "the mast has no physical hitbox")
     for (const m of build.masts) {
-      const mastCol = R.ColliderDesc.cylinder(7.2, 0.18)
-        .setTranslation(
-          (m.x + 0.5) * VOXEL_SIZE,
-          (build.deckY + 1) * VOXEL_SIZE + 6.8,
-          (m.z + 0.5) * VOXEL_SIZE,
-        )
+      const deckTop = (build.deckYAt(m.x) + 1) * VOXEL_SIZE;
+      const mastCol = R.ColliderDesc.cylinder(m.h / 2, 0.18)
+        .setTranslation((m.x + 0.5) * VOXEL_SIZE, deckTop + m.h / 2 - 0.5, (m.z + 0.5) * VOXEL_SIZE)
         .setDensity(0);
       world.createCollider(mastCol, this.body);
     }

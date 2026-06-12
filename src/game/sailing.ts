@@ -15,6 +15,10 @@ export interface Wind {
 export class SailingController {
   sailSet = 0.7; // 0..1
   rudder = 0; // -1..1 (+ = turn to port)
+  /** Crew quality 0..1 — scales thrust. The AI captain sails at a deficit so
+   *  the player can out-run and out-turn to a firing position (round 6:
+   *  "no amount of throttle and turning can take you broadside … nerf"). */
+  efficiency = 1;
 
   private tmpQ = new THREE.Quaternion();
   private tmpF = new THREE.Vector3();
@@ -66,26 +70,32 @@ export class SailingController {
     const upright = Math.min(Math.max(rotUp.y, 0), 1);
     // 0.019: the deep round-5 hull drags more wetted surface than the old
     // canoe — this keeps full sail in the low-20s of knots
-    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.019 * upright;
+    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.019 * upright * this.efficiency;
 
     if (thrust > 0 && ship.submergedFrac > 0.02) {
-      const m = ship.build.masts[0];
-      const mx = (m.x + 0.5) * 0.25;
-      const mz = (m.z + 0.5) * 0.25;
-      // drive applied at COM height (thrust high on the mast buried the bow;
-      // pitch is the trim controller's job now)
-      const ap = ship.localToWorld([mx, ship.comLocal[1], mz], this.tmpF.clone());
-      body.addForceAtPoint({ x: fwd.x * thrust, y: 0, z: fwd.z * thrust }, ap, true);
-
-      // the wind's LATERAL push on the canvas, applied up the mast: this is
-      // what actually heels a square-rigger on a reach, and the deep keel
-      // resisting the resulting leeway completes the couple
+      // drive and heel split across every mast (the brig carries two)
+      const masts = ship.build.masts;
       const latX = -fwd.z;
       const latZ = fwd.x;
       const wLat = wind.speed * (wind.dirX * latX + wind.dirZ * latZ);
-      const heelF = this.sailSet * wLat * Math.abs(wLat) * mass * 0.012 * upright;
-      const hp = ship.localToWorld([mx, ship.comLocal[1] + 3.5, mz], this.tmpF.clone());
-      body.addForceAtPoint({ x: latX * heelF, y: 0, z: latZ * heelF }, hp, true);
+      const heelF = (this.sailSet * wLat * Math.abs(wLat) * mass * 0.012 * upright) / masts.length;
+      for (const m of masts) {
+        const mx = (m.x + 0.5) * 0.25;
+        const mz = (m.z + 0.5) * 0.25;
+        // drive applied at COM height (thrust high on the mast buried the
+        // bow; pitch is the trim controller's job now)
+        const ap = ship.localToWorld([mx, ship.comLocal[1], mz], this.tmpF.clone());
+        body.addForceAtPoint(
+          { x: (fwd.x * thrust) / masts.length, y: 0, z: (fwd.z * thrust) / masts.length },
+          ap,
+          true,
+        );
+        // the wind's LATERAL push on the canvas, applied up the mast: this is
+        // what actually heels a square-rigger on a reach, and the deep keel
+        // resisting the resulting leeway completes the couple
+        const hp = ship.localToWorld([mx, ship.comLocal[1] + m.h * 0.23, mz], this.tmpF.clone());
+        body.addForceAtPoint({ x: latX * heelF, y: 0, z: latZ * heelF }, hp, true);
+      }
     }
 
     // rudder: yaw torque scales with water flow over it, with a generous

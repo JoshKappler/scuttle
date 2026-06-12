@@ -9,7 +9,7 @@ export class PlayerControls {
   private keys = new Set<string>();
   private orbitYaw = 2.6;
   private orbitPitch = 0.32; // radians above horizon
-  private dist = 30;
+  private dist = 46; // the brig needs a longer default orbit
   private dragging = false;
 
   /** Set on left-click while pointer-locked; cleared by the consumer.
@@ -114,7 +114,7 @@ export class PlayerControls {
       }
     });
     dom.addEventListener("wheel", (e) => {
-      this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 7), 85);
+      this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 8), 130);
     });
   }
 
