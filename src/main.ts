@@ -11,6 +11,7 @@ import { GameWorld } from "./game/world";
 import { SailingController, type Wind } from "./game/sailing";
 import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
+import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
@@ -74,6 +75,8 @@ async function main() {
   enemy.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, enemy));
 
   const captain = new AICaptain(enemy, scene, effects);
+  const boarding = new BoardingSystem(physics, scene, effects, sloop, enemy);
+  let onFoot = false;
   const banner = document.getElementById("banner")!;
   let gameOver = false;
   let plugChannel = 0; // seconds remaining on the current plank repair
@@ -92,9 +95,39 @@ async function main() {
   });
 
   world.onFixedStep = (t, dt) => {
-    controls.updateSailing(sailing, dt);
+    // T: step away from / back to the helm
+    if (controls.modePressed) {
+      controls.modePressed = false;
+      boarding.spawnPlayer();
+      onFoot = !onFoot;
+    }
+    if (controls.grapplePressed) {
+      controls.grapplePressed = false;
+      boarding.toggleGrapple();
+    }
+
+    if (!onFoot) controls.updateSailing(sailing, dt);
     sailing.apply(sloop, wind);
     if (!gameOver) captain.update(dt, t, waves, wind, sloop);
+
+    // on-foot combat input (F doubles as slash when off the helm)
+    const mv = onFoot ? controls.footMove() : { x: 0, z: 0, jump: false };
+    let slash = false;
+    if (onFoot && controls.firePressed) {
+      controls.firePressed = false;
+      slash = boarding.canFight();
+    }
+    let kick = false;
+    if (controls.kickPressed) {
+      controls.kickPressed = false;
+      kick = onFoot;
+    }
+    let interact = false;
+    if (controls.interactPressed) {
+      controls.interactPressed = false;
+      interact = onFoot;
+    }
+    boarding.update(dt, t, waves, { moveX: mv.x, moveZ: mv.z, jump: mv.jump, slash, kick, interact }, onFoot);
 
     // plank repair channel: 4s, blocks firing
     if (controls.plugPressed) {
@@ -110,7 +143,7 @@ async function main() {
       sloop.pumpOn = !sloop.pumpOn;
     }
 
-    if (controls.firePressed) {
+    if (controls.firePressed && !onFoot) {
       controls.firePressed = false;
       if (plugChannel <= 0) {
         // fire the broadside on the side the camera looks across
@@ -126,8 +159,11 @@ async function main() {
     character?.update(dt, controls.cameraYaw());
 
     if (!gameOver) {
-      if (isSunk(enemy)) {
-        endGame("PRIZE SUNK", "the sea takes her gold this time");
+      if (boarding.chestBanked && boarding.enemiesLeft() === 0) {
+        endGame("PRIZE TAKEN", `gold banked: ${boarding.gold} — a proper pirate's day`);
+      } else if (isSunk(enemy)) {
+        boarding.gold += 150; // flotsam — most of it went down with her
+        endGame("PRIZE SUNK", `the sea takes most of her gold — salvaged ${boarding.gold}`);
       } else if (isSunk(sloop)) {
         endGame("SHE'S GONE", "your gold sinks with her");
       }
@@ -171,6 +207,7 @@ async function main() {
     world,
     cannons,
     captain,
+    boarding,
     get character() {
       return character;
     },
@@ -205,7 +242,12 @@ async function main() {
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
-    controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y, tr.z));
+    if (onFoot && boarding.player) {
+      const pt = boarding.player.body.translation();
+      controls.updateCamera(camera, new THREE.Vector3(pt.x, pt.y, pt.z));
+    } else {
+      controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y, tr.z));
+    }
 
     // spyglass zoom (Q)
     const targetFov = controls.spyglass ? 16 : 60;
@@ -239,13 +281,19 @@ async function main() {
       const reload = Math.max(cannons.reloadAt - world.simTime, 0);
       const et = enemy.body.translation();
       const range = Math.hypot(et.x - tr.x, et.z - tr.z);
+      const modeLine = onFoot
+        ? `ON FOOT  HP ${boarding.playerHp}/5  foes ${boarding.enemiesLeft()}` +
+          `${boarding.chestCarried ? "  CARRYING CHEST" : ""}  |  WASD move  Space jump  F slash  C kick  E grab  T helm`
+        : `W/S sails  A/D rudder  F fire  RMB aim  Q spyglass  R plank  P pump  G grapple  T board  X cutaway`;
       hud.textContent =
-        `${kn} kn   sails ${(sailing.sailSet * 100).toFixed(0)}%   wind ${sailing.angleOffWind.toFixed(0)}° off bow   enemy ${range.toFixed(0)}m\n` +
+        `${kn} kn   sails ${(sailing.sailSet * 100).toFixed(0)}%   wind ${sailing.angleOffWind.toFixed(0)}° off bow   enemy ${range.toFixed(0)}m   gold ${boarding.gold}\n` +
         `roll ${THREE.MathUtils.radToDeg(e.x).toFixed(1)}°  pitch ${THREE.MathUtils.radToDeg(e.z).toFixed(1)}°  ` +
-        `flood [${floods}]  planks ${sloop.planks}  pump ${sloop.pumpOn ? "ON" : "off"}\n` +
+        `flood [${floods}]  planks ${sloop.planks}  pump ${sloop.pumpOn ? "ON" : "off"}` +
+        `${boarding.grappled ? "  GRAPPLED" : ""}\n` +
         `guns ${reload > 0 ? reload.toFixed(1) + "s" : "READY"} @ ${controls.elevationDeg.toFixed(1)}°` +
-        `${plugChannel > 0 ? `   PLUGGING ${plugChannel.toFixed(1)}s` : ""}\n` +
-        `W/S sails  A/D rudder  F fire  RMB aim  Q spyglass  R plank  P pump  X cutaway`;
+        `${plugChannel > 0 ? `   PLUGGING ${plugChannel.toFixed(1)}s` : ""}` +
+        `${boarding.message ? `   » ${boarding.message}` : ""}\n` +
+        modeLine;
     }
   });
 }

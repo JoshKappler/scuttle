@@ -18,6 +18,14 @@ export class PlayerControls {
   plugPressed = false;
   /** Set on KeyP keydown; cleared by the pump handler. */
   pumpPressed = false;
+  /** Set on KeyC keydown (kick, on foot). */
+  kickPressed = false;
+  /** Set on KeyE keydown (interact, on foot). */
+  interactPressed = false;
+  /** Set on KeyG keydown (grapple toggle). */
+  grapplePressed = false;
+  /** Set on KeyT keydown (helm/foot toggle). */
+  modePressed = false;
   /** True while RMB is held — mouse Y trims broadside elevation. */
   aiming = false;
   /** Broadside elevation in degrees. */
@@ -33,6 +41,10 @@ export class PlayerControls {
       if (e.code === "KeyF") this.firePressed = true;
       if (e.code === "KeyR") this.plugPressed = true;
       if (e.code === "KeyP") this.pumpPressed = true;
+      if (e.code === "KeyC") this.kickPressed = true;
+      if (e.code === "KeyE") this.interactPressed = true;
+      if (e.code === "KeyG") this.grapplePressed = true;
+      if (e.code === "KeyT") this.modePressed = true;
     });
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
     dom.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -74,6 +86,25 @@ export class PlayerControls {
   /** Horizontal camera angle, for camera-relative character movement. */
   cameraYaw(): number {
     return this.orbitYaw + Math.PI; // orbit offset points FROM target TO camera
+  }
+
+  /** On-foot movement from WASD, camera-relative. */
+  footMove(): { x: number; z: number; jump: boolean } {
+    let fwd = 0;
+    let strafe = 0;
+    if (this.keys.has("KeyW")) fwd += 1;
+    if (this.keys.has("KeyS")) fwd -= 1;
+    if (this.keys.has("KeyA")) strafe -= 1;
+    if (this.keys.has("KeyD")) strafe += 1;
+    const len = Math.hypot(fwd, strafe) || 1;
+    fwd /= len;
+    strafe /= len;
+    const yaw = this.cameraYaw();
+    return {
+      x: Math.cos(yaw) * fwd - Math.sin(yaw) * strafe,
+      z: Math.sin(yaw) * fwd + Math.cos(yaw) * strafe,
+      jump: this.keys.has("Space"),
+    };
   }
 
   /** Position the camera around the followed point. Call once per frame. */

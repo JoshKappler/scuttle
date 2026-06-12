@@ -145,6 +145,22 @@ export class Effects {
     }
   }
 
+  blood(x: number, y: number, z: number): void {
+    for (let i = 0; i < 10; i++) {
+      const a = Math.random() * Math.PI * 2;
+      this.spawn(
+        x,
+        y,
+        z,
+        [Math.cos(a) * (0.8 + Math.random() * 1.6), 1.0 + Math.random() * 1.6, Math.sin(a) * (0.8 + Math.random() * 1.6)],
+        0.4 + Math.random() * 0.4,
+        [0.42, 0.04, 0.04],
+        -9.81,
+        0.5,
+      );
+    }
+  }
+
   update(dt: number): void {
     for (let i = 0; i < MAX; i++) {
       const p = this.particles[i];

@@ -7,6 +7,7 @@ import { sphereCells } from "../sim/ballistics";
 import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
 import { IRON } from "../sim/materials";
+import { meshChunk } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
 import type { ShipVisual } from "../render/shipVisual";
 import type { Physics } from "./physics";
@@ -40,7 +41,11 @@ export class Ship {
   private tmpV = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
 
+  private phys: Physics;
+  private deckCollider: RAPIER.Collider | null = null;
+
   constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }) {
+    this.phys = phys;
     this.build = build;
     this.visual = visual;
     this.probes = makeProbes(build.grid, build.compartments);
@@ -90,6 +95,42 @@ export class Ship {
       .setTranslation(l / 2, (h * 0.7) / 2, w / 2)
       .setDensity(0);
     world.createCollider(collider, this.body);
+
+    this.rebuildDeckCollider();
+  }
+
+  /**
+   * Exact walkable surface: a trimesh from the greedy mesh, attached to the
+   * ship body (characters stand on the real deck and fall through real
+   * holes). Rebuilt after damage so blast craters become terrain.
+   */
+  rebuildDeckCollider(): void {
+    const { world, RAPIER: R } = this.phys;
+    if (this.deckCollider) {
+      world.removeCollider(this.deckCollider, false);
+      this.deckCollider = null;
+    }
+    const grid = this.build.grid;
+    const [nx, ny, nz] = grid.dims;
+    const verts: number[] = [];
+    const idxs: number[] = [];
+    const CS = 16;
+    for (let cx = 0; cx <= Math.floor((nx - 1) / CS); cx++) {
+      for (let cy = 0; cy <= Math.floor((ny - 1) / CS); cy++) {
+        for (let cz = 0; cz <= Math.floor((nz - 1) / CS); cz++) {
+          const data = meshChunk(grid, cx, cy, cz);
+          if (!data) continue;
+          const base = verts.length / 3;
+          verts.push(...data.positions);
+          for (const i of data.indices) idxs.push(base + i);
+        }
+      }
+    }
+    if (idxs.length === 0) return;
+    this.deckCollider = world.createCollider(
+      R.ColliderDesc.trimesh(new Float32Array(verts), new Uint32Array(idxs)).setDensity(0),
+      this.body,
+    );
   }
 
   /** Planks left for breach repairs. */
@@ -360,6 +401,7 @@ export class Ship {
     }
 
     this.recomputeMassProperties();
+    this.rebuildDeckCollider();
     return removed;
   }
 
