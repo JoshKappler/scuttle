@@ -8,6 +8,8 @@ import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
 import { Ship } from "./game/ship";
 import { GameWorld } from "./game/world";
+import { SailingController, type Wind } from "./game/sailing";
+import { PlayerControls } from "./game/player";
 
 async function main() {
   const app = document.getElementById("app")!;
@@ -43,6 +45,16 @@ async function main() {
   const sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
 
+  // wind blows with the dominant swell
+  const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
+  const sailing = new SailingController();
+  const controls = new PlayerControls(renderer.domElement);
+
+  world.onFixedStep = (_t, dt) => {
+    controls.updateSailing(sailing, dt);
+    sailing.apply(sloop, wind);
+  };
+
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
@@ -56,12 +68,9 @@ async function main() {
     const dt = Math.min(clock.getDelta(), 0.1);
     world.step(dt);
 
-    // debug camera: sun-side 3/4 view tracking the ship (player camera lands in plan Task 8)
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
-    const side = new THREE.Vector3(-sd.z, 0, sd.x);
-    camera.position.set(tr.x + sd.x * 16 + side.x * 13, tr.y + 6.5, tr.z + sd.z * 16 + side.z * 13);
-    camera.lookAt(tr.x, tr.y + 1.2, tr.z);
+    controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y, tr.z));
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
 
@@ -74,9 +83,12 @@ async function main() {
       const rot = sloop.body.rotation();
       const q = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
       const e = new THREE.Euler().setFromQuaternion(q, "ZYX");
+      const kn = (sailing.speed * 1.944).toFixed(1);
       hud.textContent =
-        `draft frac ${sloop.submergedFrac.toFixed(2)} (expect ~${sloop.expectedSubmergedFrac().toFixed(2)})\n` +
-        `roll ${THREE.MathUtils.radToDeg(e.x).toFixed(1)}°  pitch ${THREE.MathUtils.radToDeg(e.z).toFixed(1)}°  y ${tr.y.toFixed(2)}`;
+        `${kn} kn   sails ${(sailing.sailSet * 100).toFixed(0)}%   wind ${sailing.angleOffWind.toFixed(0)}° off bow\n` +
+        `roll ${THREE.MathUtils.radToDeg(e.x).toFixed(1)}°  pitch ${THREE.MathUtils.radToDeg(e.z).toFixed(1)}°  ` +
+        `draft ${sloop.submergedFrac.toFixed(2)}\n` +
+        `W/S sails  A/D rudder  drag orbit  wheel zoom`;
     }
   });
 }

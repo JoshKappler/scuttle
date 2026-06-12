@@ -12,6 +12,9 @@ import { Ship } from "./ship";
 export class GameWorld {
   readonly ships: Ship[] = [];
   simTime = 0;
+  /** Called every fixed step after buoyancy, before the physics step —
+   *  sailing forces, AI, projectiles hook in here. */
+  onFixedStep?: (simTime: number, dt: number) => void;
   private accumulator = 0;
 
   constructor(
@@ -34,6 +37,7 @@ export class GameWorld {
       for (const ship of this.ships) {
         ship.applyForces(this.waves, this.simTime, () => 0); // flooding lands in plan Task 11
       }
+      this.onFixedStep?.(this.simTime, FIXED_DT);
       this.physics.world.step();
     }
     for (const ship of this.ships) {

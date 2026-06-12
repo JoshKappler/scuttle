@@ -103,15 +103,37 @@ export class Ship {
     }
     this.submergedFrac = totalVolume > 0 ? submergedVolume / totalVolume : 0;
 
-    // water drag: linear + quadratic on velocity, strong angular damping —
-    // all scaled by how much of the hull is actually in the water
+    // water drag split into ship-frame components: a hull slips easily
+    // forward, resists sideways motion strongly (the keel), and damps heave
+    // hard. All scaled by how much of the hull is actually in the water.
     const sub = this.submergedFrac;
     if (sub > 0.001) {
       const mass = this.body.mass();
       const v = body.linvel();
-      const speed = Math.hypot(v.x, v.y, v.z);
-      const k = mass * (0.35 + 0.18 * speed) * sub;
-      body.addForce({ x: -v.x * k, y: -v.y * k * 1.6, z: -v.z * k }, true);
+      const fwd = this.tmpV.set(1, 0, 0).applyQuaternion(this.tmpQ);
+      // keep drag axes horizontal so heave stays separable
+      fwd.y = 0;
+      fwd.normalize();
+      const lat = { x: -fwd.z, z: fwd.x }; // horizontal perpendicular
+
+      const vF = v.x * fwd.x + v.z * fwd.z;
+      const vL = v.x * lat.x + v.z * lat.z;
+      const vY = v.y;
+
+      const fF = -mass * 0.06 * (1 + 0.1 * Math.abs(vF)) * vF * sub;
+      const fL = -mass * 1.1 * vL * sub;
+      const fY = -mass * 1.7 * vY * sub;
+
+      body.addForce({ x: fwd.x * fF + lat.x * fL, y: fY, z: fwd.z * fF + lat.z * fL }, true);
+
+      // lateral keel resistance acts below the COM → ships heel in turns
+      const keelDepth = 1.0; // m below COM
+      const com = body.worldCom();
+      body.addForceAtPoint(
+        { x: lat.x * fL * 0.35, y: 0, z: lat.z * fL * 0.35 },
+        { x: com.x, y: com.y - keelDepth, z: com.z },
+        true,
+      );
 
       const om = body.angvel();
       const ka = sub * 1.1;
