@@ -247,6 +247,8 @@ async function main() {
     emitBowWake(sloop);
     emitBowWake(enemy);
     effects.update(dt);
+    sloopVisual.animate(world.simTime, sailing.rudder, sailing.sailSet);
+    enemyVisual.animate(world.simTime, captain.sailing.rudder, captain.sailing.sailSet);
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
