@@ -24,6 +24,7 @@ async function main() {
   renderer.toneMappingExposure = 0.85;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.localClippingEnabled = true;
   app.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -94,6 +95,17 @@ async function main() {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
+  // cutaway damage view (X): clips the near half of each hull so compartment
+  // water levels read at a glance — flooding legibility is a core spec feature
+  let cutaway = false;
+  const cutPlane = new THREE.Plane();
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "KeyX") {
+      cutaway = !cutaway;
+      for (const s of [sloop, hulk]) s.visual.setCutaway(cutaway ? cutPlane : null);
+    }
+  });
+
   // dev console handle (also used by Playwright-driven verification)
   (window as unknown as Record<string, unknown>).DEBUG = { sloop, hulk, world, cannons };
 
@@ -108,6 +120,13 @@ async function main() {
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
     controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y, tr.z));
+
+    if (cutaway) {
+      // hide the half of each hull facing the camera
+      const com = sloop.body.worldCom();
+      const n = new THREE.Vector3(com.x - camera.position.x, 0, com.z - camera.position.z).normalize();
+      cutPlane.setFromNormalAndCoplanarPoint(n, new THREE.Vector3(com.x, com.y, com.z));
+    }
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
 

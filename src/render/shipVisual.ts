@@ -48,6 +48,13 @@ export class ShipVisual {
     }
   }
 
+  /** Cutaway: clip the hull against a world-space plane (null disables).
+   *  Water boxes stay unclipped so flooding reads through the cut. */
+  setCutaway(plane: THREE.Plane | null): void {
+    this.hullMaterial.clippingPlanes = plane ? [plane] : null;
+    this.hullMaterial.needsUpdate = true;
+  }
+
   /** Reflect current flooding levels. Call once per frame. */
   updateWater(compartments: Compartment[]): void {
     for (const c of compartments) {
