@@ -15,6 +15,9 @@ const SEGMENTS = 400;
 export interface Ocean {
   mesh: THREE.Mesh;
   update(time: number, cameraPos: THREE.Vector3): void;
+  /** Cutaway support: clip the sea on the camera side of the plane so the
+   *  hull interior reads dry instead of "full of ocean". */
+  setClipPlane(plane: THREE.Plane | null): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -30,6 +33,7 @@ function waveUniforms(waves: Wave[]) {
 }
 
 const VERT = /* glsl */ `
+#include <clipping_planes_pars_vertex>
 uniform float uTime;
 uniform vec4 uWaveA[4]; // dirX, dirZ, amplitude, k
 uniform vec2 uWaveB[4]; // qa, omega
@@ -70,11 +74,14 @@ void main() {
   vWorldPos = p;
   vNormal = normalize(vec3(nx, ny, nz));
   vCrest = crest;
-  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  vec4 mvPosition = viewMatrix * vec4(p, 1.0);
+  #include <clipping_planes_vertex>
+  gl_Position = projectionMatrix * mvPosition;
 }
 `;
 
 const FRAG = /* glsl */ `
+#include <clipping_planes_pars_fragment>
 uniform vec3 uSunDir;
 uniform vec3 uSunColor;
 uniform vec3 uDeepColor;
@@ -101,6 +108,7 @@ float noise(vec2 p) {
 }
 
 void main() {
+  #include <clipping_planes_fragment>
   vec3 N = normalize(vNormal);
   vec3 V = normalize(uCameraPos - vWorldPos);
   vec3 L = normalize(uSunDir);
@@ -163,6 +171,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT,
     fragmentShader: FRAG,
+    clipping: true,
     uniforms: {
       uTime: { value: 0 },
       uWaveA: { value: a },
@@ -184,6 +193,10 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
 
   return {
     mesh,
+    setClipPlane(plane) {
+      mat.clippingPlanes = plane ? [plane] : null;
+      mat.needsUpdate = true;
+    },
     update(time, cameraPos) {
       mat.uniforms.uTime.value = time;
       mat.uniforms.uCameraPos.value.copy(cameraPos);

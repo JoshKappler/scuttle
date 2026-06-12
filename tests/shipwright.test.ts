@@ -24,9 +24,15 @@ describe("shipwright sloop", () => {
     expect(ship.grid.totalMass()).toBeGreaterThan(0.12 * ship.envelopeVolume * WATER_DENSITY);
   });
 
-  it("fully flooded she SINKS: solid mass exceeds solid-cell displacement", () => {
+  it("fully flooded + waterlogged she FOUNDERS: max waterlog overcomes residual flotation", () => {
+    // when flooded, interior water weight cancels interior displacement;
+    // residual lift = solid displacement − mass. The foundering rule can
+    // remove up to 50% of ALL probe lift (≈ envelope displacement), which
+    // must exceed that residual or a wreck floats awash forever.
     const solidDisplacement = ship.grid.solidCount() * 0.25 ** 3 * WATER_DENSITY;
-    expect(ship.grid.totalMass()).toBeGreaterThan(solidDisplacement);
+    const residual = solidDisplacement - ship.grid.totalMass();
+    const maxWaterlogLoss = 0.5 * ship.envelopeVolume * WATER_DENSITY;
+    expect(maxWaterlogLoss).toBeGreaterThan(residual * 1.5); // healthy margin
   });
 
   it("has exactly three watertight compartments", () => {

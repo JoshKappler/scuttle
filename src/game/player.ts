@@ -9,7 +9,7 @@ export class PlayerControls {
   private keys = new Set<string>();
   private orbitYaw = 2.6;
   private orbitPitch = 0.32; // radians above horizon
-  private dist = 22;
+  private dist = 30;
   private dragging = false;
 
   /** Set on KeyF keydown; cleared by whoever consumes the shot. */
@@ -38,6 +38,7 @@ export class PlayerControls {
   constructor(dom: HTMLElement) {
     window.addEventListener("keydown", (e) => {
       this.keys.add(e.code);
+      if (e.repeat) return; // OS key auto-repeat must not re-trigger actions
       if (e.code === "KeyF") this.firePressed = true;
       if (e.code === "KeyR") this.plugPressed = true;
       if (e.code === "KeyP") this.pumpPressed = true;
@@ -66,7 +67,7 @@ export class PlayerControls {
       this.orbitPitch = Math.min(Math.max(this.orbitPitch + e.movementY * 0.004, 0.05), 1.25);
     });
     dom.addEventListener("wheel", (e) => {
-      this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 9), 60);
+      this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 7), 85);
     });
   }
 

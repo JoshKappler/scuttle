@@ -60,10 +60,12 @@ export class SailingController {
     const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.016;
 
     if (thrust > 0 && ship.submergedFrac > 0.02) {
-      // applied at the mast base: beam reaches heel the ship
+      // applied at COM height: thrust above the COM pitched the bow under at
+      // speed (playtest: "front heavy… clips beneath the waves"). Heel still
+      // comes from the keel's lateral resistance in turns.
       const m = ship.build.masts[0];
       const ap = ship.localToWorld(
-        [(m.x + 0.5) * 0.25, (ship.build.deckY + 1) * 0.25, (m.z + 0.5) * 0.25],
+        [(m.x + 0.5) * 0.25, ship.comLocal[1], (m.z + 0.5) * 0.25],
         this.tmpF.clone(),
       );
       body.addForceAtPoint({ x: fwd.x * thrust, y: 0, z: fwd.z * thrust }, ap, true);

@@ -29,6 +29,16 @@ export class Ship {
   /** Fired when damage severs hull sections; receiver spawns debris bodies. */
   onSevered?: (islands: Island[]) => void;
 
+  /** Ship-local center of mass (meters), cached for force application points. */
+  comLocal: [number, number, number];
+
+  /**
+   * Waterlogging 0..0.5: once essentially fully flooded, the structure
+   * saturates and loses lift until she founders. This is what lets a wooden
+   * ship sink without carrying absurd iron ballast (wood alone floats awash).
+   */
+  waterlog = 0;
+
   private keelAnchor: [number, number, number];
   private inertia: [number, number, number];
 
@@ -66,6 +76,7 @@ export class Ship {
     const { world, RAPIER: R } = phys;
     const mass = build.grid.totalMass();
     const com = build.grid.centerOfMass();
+    this.comLocal = com;
     const [nx, ny, nz] = build.grid.dims;
     const l = nx * VOXEL_SIZE;
     const h = ny * VOXEL_SIZE;
@@ -228,6 +239,18 @@ export class Ship {
 
     floodStep(this.build.compartments, this.openings, breaches, dt);
 
+    // foundering: a hull that is essentially full of water waterlogs and
+    // slides under over the following half-minute or so
+    let totVol = 0;
+    let totWater = 0;
+    for (const c of this.build.compartments) {
+      totVol += c.volume;
+      totWater += c.waterVolume;
+    }
+    if (totVol > 0 && totWater / totVol > 0.9) {
+      this.waterlog = Math.min(this.waterlog + 0.015 * dt, 0.5);
+    }
+
     if (this.pumpOn) {
       let worst: (typeof this.build.compartments)[number] | null = null;
       for (const c of this.build.compartments) {
@@ -260,7 +283,7 @@ export class Ship {
       // flooded water is accounted as WEIGHT below (scaling lift AND adding
       // weight would double-count — a full submerged compartment must be
       // net-zero, and weight-only handles partial submersion correctly)
-      const f = probeForce(p, wy, surfaceY, 0);
+      const f = probeForce(p, wy, surfaceY, 0) * (1 - this.waterlog);
       totalVolume += p.volume;
       if (f > 0) {
         const sub = submergedFraction(p, wy, surfaceY);
@@ -411,6 +434,7 @@ export class Ship {
     const grid = this.build.grid;
     const mass = Math.max(grid.totalMass(), 1);
     const com = grid.centerOfMass();
+    this.comLocal = com;
     const [ix, iy, iz] = this.inertia;
     // rescale the box inertia with the new mass (shape change is second-order)
     const scale = mass / Math.max(this.body.mass(), 1);

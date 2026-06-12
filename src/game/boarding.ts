@@ -80,17 +80,17 @@ export class BoardingSystem {
     this.crewSpawned = true;
     const dt = this.deckTop(this.enemyShip);
     const posts: [number, number, number][] = [
-      [6, dt, 3],
-      [10, dt, 2],
-      [12, dt, 4],
-      [8, dt, 4.5],
+      [10, dt, 4],
+      [14, dt, 3.2],
+      [17, dt, 4.8],
+      [12, dt, 5.2],
     ];
     for (const p of posts) {
       const pirate = new Pirate(this.phys, this.scene, this.enemyShip, "enemy", p, 0x4a2330, 0x802020);
       pirate.slashCd = Math.random() * ENEMY_SLASH_CD; // desync the mob
       this.enemies.push(pirate);
     }
-    this.chest.position.set(4.2, dt, 3);
+    this.chest.position.set(4.2, dt, 4);
   }
 
   /** Put the player pirate at the helm of their own ship. */
@@ -101,7 +101,7 @@ export class BoardingSystem {
       this.scene,
       this.playerShip,
       "player",
-      [4.5, this.deckTop(this.playerShip), 3],
+      [4.2, this.deckTop(this.playerShip), 4],
       0x1d3a52,
       0x1c6e6e,
     );
@@ -176,10 +176,12 @@ export class BoardingSystem {
 
       if (onFoot && input.slash && this.slashCd <= 0) {
         this.slashCd = PLAYER_SLASH_CD;
+        this.player.attackTimer = 0.28;
         this.swing(this.player, this.enemies, 1);
       }
       if (onFoot && input.kick && this.kickCd <= 0) {
         this.kickCd = KICK_CD;
+        this.player.kickTimer = 0.3;
         this.kick(this.player, this.enemies);
       }
 
@@ -219,6 +221,7 @@ export class BoardingSystem {
         }
         if (engaged && dist < SLASH_RANGE && e.slashCd <= 0) {
           e.slashCd = ENEMY_SLASH_CD;
+          e.attackTimer = 0.28;
           e.facing = Math.atan2(dz, dx);
           this.effects.blood(pp.x, pp.y + 0.9, pp.z);
           this.playerHp -= 1;
@@ -257,7 +260,7 @@ export class BoardingSystem {
       this.chest.position.set(4.2, this.deckTop(this.enemyShip), 3);
       this.message = "you lost the chest overboard!";
     }
-    const p = this.playerShip.localToWorld([4.5, this.deckTop(this.playerShip) + 1, 3], this.tmpA);
+    const p = this.playerShip.localToWorld([4.2, this.deckTop(this.playerShip) + 1, 4], this.tmpA);
     this.player.body.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
   }
 
@@ -265,8 +268,8 @@ export class BoardingSystem {
     const t = p.body.translation();
     const a = this.playerShip.body.translation();
     const b = this.enemyShip.body.translation();
-    const da = Math.hypot(a.x + 9 - t.x, a.z + 3 - t.z); // rough hull centers
-    const db = Math.hypot(b.x + 9 - t.x, b.z + 3 - t.z);
+    const da = Math.hypot(a.x + 13 - t.x, a.z + 4 - t.z); // rough hull centers
+    const db = Math.hypot(b.x + 13 - t.x, b.z + 4 - t.z);
     return da <= db ? this.playerShip : this.enemyShip;
   }
 
@@ -308,7 +311,7 @@ export class BoardingSystem {
 
     if (this.chestCarried) {
       // bank when back near your own quarterdeck
-      const home = this.playerShip.localToWorld([4.5, this.deckTop(this.playerShip), 3], this.tmpB);
+      const home = this.playerShip.localToWorld([3.4, this.deckTop(this.playerShip), 4], this.tmpB);
       if (Math.hypot(home.x - pp.x, home.y - pp.y, home.z - pp.z) < 3.2) {
         this.chestBanked = true;
         this.chestCarried = false;

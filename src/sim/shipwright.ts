@@ -23,20 +23,21 @@ export interface ShipBuild {
 }
 
 export function buildSloop(): ShipBuild {
-  // grid envelope: 72 × 20 × 24 cells = 18 × 5 × 6 m
-  const nx = 72;
-  const ny = 20;
-  const nz = 24;
+  // a proper fighting brig: 24 m hull (playtest: the 16 m boat "looks like a
+  // fishing vessel and somehow has eight cannons")
+  const nx = 104;
+  const ny = 26;
+  const nz = 32;
   const grid = createGrid(nx, ny, nz);
 
   const x0 = 4; // first station
-  const L = 64; // stations along x (16 m)
-  const deckY = 13; // raised one layer for freeboard (playtest: rode too deep)
-  const halfBeamMax = 9.5; // cells from centerline → beam ≈ 4.75 m
-  const cz = (nz - 1) / 2; // 11.5, centerline between cells
+  const L = 96; // stations along x (24 m)
+  const deckY = 16;
+  const halfBeamMax = 13; // cells from centerline → beam ≈ 6.5 m
+  const cz = (nz - 1) / 2; // centerline between cells
 
   const stationT = (x: number) => (x - x0) / (L - 1);
-  const keelY = (t: number) => 2 + Math.round(3 * Math.pow(Math.abs(t - 0.45) / 0.55, 1.8));
+  const keelY = (t: number) => 2 + Math.round(4 * Math.pow(Math.abs(t - 0.45) / 0.55, 1.8));
   const halfBeam = (t: number) => halfBeamMax * Math.pow(Math.sin(Math.PI * (0.13 + 0.87 * t)), 0.72);
   const sectionHalfBeam = (t: number, y: number) => {
     const k = keelY(t);
@@ -73,25 +74,18 @@ export function buildSloop(): ShipBuild {
     }
   }
 
-  // iron ballast along the keel. Two jobs: (1) without it the deck makes the
-  // ship top-heavy and she turtles (negative metacentric height); (2) the
-  // solid mass must exceed the solid displacement, or a fully flooded wooden
-  // hull just floats awash forever instead of going down. Both found empirically.
+  // iron ballast along the keel: without it the deck makes the ship
+  // top-heavy and she turtles (negative metacentric height). Shifted AFT
+  // (t ≥ 0.15) so the center of mass matches the fuller-aft hull's center
+  // of buoyancy — the old symmetric strip trimmed her down by the bow.
+  // Full sinking of a flooded hull is handled by waterlogging (foundering)
+  // in game/ship.ts, not by overloading her with iron.
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);
-    if (t < 0.08 || t > 0.92) continue;
+    if (t < 0.15 || t > 0.95) continue;
     const by = keelY(t) + 1;
-    // 2-wide strip everywhere, widened + double-stacked on alternating
-    // stations — enough iron to sink her when flooded while keeping a
-    // seaworthy freeboard
-    const zs = x % 2 === 0 ? [10, 11, 12, 13] : [11, 12];
-    for (const z of zs) {
+    for (const z of [14, 15, 16, 17]) {
       if (inside(x, by, z) && grid.get(x, by, z) === EMPTY) grid.set(x, by, z, IRON);
-    }
-    if (x % 2 === 0) {
-      for (const z of [11, 12]) {
-        if (inside(x, by + 1, z) && grid.get(x, by + 1, z) === EMPTY) grid.set(x, by + 1, z, IRON);
-      }
     }
   }
 
@@ -105,30 +99,36 @@ export function buildSloop(): ShipBuild {
     }
   }
 
-  // bulwark rail: one cell of PINE above the deck's outer edge
+  // bulwark rail: three cells (~0.75 m, waist-high) of PINE above the deck
+  // edge — you should not be able to simply step off a fighting ship
   for (let x = 0; x < nx; x++) {
     for (let z = 0; z < nz; z++) {
       if (!inside(x, deckY, z)) continue;
       const onEdge =
         !inside(x - 1, deckY, z) || !inside(x + 1, deckY, z) || !inside(x, deckY, z - 1) || !inside(x, deckY, z + 1);
-      if (onEdge) grid.set(x, deckY + 1, z, PINE);
+      if (onEdge) {
+        grid.set(x, deckY + 1, z, PINE);
+        grid.set(x, deckY + 2, z, PINE);
+        grid.set(x, deckY + 3, z, PINE);
+        grid.set(x, deckY + 4, z, PINE); // a full meter — chest-high rail
+      }
     }
   }
 
   // deck hatches: 2×2 openings over each hold (between/before/after bulkheads)
+  // hatches are GRATED: the deck cells stay solid (walkable — an open hole
+  // by the helm swallowed the captain in playtest), but each hatch is
+  // registered as a flooding path (water pours through gratings once the
+  // deck goes under the coaming)
   const hatchXs = [
     x0 + Math.round(L / 6),
     x0 + Math.round(L / 2),
     x0 + Math.round((5 * L) / 6),
   ];
+  const hatchZ = Math.floor(cz);
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) {
-    for (let dx = 0; dx < 2; dx++) {
-      for (let dz = 0; dz < 2; dz++) {
-        grid.set(hx + dx, deckY, 11 + dz, EMPTY);
-      }
-    }
-    hatches.push({ x: hx, z: 11, w: 2, d: 2 });
+    hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
   }
 
   // compartments + leak audit

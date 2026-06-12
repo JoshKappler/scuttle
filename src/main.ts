@@ -116,7 +116,10 @@ async function main() {
       controls.interactPressed = false;
       if (atWheel) {
         atWheel = false;
-        boarding.message = "you leave the wheel";
+        // the watch douses sail while the captain is off the helm — also
+        // keeps deck-walking sane (12 m/s under your boots is a lot)
+        sailing.sailSet = Math.min(sailing.sailSet, 0.25);
+        boarding.message = "you leave the wheel — the watch shortens sail";
       } else if (boarding.player) {
         const pp = boarding.player.body.translation();
         if (Math.hypot(pp.x - wheelWorld.x, pp.y - wheelWorld.y, pp.z - wheelWorld.z) < 2.4) {
@@ -154,9 +157,9 @@ async function main() {
         new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w),
       );
       const stand = wheelWorld.clone();
-      stand.x -= fwd.x * 0.75;
-      stand.z -= fwd.z * 0.75;
-      stand.y += 0.25;
+      stand.x -= fwd.x * 0.8;
+      stand.z -= fwd.z * 0.8;
+      stand.y -= 0.2; // feet on the deck, not levitating at hub height
       boarding.player.pin(stand, Math.atan2(fwd.z, fwd.x));
     }
 
@@ -233,6 +236,7 @@ async function main() {
   let cutaway = false;
   const cutPlane = new THREE.Plane();
   window.addEventListener("keydown", (e) => {
+    if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
     if (e.code === "KeyV" && boarding.player) {
       firstPerson = !firstPerson;
       boarding.player.setFirstPerson(firstPerson);
@@ -240,6 +244,7 @@ async function main() {
     if (e.code === "KeyX") {
       cutaway = !cutaway;
       for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
+      ocean.setClipPlane(cutaway ? cutPlane : null);
     }
   });
 
@@ -350,65 +355,84 @@ async function main() {
       : "W/S sails · A/D rudder · F fire · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway";
   }
 
-  // broadside trajectory preview while aiming (RMB) — playtest: "can't tell
-  // what right mouse aiming is doing"
+  // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
+  // the aiming side (playtest: "all four cannons … should show their
+  // trajectory as well and articulate")
   const ARC_PTS = 48;
-  const aimGeo = new THREE.BufferGeometry();
-  const aimPos = new Float32Array(ARC_PTS * 3);
-  aimGeo.setAttribute("position", new THREE.BufferAttribute(aimPos, 3));
-  const aimLine = new THREE.Line(
-    aimGeo,
-    new THREE.LineBasicMaterial({ color: 0xe3b341, transparent: true, opacity: 0.85 }),
-  );
-  aimLine.frustumCulled = false;
-  aimLine.visible = false;
-  scene.add(aimLine);
+  const aimLines: { line: THREE.Line; pos: Float32Array }[] = [];
+  for (let i = 0; i < 4; i++) {
+    const pos = new Float32Array(ARC_PTS * 3);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    const line = new THREE.Line(
+      geo,
+      new THREE.LineBasicMaterial({ color: 0xe3b341, transparent: true, opacity: 0.8 }),
+    );
+    line.frustumCulled = false;
+    line.visible = false;
+    scene.add(line);
+    aimLines.push({ line, pos });
+  }
+
+  function aimSide(): 1 | -1 {
+    const tr2 = sloop.body.translation();
+    const rot2 = sloop.body.rotation();
+    const inv = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w).invert();
+    const rel = new THREE.Vector3(tr2.x - camera.position.x, 0, tr2.z - camera.position.z).applyQuaternion(inv);
+    return rel.z >= 0 ? 1 : -1;
+  }
 
   function updateAimArc(): void {
     if (!controls.aiming || onFoot) {
-      aimLine.visible = false;
+      for (const a of aimLines) a.line.visible = false;
       return;
     }
-    aimLine.visible = true;
-    const tr2 = sloop.body.translation();
     const rot2 = sloop.body.rotation();
     const q2 = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w);
-    const inv = q2.clone().invert();
-    const rel = new THREE.Vector3(tr2.x - camera.position.x, 0, tr2.z - camera.position.z).applyQuaternion(inv);
-    const side = rel.z >= 0 ? 1 : -1;
-    const muzzle = sloop.localToWorld(
-      [9, (sloop.build.deckY + 1.5) * 0.25, side > 0 ? 6.2 : -0.2],
-      new THREE.Vector3(),
-    );
-    const dir = new THREE.Vector3(0, 0, side).applyQuaternion(q2);
-    dir.y = 0;
-    dir.normalize();
+    const side = aimSide();
+    const ports = sloop.build.cannonPorts.filter((p) => p.side === side);
     const el = (controls.elevationDeg * Math.PI) / 180;
-    dir.y = Math.tan(el);
-    dir.normalize();
-    const v = dir.multiplyScalar(55);
-    const p = muzzle.clone();
-    const step = 0.06;
-    for (let i = 0; i < ARC_PTS; i++) {
-      aimPos[i * 3] = p.x;
-      aimPos[i * 3 + 1] = p.y;
-      aimPos[i * 3 + 2] = p.z;
-      const sp = v.length();
-      v.x += -0.006 * sp * v.x * step;
-      v.y += (-9.81 - 0.006 * sp * v.y) * step;
-      v.z += -0.006 * sp * v.z * step;
-      p.addScaledVector(v, step);
-      if (p.y < surfaceHeight(waves, p.x, p.z, world.simTime)) {
-        // pin remaining points at the splash so the line ends at the water
-        for (let j = i + 1; j < ARC_PTS; j++) {
-          aimPos[j * 3] = p.x;
-          aimPos[j * 3 + 1] = p.y;
-          aimPos[j * 3 + 2] = p.z;
-        }
-        break;
+
+    for (let pi = 0; pi < aimLines.length; pi++) {
+      const arc = aimLines[pi];
+      const port = ports[pi];
+      if (!port) {
+        arc.line.visible = false;
+        continue;
       }
+      arc.line.visible = true;
+      const muzzle = sloop.localToWorld(
+        [(port.x + 0.5) * 0.25, (port.y + 0.5) * 0.25, (port.z + 0.5 + side * 1.2) * 0.25],
+        new THREE.Vector3(),
+      );
+      const dir = new THREE.Vector3(0, 0, side).applyQuaternion(q2);
+      dir.y = 0;
+      dir.normalize();
+      dir.y = Math.tan(el);
+      dir.normalize();
+      const v = dir.multiplyScalar(55);
+      const p = muzzle.clone();
+      const step = 0.06;
+      for (let i = 0; i < ARC_PTS; i++) {
+        arc.pos[i * 3] = p.x;
+        arc.pos[i * 3 + 1] = p.y;
+        arc.pos[i * 3 + 2] = p.z;
+        const sp = v.length();
+        v.x += -0.006 * sp * v.x * step;
+        v.y += (-9.81 - 0.006 * sp * v.y) * step;
+        v.z += -0.006 * sp * v.z * step;
+        p.addScaledVector(v, step);
+        if (p.y < surfaceHeight(waves, p.x, p.z, world.simTime)) {
+          for (let j = i + 1; j < ARC_PTS; j++) {
+            arc.pos[j * 3] = p.x;
+            arc.pos[j * 3 + 1] = p.y;
+            arc.pos[j * 3 + 2] = p.z;
+          }
+          break;
+        }
+      }
+      (arc.line.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
     }
-    aimGeo.attributes.position.needsUpdate = true;
   }
 
   // bow wake so hulls don't phase silently through the sea (playtest feedback)
@@ -423,7 +447,7 @@ async function main() {
     wakeF.y = 0;
     wakeF.normalize();
     // stem position at the waterline
-    ship.localToWorld([17, 1.5, 3], wakeV);
+    ship.localToWorld([25.4, 1.8, 4], wakeV);
     wakeV.y = surfaceHeight(waves, wakeV.x, wakeV.z, world.simTime) + 0.05;
     effects.bowWake(wakeV, wakeF, speed);
   };
@@ -435,7 +459,12 @@ async function main() {
     emitBowWake(enemy);
     effects.update(dt);
     updateAimArc();
-    sloopVisual.animate(world.simTime, sailing.rudder, sailing.sailSet);
+    sloopVisual.animate(
+      world.simTime,
+      sailing.rudder,
+      sailing.sailSet,
+      controls.aiming && !onFoot ? { side: aimSide(), elevationDeg: controls.elevationDeg } : null,
+    );
     enemyVisual.animate(world.simTime, captain.sailing.rudder, captain.sailing.sailSet);
 
     const tr = sloop.body.translation();

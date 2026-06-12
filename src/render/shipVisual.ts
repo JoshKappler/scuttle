@@ -44,8 +44,10 @@ export class ShipVisual {
                           + floor((vShipLocal.x + floor(vShipLocal.y / 0.25) * 0.7) / 2.0) * 7.0
                           + floor(vShipLocal.z / 0.25) * 3.0;
             float h = fract(sin(plankId * 127.1) * 43758.5453);
-            float grain = 0.90 + 0.14 * h;
-            grain *= 0.965 + 0.035 * sin(vShipLocal.x * 36.0 + h * 41.0 + vShipLocal.y * 4.0);
+            // low-frequency, low-contrast: high-freq stripes aliased into
+            // static-like shimmer at distance (playtest)
+            float grain = 0.93 + 0.10 * h;
+            grain *= 0.985 + 0.015 * sin(vShipLocal.x * 7.0 + h * 41.0);
             diffuseColor.rgb *= grain;
           }`,
         );
@@ -92,14 +94,32 @@ export class ShipVisual {
     }
   }
 
-  /** Per-frame rig animation: sail flutter/fill, rudder + wheel answer the helm. */
-  animate(time: number, rudderNorm: number, sailSet: number): void {
+  /** Per-frame rig animation: sail flutter/fill, rudder + wheel answer the
+   *  helm (smoothed, correct sense: port turn → trailing edge to port),
+   *  cannon barrels track the aiming elevation on the aiming side. */
+  animate(time: number, rudderNorm: number, sailSet: number, aim?: { side: 1 | -1; elevationDeg: number } | null): void {
+    const dt = Math.min(Math.max(time - this.lastAnimT, 0), 0.1);
+    this.lastAnimT = time;
+    this.dispRudder += (rudderNorm - this.dispRudder) * Math.min(dt * 6, 1);
+
     if (this.sailUniforms) {
       this.sailUniforms.uTime.value = time;
       this.sailUniforms.uFill.value = 0.35 + 0.65 * sailSet;
     }
-    if (this.rudderPivot) this.rudderPivot.rotation.y = rudderNorm * 0.55;
-    if (this.wheelSpin) this.wheelSpin.rotation.z = rudderNorm * 2.6;
+    // rudder convention: sailing.rudder + = port turn → trailing edge swings
+    // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
+    // puts the trailing edge at −z for +r. Wheel turns the same sense as a
+    // real helm (left turn = counterclockwise from the helmsman).
+    if (this.rudderPivot) this.rudderPivot.rotation.y = -this.dispRudder * 0.55;
+    if (this.wheelSpin) this.wheelSpin.rotation.z = -this.dispRudder * 2.6;
+
+    const elRad = ((aim?.elevationDeg ?? 2) * Math.PI) / 180;
+    for (const b of this.barrels) {
+      const active = aim && b.side === aim.side;
+      const el = active ? elRad : (2 * Math.PI) / 180;
+      b.mesh.rotation.x = b.side === 1 ? -el : Math.PI + el;
+      if (b.side === -1) b.mesh.rotation.y = 0; // rotation.x = π already flips the muzzle to −z
+    }
   }
 
   /** Cutaway: clip the hull against a world-space plane (null disables).
@@ -178,6 +198,9 @@ export class ShipVisual {
   private sailUniforms: { uTime: { value: number }; uFill: { value: number } } | null = null;
   private rudderPivot: THREE.Group | null = null;
   private wheelSpin: THREE.Group | null = null;
+  private barrels: { mesh: THREE.Mesh; side: 1 | -1 }[] = [];
+  private dispRudder = 0;
+  private lastAnimT = 0;
   /** Local position of the ship's wheel — gameplay anchors helm control here. */
   wheelLocal: [number, number, number] = [0, 0, 0];
 
@@ -214,7 +237,10 @@ export class ShipVisual {
       side: THREE.DoubleSide,
     });
 
-    // billow + flutter in the vertex stage; uFill scales the belly with sail set
+    // billow + flutter in the vertex stage; uFill scales the belly with sail
+    // set. SQUARE RIG: the sail hangs between two yards (top/bottom pinned by
+    // sin(πv)) and bellies FORWARD along its normal — a vertical bulge, per
+    // playtest ("billow out vertically, not in a horizontal curve")
     this.sailUniforms = { uTime: { value: 0 }, uFill: { value: 1 } };
     const su = this.sailUniforms;
     sailMat.onBeforeCompile = (shader) => {
@@ -229,62 +255,49 @@ export class ShipVisual {
           "#include <begin_vertex>",
           `#include <begin_vertex>
           {
-            // uv.x: 0 at mast (luff) → 1 at leech; uv.y: 0 foot → 1 head
-            float belly = sin(uv.x * 3.14159) * (0.55 - 0.22 * uv.y) * uFill;
-            float flutter = sin(uTime * 5.2 + uv.x * 9.0 + uv.y * 3.0) * 0.045 * (0.3 + uv.x);
+            // uv.y: 0 at the lower yard → 1 at the upper yard (both pinned);
+            // uv.x: 0..1 across the width (edges nearly pinned by sheets)
+            float belly = sin(uv.y * 3.14159) * (0.35 + 0.65 * sin(uv.x * 3.14159)) * 1.1 * uFill;
+            float flutter = sin(uTime * 4.6 + uv.x * 8.0 + uv.y * 5.0) * 0.05 * uFill;
             transformed.z += belly + flutter;
           }`,
         );
     };
 
     for (const m of this.build.masts) {
-      const mastH = 9.5;
+      const mastH = 12;
       const deckTop = (this.build.deckY + 1) * VOXEL_SIZE;
       const mx = (m.x + 0.5) * VOXEL_SIZE;
       const mz = (m.z + 0.5) * VOXEL_SIZE;
 
-      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.15, mastH, 8), woodMat);
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.17, mastH, 8), woodMat);
       mast.position.set(mx, deckTop + mastH / 2 - 0.5, mz);
       mast.castShadow = true;
       this.group.add(mast);
 
-      // gaff rig: boom (foot spar) and gaff (head spar) both hinged AT the
-      // mast, sail laced between them with its luff against the mast
-      const boomLen = 5.6;
-      const footY = deckTop + 1.45;
-      const headY = footY + 4.6;
+      // two yards CENTERED on the mast, running beam-wise (port↔starboard),
+      // suspending the sail between them
+      const yardLow = deckTop + 3.4;
+      const yardHigh = deckTop + 8.6;
+      const yardGeoLong = new THREE.CylinderGeometry(0.06, 0.06, 8.0, 6);
+      yardGeoLong.rotateX(Math.PI / 2); // axis along z (beam-wise)
+      const yardGeoShort = new THREE.CylinderGeometry(0.05, 0.05, 6.8, 6);
+      yardGeoShort.rotateX(Math.PI / 2);
+      const lowYard = new THREE.Mesh(yardGeoLong, woodMat);
+      lowYard.position.set(mx, yardLow, mz);
+      lowYard.castShadow = true;
+      const highYard = new THREE.Mesh(yardGeoShort, woodMat);
+      highYard.position.set(mx, yardHigh, mz);
+      highYard.castShadow = true;
+      this.group.add(lowYard, highYard);
 
-      const boom = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.075, boomLen, 6), woodMat);
-      boom.rotation.z = Math.PI / 2;
-      boom.position.set(mx - boomLen / 2, footY, mz);
-      boom.castShadow = true;
-      this.group.add(boom);
-
-      const gaffLen = boomLen * 0.78;
-      const gaff = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.06, gaffLen, 6), woodMat);
-      gaff.rotation.z = Math.PI / 2 - 0.22; // peaked up like a proper gaff
-      gaff.position.set(mx - (gaffLen / 2) * Math.cos(0.22), headY + (gaffLen / 2) * Math.sin(0.22) - 0.3, mz);
-      gaff.castShadow = true;
-      this.group.add(gaff);
-
-      // sail: luff edge exactly at the mast, foot along the boom, head along
-      // the gaff (trapezoid via vertex shaping), facing fore-aft
-      const sailW = boomLen - 0.3;
-      const sailH = headY - footY;
-      const sailGeo = new THREE.PlaneGeometry(sailW, sailH, 10, 10);
-      const pos = sailGeo.attributes.position;
-      const uv = sailGeo.attributes.uv;
-      for (let i = 0; i < pos.count; i++) {
-        const u = uv.getX(i); // 0..1 across width
-        const v = uv.getY(i); // 0..1 up height
-        // shorten the head to the gaff length and peak it up slightly
-        pos.setX(i, -u * (sailW * (1 - 0.22 * v)));
-        pos.setY(i, v * sailH + v * (1 - u) * 0.0 + v * u * 0.0 + v * 0.0);
-      }
-      sailGeo.computeVertexNormals();
+      // square sail hanging between the yards, centered on the mast
+      const sailW = 7.4;
+      const sailH = yardHigh - yardLow - 0.15;
+      const sailGeo = new THREE.PlaneGeometry(sailW, sailH, 12, 12);
       const sail = new THREE.Mesh(sailGeo, sailMat);
-      sail.rotation.y = Math.PI / 2; // plane spans fore-aft (x), normal to z
-      sail.position.set(mx, footY, mz);
+      sail.rotation.y = Math.PI / 2; // spans beam-wise; normal fore-aft, belly forward
+      sail.position.set(mx - 0.25, (yardLow + yardHigh) / 2, mz);
       sail.castShadow = true;
       this.group.add(sail);
     }
@@ -292,18 +305,18 @@ export class ShipVisual {
     // stern rudder: hinged blade below the waterline that visibly answers the helm
     const sternX = 4 * VOXEL_SIZE;
     this.rudderPivot = new THREE.Group();
-    this.rudderPivot.position.set(sternX + 0.1, 1.6, (this.build.grid.dims[2] / 2) * VOXEL_SIZE);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.1, 0.12), woodMat);
-    blade.position.set(-0.5, -0.2, 0);
+    this.rudderPivot.position.set(sternX + 0.1, 1.8, (this.build.grid.dims[2] / 2) * VOXEL_SIZE);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.4, 0.14), woodMat);
+    blade.position.set(-0.6, -0.2, 0);
     this.rudderPivot.add(blade);
     this.group.add(this.rudderPivot);
 
-    // the wheel: classic spoked helm on the quarterdeck
+    // the wheel: classic spoked helm on the quarterdeck, clear of the rig
     const helm = new THREE.Group();
     const deckTopY = (this.build.deckY + 1) * VOXEL_SIZE;
     const wz = (this.build.grid.dims[2] / 2) * VOXEL_SIZE;
-    helm.position.set(5.4, deckTopY + 0.95, wz);
-    this.wheelLocal = [5.4, deckTopY + 0.95, wz];
+    helm.position.set(3.4, deckTopY + 1.0, wz);
+    this.wheelLocal = [3.4, deckTopY + 1.0, wz];
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 1.0, 8), woodMat);
     post.position.y = -0.5;
     helm.add(post);
@@ -323,25 +336,28 @@ export class ShipVisual {
     helm.add(axle);
     this.group.add(helm);
 
-    // cannons: barrel + carriage at every port, pointing outboard
+    // cannons: proper-sized barrel + carriage at every port; barrels are
+    // stored so they articulate with the aiming elevation
     const ironMat = new THREE.MeshStandardMaterial({ color: 0x14151a, roughness: 0.45, metalness: 0.7 });
     const carriageMat = new THREE.MeshStandardMaterial({ color: 0x2e2014, roughness: 0.9 });
-    const barrelGeo = new THREE.CylinderGeometry(0.07, 0.11, 1.25, 10);
-    barrelGeo.rotateX(Math.PI / 2); // along z (outboard axis)
-    const carriageGeo = new THREE.BoxGeometry(0.5, 0.32, 0.7);
+    const barrelGeo = new THREE.CylinderGeometry(0.11, 0.17, 2.1, 10);
+    barrelGeo.rotateX(Math.PI / 2); // muzzle toward +z (outboard for side +1)
+    barrelGeo.translate(0, 0, 0.55); // breech pivot: rotate about the carriage
+    const carriageGeo = new THREE.BoxGeometry(0.85, 0.5, 1.05);
     for (const port of this.build.cannonPorts) {
       const px = (port.x + 0.5) * VOXEL_SIZE;
       const py = (this.build.deckY + 1) * VOXEL_SIZE;
-      const pz = (port.z + 0.5 - port.side * 1.6) * VOXEL_SIZE;
+      const pz = (port.z + 0.5 - port.side * 2.6) * VOXEL_SIZE;
       const carriage = new THREE.Mesh(carriageGeo, carriageMat);
-      carriage.position.set(px, py + 0.16, pz);
+      carriage.position.set(px, py + 0.25, pz);
       carriage.castShadow = true;
       this.group.add(carriage);
       const barrel = new THREE.Mesh(barrelGeo, ironMat);
-      barrel.position.set(px, py + 0.38, pz + port.side * 0.35);
+      barrel.position.set(px, py + 0.62, pz + port.side * 0.2);
       if (port.side < 0) barrel.rotation.y = Math.PI;
       barrel.castShadow = true;
       this.group.add(barrel);
+      this.barrels.push({ mesh: barrel, side: port.side });
     }
 
     // bowsprit at the bow (max-x end), angled slightly upward

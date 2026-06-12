@@ -46,49 +46,95 @@ export class Pirate {
     this.body = world.createRigidBody(
       R.RigidBodyDesc.kinematicPositionBased().setTranslation(spawn.x, spawn.y + 1.2, spawn.z),
     );
-    this.collider = world.createCollider(R.ColliderDesc.capsule(0.5, 0.28), this.body);
+    // SENSOR: a kinematic capsule with a solid collider has infinite
+    // effective mass and will physically shove (and capsize!) the dynamic
+    // ship it stands on. Sensors generate no contact forces; the character
+    // controller still sweeps the capsule SHAPE against the world, so
+    // walking/standing is unaffected. (Playtest: "standing in the center,
+    // the boat has completely capsized.")
+    this.collider = world.createCollider(R.ColliderDesc.capsule(0.5, 0.28).setSensor(true), this.body);
     this.controller = world.createCharacterController(0.05);
     this.controller.enableAutostep(0.35, 0.2, true);
-    this.controller.enableSnapToGround(0.4);
+    this.controller.enableSnapToGround(0.6); // generous: decks drop with the swell
     this.controller.setMaxSlopeClimbAngle((50 * Math.PI) / 180);
 
-    // capsule pirate: body, head, sash — readable at gameplay distance
+    // built pirate: legs, torso, arms, head, hat/bandana, cutlass — placeholder
+    // until a real CC0 character pack lands, but no longer a pill
     this.mesh = new THREE.Group();
-    const bodyMesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.28, 0.95, 4, 10),
-      new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.8 }),
-    );
-    bodyMesh.position.y = 0.78;
-    bodyMesh.castShadow = true;
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.21, 10, 10),
-      new THREE.MeshStandardMaterial({ color: 0xc8a07a, roughness: 0.7 }),
-    );
+    const skin = new THREE.MeshStandardMaterial({ color: 0xc8a07a, roughness: 0.7 });
+    const cloth = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.85 });
+    const accent = new THREE.MeshStandardMaterial({ color: sashColor, roughness: 0.8 });
+
+    const legGeo = new THREE.CapsuleGeometry(0.085, 0.42, 3, 8);
+    for (const s of [-1, 1]) {
+      const leg = new THREE.Mesh(legGeo, cloth);
+      leg.position.set(0, 0.33, s * 0.12);
+      leg.castShadow = true;
+      this.mesh.add(leg);
+    }
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.5, 4, 10), cloth);
+    torso.position.y = 0.95;
+    torso.castShadow = true;
+    const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.1, 10), accent);
+    belt.position.y = 0.72;
+    const armGeo = new THREE.CapsuleGeometry(0.07, 0.42, 3, 8);
+    this.swordArm = new THREE.Group();
+    const armR = new THREE.Mesh(armGeo, cloth);
+    armR.position.y = -0.22;
+    this.swordArm.add(armR);
+    this.swordArm.position.set(0, 1.28, 0.32);
+    this.swordArm.rotation.x = 0.18;
+    const armL = new THREE.Mesh(armGeo, cloth);
+    armL.position.set(0, 1.05, -0.32);
+    armL.rotation.x = -0.15;
+    armL.castShadow = true;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 10), skin);
     head.position.y = 1.62;
     head.castShadow = true;
-    const sash = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.225, 0.225, 0.14, 10),
-      new THREE.MeshStandardMaterial({ color: sashColor, roughness: 0.85 }),
-    );
-    sash.position.y = 1.78;
+
+    let headgear: THREE.Object3D;
+    if (faction === "player") {
+      // captain's hat: squashed cone + brim
+      const hat = new THREE.Group();
+      const crown = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.26, 10), accent);
+      crown.position.y = 1.88;
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.035, 12), accent);
+      brim.position.y = 1.77;
+      hat.add(crown, brim);
+      headgear = hat;
+    } else {
+      const bandana = new THREE.Mesh(new THREE.CylinderGeometry(0.205, 0.215, 0.12, 10), accent);
+      bandana.position.y = 1.74;
+      headgear = bandana;
+    }
+
     const sword = new THREE.Mesh(
-      new THREE.BoxGeometry(0.05, 0.05, 0.85),
+      new THREE.BoxGeometry(0.05, 0.85, 0.05),
       new THREE.MeshStandardMaterial({ color: 0xb8bcc4, roughness: 0.3, metalness: 0.8 }),
     );
-    sword.position.set(0.34, 0.95, 0.3);
-    this.mesh.add(bodyMesh, head, sash, sword);
+    sword.position.y = -0.75;
+    this.swordArm.add(sword);
+
+    this.headParts = [head, headgear];
+    this.mesh.add(torso, belt, this.swordArm, armL, head, headgear);
     scene.add(this.mesh);
   }
+
+  private swordArm!: THREE.Group;
+  private headParts: THREE.Object3D[] = [];
+  /** Set by combat when this pirate swings; drives the chop animation. */
+  attackTimer = 0;
+  /** Set by combat on kick; drives the lunge animation. */
+  kickTimer = 0;
 
   worldPos(out: THREE.Vector3): THREE.Vector3 {
     const t = this.body.translation();
     return out.set(t.x, t.y, t.z);
   }
 
-  /** First-person: hide the head so the camera doesn't sit inside it. */
+  /** First-person: hide the head + hat so the camera doesn't sit inside them. */
   setFirstPerson(fp: boolean): void {
-    this.mesh.children[1].visible = !fp; // head
-    this.mesh.children[2].visible = !fp; // sash sits at eye height too
+    for (const part of this.headParts) part.visible = !fp;
   }
 
   /** Pin to a world position with a fixed facing (used while at the wheel). */
@@ -102,6 +148,8 @@ export class Pirate {
 
   /** Move one fixed step. moveX/moveZ are a world-space direction (≤1). */
   step(dt: number, moveX: number, moveZ: number, jump: boolean, waves: Wave[], simTime: number): void {
+    this.attackTimer = Math.max(this.attackTimer - dt, 0);
+    this.kickTimer = Math.max(this.kickTimer - dt, 0);
     if (!this.alive) {
       this.syncMesh();
       this.ragdollAge += dt;
@@ -110,13 +158,15 @@ export class Pirate {
     const tr = this.body.translation();
     const surf = surfaceHeight(waves, tr.x, tr.z, simTime);
 
-    this.swimming = tr.y < surf + 0.4;
+    // chest-deep before swim mode kicks in — an awash deck is still walkable
+    // (playtest: bow dipped, walking/jumping died because swim engaged early)
+    this.swimming = tr.y < surf - 0.45;
     if (this.swimming) {
       // damped spring to the surface — undamped buoyancy made swimmers
       // oscillate into 50-foot breaches (playtest bug)
       this.vy += ((surf - 0.45 - tr.y) * 5 - this.vy * 3.2) * dt;
       this.vy = Math.min(Math.max(this.vy, -3), 3);
-      const k = 0.35;
+      const k = 0.55;
       this.body.setNextKinematicTranslation({
         x: tr.x + moveX * WALK_SPEED * k * dt,
         y: tr.y + this.vy * dt,
@@ -133,17 +183,18 @@ export class Pirate {
       this.vy = Math.max(this.vy - G * dt, -18);
     }
 
-    // deck-carry from this pirate's ship
+    // deck-carry from this pirate's ship — HORIZONTAL only: vertical deck
+    // motion is handled by ground collision + snap-to-ground; adding it to
+    // the desired movement double-counts and makes characters hop in waves
     const sv = this.ship.body.linvel();
     const om = this.ship.body.angvel();
     const com = this.ship.body.worldCom();
-    const rx = tr.x - com.x;
     const ry = tr.y - com.y;
     const rz = tr.z - com.z;
     const desired = {
       x: (moveX * WALK_SPEED + sv.x + om.y * rz - om.z * ry) * dt,
-      y: (this.vy + sv.y + om.z * rx - om.x * rz) * dt,
-      z: (moveZ * WALK_SPEED + sv.z + om.x * ry - om.y * rx) * dt,
+      y: this.vy * dt,
+      z: (moveZ * WALK_SPEED + sv.z + om.x * ry - om.y * (tr.x - com.x)) * dt,
     };
     this.controller!.computeColliderMovement(this.collider, desired);
     const m = this.controller!.computedMovement();
@@ -157,7 +208,12 @@ export class Pirate {
     const t = this.body.translation();
     this.mesh.position.set(t.x, t.y - 0.78, t.z);
     if (this.alive) {
-      this.mesh.rotation.set(0, -this.facing, 0);
+      // kick: brief forward lunge of the whole body
+      const kickP = this.kickTimer > 0 ? Math.sin((1 - this.kickTimer / 0.3) * Math.PI) : 0;
+      this.mesh.rotation.set(0, -this.facing, kickP * 0.28);
+      // slash: overhead chop of the sword arm
+      const swingP = this.attackTimer > 0 ? Math.sin((1 - this.attackTimer / 0.28) * Math.PI) : 0;
+      this.swordArm.rotation.x = 0.18 - swingP * 1.9;
     } else {
       const r = this.body.rotation();
       this.mesh.position.set(t.x, t.y, t.z);
