@@ -98,6 +98,7 @@ async function main() {
   const banner = document.getElementById("banner")!;
 
   let gameOver = false;
+  let manOverboard = false;
   let plugChannel = 0; // seconds remaining on the current plank repair
 
   const isSunk = (s: Ship) =>
@@ -172,6 +173,18 @@ async function main() {
     onFoot = !atWheel;
 
     if (atWheel) controls.updateSailing(sailing, dt);
+    // man overboard! the crew backs the sails so she slows and waits while
+    // you swim for the stern ladder (round 6: "your imaginary crew should
+    // throttle down all the way so you at least have the chance to climb up")
+    if (boarding.player && boarding.player.swimming) {
+      sailing.sailSet = Math.max(sailing.sailSet - dt * 0.5, 0);
+      if (!manOverboard) {
+        manOverboard = true;
+        boarding.message = "MAN OVERBOARD — the crew backs the sails!";
+      }
+    } else {
+      manOverboard = false;
+    }
     sailing.apply(sloop, wind);
     if (!gameOver) captain.update(dt, t, waves, wind, sloop);
 
