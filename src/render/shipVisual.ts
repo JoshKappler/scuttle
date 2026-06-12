@@ -1,7 +1,6 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
-import { barrelDirLocal, setMuzzleGeometry } from "../game/gunnery";
+import { barrelDirLocal, BORE_UP, TIP_FROM_TRUNNION, TRUNNION_OUT } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
 import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
@@ -150,6 +149,8 @@ export class ShipVisual {
     // barrels share the gunnery module's direction math, so what you see is
     // exactly where the ball will go. Yaw-then-pitch keeps carriages upright
     // (a quaternion shortest-arc flip turned port cannons upside down).
+    // Dissected guns: TRAVERSE slews the whole carriage, ELEVATION pitches
+    // only the barrel about its trunnions (counter-rotated for baked tilt).
     for (const b of this.barrels) {
       const active = aim && b.side === aim.side;
       const d = barrelDirLocal(
@@ -158,7 +159,14 @@ export class ShipVisual {
         active ? aim.traverseDeg : 0,
         ShipVisual.tmpDir,
       );
-      b.mesh.rotation.set(-Math.asin(Math.min(Math.max(d.y, -1), 1)), Math.atan2(d.x, d.z), 0);
+      const pitch = Math.asin(Math.min(Math.max(d.y, -1), 1));
+      const yaw = Math.atan2(d.x, d.z);
+      if (b.elev) {
+        b.mesh.rotation.set(0, yaw, 0);
+        b.elev.rotation.x = (b.tilt ?? 0) - pitch;
+      } else {
+        b.mesh.rotation.set(-pitch, yaw, 0);
+      }
     }
   }
 
@@ -244,7 +252,9 @@ export class ShipVisual {
   private sailUniforms: { uTime: { value: number }; uFill: { value: number } } | null = null;
   private rudderPivot: THREE.Group | null = null;
   private wheelSpin: THREE.Group | null = null;
-  private barrels: { mesh: THREE.Object3D; side: 1 | -1 }[] = [];
+  /** Per gun: the yaw pivot, plus (once the GLB is dissected) the trunnion
+   *  group that takes elevation and the sculpt's baked tilt to counter. */
+  private barrels: { mesh: THREE.Object3D; side: 1 | -1; elev?: THREE.Object3D; tilt?: number }[] = [];
   private dispRudder = 0;
   private lastAnimT = 0;
   /** Local position of the ship's wheel — gameplay anchors helm control here. */
@@ -252,31 +262,17 @@ export class ShipVisual {
   /** Local position of the stern ladder — swimmers climb aboard here. */
   ladderLocal: [number, number, number] = [0, 0, 0];
 
-  /** The Quaternius cannon (CC0), loaded once and cloned per port; until it
-   *  resolves, simple cylinder barrels stand in. */
-  private static cannonGltf: THREE.Group | null = null;
-  private static cannonLoading = false;
-  private static muzzleMeasured = false;
-  private static onCannonReady: (() => void)[] = [];
-  private static loadCannon(cb: () => void): void {
-    if (ShipVisual.cannonGltf) {
-      cb();
-      return;
-    }
-    ShipVisual.onCannonReady.push(cb);
-    if (ShipVisual.cannonLoading) return;
-    ShipVisual.cannonLoading = true;
-    new GLTFLoader().load(
-      "/assets/props/cannon.glb",
-      (g) => {
-        ShipVisual.cannonGltf = g.scene;
-        for (const f of ShipVisual.onCannonReady) f();
-        ShipVisual.onCannonReady.length = 0;
-      },
-      undefined,
-      (err) => console.warn("cannon model failed to load — keeping cylinders", err),
-    );
-  }
+  /** Shared procedural gun geometries (lathe barrel + carriage), built once. */
+  private static gunGeo: {
+    barrel: THREE.BufferGeometry;
+    trun: THREE.CylinderGeometry;
+    cheekF: THREE.BoxGeometry;
+    cheekR: THREE.BoxGeometry;
+    bed: THREE.BoxGeometry;
+    axle: THREE.CylinderGeometry;
+    wheelF: THREE.CylinderGeometry;
+    wheelR: THREE.CylinderGeometry;
+  } | null = null;
 
   /** Square rig + bowsprit, stern rudder, helm wheel, guns, stern ladder. */
   private addRig(): void {
@@ -415,14 +411,37 @@ export class ShipVisual {
     helm.add(axle);
     this.group.add(helm);
 
-    // cannons: a pivot group per port, articulated by the gunnery math.
-    // Cylinder placeholders show instantly; the Quaternius cannon model
-    // (carriage, wheels, proper barrel) swaps in when loaded (round 5:
-    // "the cannon models could be much better … take someone else's")
+    // cannons: procedural naval guns BUILT FROM the gunnery constants — a
+    // lathe-profile barrel pitching about real trunnions while the stepped
+    // oak carriage stays on its trucks. Round 6 retired the CC0 prop: it was
+    // one merged mesh with ~37° of elevation baked into the sculpt, so it
+    // could never point where the ball went.
     const ironMat = new THREE.MeshStandardMaterial({ color: 0x14151a, roughness: 0.45, metalness: 0.7 });
-    const barrelGeo = new THREE.CylinderGeometry(0.11, 0.17, 2.1, 10);
-    barrelGeo.rotateX(Math.PI / 2); // muzzle toward +z (outboard for side +1)
-    barrelGeo.translate(0, 0, 0.55); // breech pivot: rotate about the carriage
+    if (!ShipVisual.gunGeo) {
+      // classic gun profile, lathe axis +y, trunnion at y=0: cascabel ball,
+      // breech ring, first reinforce, tapering chase, muzzle swell, bore face
+      const prof = [
+        [0.001, -0.62], [0.05, -0.6], [0.085, -0.52], [0.062, -0.45],
+        [0.108, -0.43], [0.108, -0.3], [0.095, -0.28],
+        [0.09, 0.42], [0.08, 0.46],
+        [0.072, 1.18], [0.088, 1.24], [0.094, 1.28], [0.07, TIP_FROM_TRUNNION - 0.01],
+        [0.045, TIP_FROM_TRUNNION], [0.001, TIP_FROM_TRUNNION],
+      ].map(([r, y]) => new THREE.Vector2(r, y));
+      const barrel = new THREE.LatheGeometry(prof, 14);
+      barrel.rotateX(Math.PI / 2); // lathe axis → +z (muzzle outboard)
+      ShipVisual.gunGeo = {
+        barrel,
+        trun: new THREE.CylinderGeometry(0.042, 0.042, 0.36, 8),
+        cheekF: new THREE.BoxGeometry(0.07, 0.44, 0.62),
+        cheekR: new THREE.BoxGeometry(0.07, 0.28, 0.4),
+        bed: new THREE.BoxGeometry(0.3, 0.07, 1.0),
+        axle: new THREE.CylinderGeometry(0.045, 0.045, 0.64, 8),
+        wheelF: new THREE.CylinderGeometry(0.17, 0.17, 0.09, 12),
+        wheelR: new THREE.CylinderGeometry(0.15, 0.15, 0.09, 12),
+      };
+    }
+    const gg = ShipVisual.gunGeo;
+    const deckInPivot = -0.62; // the pivot origin floats 0.62 above the deck
     for (const port of this.build.cannonPorts) {
       const px = (port.x + 0.5) * VOXEL_SIZE;
       const py = (this.build.deckY + 1) * VOXEL_SIZE;
@@ -430,61 +449,34 @@ export class ShipVisual {
       const pivot = new THREE.Group();
       pivot.rotation.order = "YXZ"; // yaw to the side, then elevate — never rolls
       pivot.position.set(px, py + 0.62, pz + port.side * 0.2);
-      const placeholder = new THREE.Mesh(barrelGeo, ironMat);
-      placeholder.castShadow = true;
-      pivot.add(placeholder);
-      this.group.add(pivot);
-      this.barrels.push({ mesh: pivot, side: port.side });
-    }
-    ShipVisual.loadCannon(() => {
-      const proto = ShipVisual.cannonGltf!;
-      const protoBox = new THREE.Box3().setFromObject(proto);
-      const protoSize = protoBox.getSize(new THREE.Vector3());
-      const longest = Math.max(protoSize.x, protoSize.z);
-      const scale = 2.2 / Math.max(longest, 0.001);
-      for (const b of this.barrels) {
-        b.mesh.clear();
-        const holder = new THREE.Group();
-        const model = proto.clone(true);
-        model.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) o.castShadow = true;
-        });
-        holder.add(model);
-        if (protoSize.x >= protoSize.z) holder.rotation.y = -Math.PI / 2; // long axis → +z
-        holder.scale.setScalar(scale);
-        const hb = new THREE.Box3().setFromObject(holder);
-        const yOff = -0.62 - hb.min.y; // wheels on the deck
-        const zOff = -(hb.min.z + hb.max.z) / 2 + 0.35; // breech in, muzzle out
-        // calibrate the gunnery math to the VISIBLE bore, once: average the
-        // vertices at the muzzle face (holder still parentless — the same
-        // frame hb was measured in) to find the bore center, so the preview
-        // arc starts inside the barrel — not "slightly below" it (round 6)
-        if (!ShipVisual.muzzleMeasured) {
-          ShipVisual.muzzleMeasured = true;
-          let ySum = 0;
-          let n = 0;
-          const v = new THREE.Vector3();
-          holder.traverse((o) => {
-            const mesh = o as THREE.Mesh;
-            if (!mesh.isMesh) return;
-            const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
-            for (let i = 0; i < pos.count; i++) {
-              v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
-              if (v.z > hb.max.z - 0.18) {
-                ySum += v.y;
-                n++;
-              }
-            }
-          });
-          if (n > 0) {
-            setMuzzleGeometry(hb.max.z + zOff - 0.04, ySum / n + yOff);
-          }
-        }
-        holder.position.y = yOff;
-        holder.position.z = zOff;
-        b.mesh.add(holder);
+      // gun space: +z outboard for both sides (animate()'s yaw flips port)
+      const elev = new THREE.Group();
+      elev.position.set(0, BORE_UP, TRUNNION_OUT);
+      const barrelMesh = new THREE.Mesh(gg.barrel, ironMat);
+      barrelMesh.castShadow = true;
+      const trun = new THREE.Mesh(gg.trun, ironMat);
+      trun.rotation.z = Math.PI / 2; // trunnion axle crosses beam-wise
+      elev.add(barrelMesh, trun);
+      pivot.add(elev);
+      const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, wheel = false) => {
+        const m = new THREE.Mesh(geo, mat);
+        m.position.set(x, y, z + TRUNNION_OUT);
+        if (wheel) m.rotation.z = Math.PI / 2;
+        m.castShadow = true;
+        pivot.add(m);
+      };
+      for (const s of [-1, 1]) {
+        add(gg.cheekF, woodMat, s * 0.15, BORE_UP - 0.22, -0.02);
+        add(gg.cheekR, woodMat, s * 0.15, BORE_UP - 0.38, -0.45);
+        add(gg.wheelF, woodMat, s * 0.26, deckInPivot + 0.17, 0.18, true);
+        add(gg.wheelR, woodMat, s * 0.26, deckInPivot + 0.15, -0.55, true);
       }
-    });
+      add(gg.bed, woodMat, 0, deckInPivot + 0.09, -0.18);
+      add(gg.axle, ironMat, 0, deckInPivot + 0.17, 0.18, true);
+      add(gg.axle, ironMat, 0, deckInPivot + 0.15, -0.55, true);
+      this.group.add(pivot);
+      this.barrels.push({ mesh: pivot, side: port.side, elev, tilt: 0 });
+    }
 
     // stern ladder: rungs down the transom to the waterline, so going
     // overboard is recoverable (playtest round 4: "no way to get back on")
