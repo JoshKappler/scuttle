@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
 import { barrelDirLocal } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
@@ -147,20 +148,30 @@ export class ShipVisual {
     if (this.wheelSpin) this.wheelSpin.rotation.z = -this.dispRudder * 2.6;
 
     // barrels share the gunnery module's direction math, so what you see is
-    // exactly where the ball will go
+    // exactly where the ball will go. Yaw-then-pitch keeps carriages upright
+    // (a quaternion shortest-arc flip turned port cannons upside down).
     for (const b of this.barrels) {
       const active = aim && b.side === aim.side;
-      barrelDirLocal(b.side, active ? aim.elevationDeg : 2, active ? aim.traverseDeg : 0, ShipVisual.tmpDir);
-      b.mesh.quaternion.setFromUnitVectors(ShipVisual.Z_AXIS, ShipVisual.tmpDir);
+      const d = barrelDirLocal(
+        b.side,
+        active ? aim.elevationDeg : 2,
+        active ? aim.traverseDeg : 0,
+        ShipVisual.tmpDir,
+      );
+      b.mesh.rotation.set(-Math.asin(Math.min(Math.max(d.y, -1), 1)), Math.atan2(d.x, d.z), 0);
     }
   }
 
   private static tmpDir = new THREE.Vector3();
-  private static Z_AXIS = new THREE.Vector3(0, 0, 1);
+
+  private cutawayActive = false;
 
   /** Cutaway: clip the hull against a world-space plane (null disables).
-   *  Water boxes stay unclipped so flooding reads through the cut. */
+   *  Water boxes render ONLY during cutaway — always-on, they could bleed
+   *  through the hull from outside ("blue cubic rectangle on the bottom of
+   *  the ship", playtest round 5). */
   setCutaway(plane: THREE.Plane | null): void {
+    this.cutawayActive = plane !== null;
     this.hullMaterial.clippingPlanes = plane ? [plane] : null;
     this.hullMaterial.needsUpdate = true;
   }
@@ -171,7 +182,7 @@ export class ShipVisual {
       const mesh = this.waterMeshes.get(c.id);
       if (!mesh) continue;
       const fill = c.waterVolume / c.volume;
-      if (fill < 0.01) {
+      if (fill < 0.01 || !this.cutawayActive) {
         mesh.visible = false;
         continue;
       }
@@ -233,7 +244,7 @@ export class ShipVisual {
   private sailUniforms: { uTime: { value: number }; uFill: { value: number } } | null = null;
   private rudderPivot: THREE.Group | null = null;
   private wheelSpin: THREE.Group | null = null;
-  private barrels: { mesh: THREE.Mesh; side: 1 | -1 }[] = [];
+  private barrels: { mesh: THREE.Object3D; side: 1 | -1 }[] = [];
   private dispRudder = 0;
   private lastAnimT = 0;
   /** Local position of the ship's wheel — gameplay anchors helm control here. */
@@ -241,38 +252,50 @@ export class ShipVisual {
   /** Local position of the stern ladder — swimmers climb aboard here. */
   ladderLocal: [number, number, number] = [0, 0, 0];
 
-  /** Procedural canvas-cloth texture: seams + thread noise. */
-  private static clothTexture(): THREE.CanvasTexture {
-    const c = document.createElement("canvas");
-    c.width = 256;
-    c.height = 256;
-    const g = c.getContext("2d")!;
-    g.fillStyle = "#e9e1cd";
-    g.fillRect(0, 0, 256, 256);
-    for (let y = 0; y < 256; y += 34) {
-      g.fillStyle = "rgba(120,105,80,0.28)";
-      g.fillRect(0, y, 256, 2);
+  /** The Quaternius cannon (CC0), loaded once and cloned per port; until it
+   *  resolves, simple cylinder barrels stand in. */
+  private static cannonGltf: THREE.Group | null = null;
+  private static cannonLoading = false;
+  private static onCannonReady: (() => void)[] = [];
+  private static loadCannon(cb: () => void): void {
+    if (ShipVisual.cannonGltf) {
+      cb();
+      return;
     }
-    for (let i = 0; i < 5200; i++) {
-      const v = 200 + Math.floor(Math.random() * 45);
-      g.fillStyle = `rgba(${v},${v - 8},${v - 26},0.10)`;
-      g.fillRect(Math.random() * 256, Math.random() * 256, 1.5, 1);
-    }
-    const tex = new THREE.CanvasTexture(c);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    return tex;
+    ShipVisual.onCannonReady.push(cb);
+    if (ShipVisual.cannonLoading) return;
+    ShipVisual.cannonLoading = true;
+    new GLTFLoader().load(
+      "/assets/props/cannon.glb",
+      (g) => {
+        ShipVisual.cannonGltf = g.scene;
+        for (const f of ShipVisual.onCannonReady) f();
+        ShipVisual.onCannonReady.length = 0;
+      },
+      undefined,
+      (err) => console.warn("cannon model failed to load — keeping cylinders", err),
+    );
   }
 
-  /** Mast + gaff rig (sail laced to the mast, spars top and bottom),
-   *  bowsprit, stern rudder, and the helm wheel. */
+  /** Square rig + bowsprit, stern rudder, helm wheel, guns, stern ladder. */
   private addRig(): void {
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.8 });
-    const cloth = ShipVisual.clothTexture();
-    cloth.repeat.set(4, 3); // the canvas is big now — keep the weave fine
+    // real wood + fabric photos on the rig (playtest round 5: "the mast and
+    // other wooden features have no wooden texture"; the canvas sail looked
+    // "like a piece of lined notebook paper")
+    const wood = ShipVisual.loadWood();
+    const rigTex = wood.hull.clone();
+    rigTex.repeat.set(1, 4);
+    rigTex.needsUpdate = true;
+    const woodMat = new THREE.MeshStandardMaterial({ map: rigTex, color: 0xb89878, roughness: 0.85 });
+    const sailTex = new THREE.TextureLoader().load("/assets/textures/sail.jpg", (t) => {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.repeat.set(3, 2.2);
+    });
     const sailMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      map: cloth,
-      roughness: 0.92,
+      color: 0xe8dfc8,
+      map: sailTex,
+      roughness: 0.95,
       side: THREE.DoubleSide,
     });
 
@@ -391,28 +414,49 @@ export class ShipVisual {
     helm.add(axle);
     this.group.add(helm);
 
-    // cannons: proper-sized barrel + carriage at every port; barrels are
-    // stored so they articulate with the aiming elevation
+    // cannons: a pivot group per port, articulated by the gunnery math.
+    // Cylinder placeholders show instantly; the Quaternius cannon model
+    // (carriage, wheels, proper barrel) swaps in when loaded (round 5:
+    // "the cannon models could be much better … take someone else's")
     const ironMat = new THREE.MeshStandardMaterial({ color: 0x14151a, roughness: 0.45, metalness: 0.7 });
-    const carriageMat = new THREE.MeshStandardMaterial({ color: 0x2e2014, roughness: 0.9 });
     const barrelGeo = new THREE.CylinderGeometry(0.11, 0.17, 2.1, 10);
     barrelGeo.rotateX(Math.PI / 2); // muzzle toward +z (outboard for side +1)
     barrelGeo.translate(0, 0, 0.55); // breech pivot: rotate about the carriage
-    const carriageGeo = new THREE.BoxGeometry(0.85, 0.5, 1.05);
     for (const port of this.build.cannonPorts) {
       const px = (port.x + 0.5) * VOXEL_SIZE;
       const py = (this.build.deckY + 1) * VOXEL_SIZE;
       const pz = (port.z + 0.5 - port.side * 2.6) * VOXEL_SIZE;
-      const carriage = new THREE.Mesh(carriageGeo, carriageMat);
-      carriage.position.set(px, py + 0.25, pz);
-      carriage.castShadow = true;
-      this.group.add(carriage);
-      const barrel = new THREE.Mesh(barrelGeo, ironMat);
-      barrel.position.set(px, py + 0.62, pz + port.side * 0.2);
-      barrel.castShadow = true;
-      this.group.add(barrel);
-      this.barrels.push({ mesh: barrel, side: port.side });
+      const pivot = new THREE.Group();
+      pivot.rotation.order = "YXZ"; // yaw to the side, then elevate — never rolls
+      pivot.position.set(px, py + 0.62, pz + port.side * 0.2);
+      const placeholder = new THREE.Mesh(barrelGeo, ironMat);
+      placeholder.castShadow = true;
+      pivot.add(placeholder);
+      this.group.add(pivot);
+      this.barrels.push({ mesh: pivot, side: port.side });
     }
+    ShipVisual.loadCannon(() => {
+      const proto = ShipVisual.cannonGltf!;
+      const protoBox = new THREE.Box3().setFromObject(proto);
+      const protoSize = protoBox.getSize(new THREE.Vector3());
+      const longest = Math.max(protoSize.x, protoSize.z);
+      const scale = 2.2 / Math.max(longest, 0.001);
+      for (const b of this.barrels) {
+        b.mesh.clear();
+        const holder = new THREE.Group();
+        const model = proto.clone(true);
+        model.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+        });
+        holder.add(model);
+        if (protoSize.x >= protoSize.z) holder.rotation.y = -Math.PI / 2; // long axis → +z
+        holder.scale.setScalar(scale);
+        const hb = new THREE.Box3().setFromObject(holder);
+        holder.position.y = -0.62 - hb.min.y; // wheels on the deck
+        holder.position.z = -(hb.min.z + hb.max.z) / 2 + 0.35; // breech in, muzzle out
+        b.mesh.add(holder);
+      }
+    });
 
     // stern ladder: rungs down the transom to the waterline, so going
     // overboard is recoverable (playtest round 4: "no way to get back on")

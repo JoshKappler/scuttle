@@ -87,6 +87,13 @@ export function buildSloop(): ShipBuild {
     for (const z of [14, 15, 16, 17]) {
       if (inside(x, by, z) && grid.get(x, by, z) === EMPTY) grid.set(x, by, z, IRON);
     }
+    // second, shorter tier: more mass low for a deeper, steadier ride
+    // (round 5: too corky, caught air over waves) and a lower COM for
+    // honest G-force banking
+    if (t < 0.25 || t > 0.85) continue;
+    for (const z of [15, 16]) {
+      if (inside(x, by + 1, z) && grid.get(x, by + 1, z) === EMPTY) grid.set(x, by + 1, z, IRON);
+    }
   }
 
   // transverse watertight bulkheads at 1/3 and 2/3 of length

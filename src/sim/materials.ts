@@ -14,11 +14,13 @@ export interface Material {
 }
 
 // Wood densities are PLANK-THICKNESS HONEST: a 25 cm voxel stands in for
-// ~8 cm planking + framing air, so its effective density is scaled down
-// (oak 700 × 8/25 ≈ 230). Without this, voxel hulls weigh like solid baulks
-// of timber and ride far too deep (playtest: "needs more buoyancy").
+// planking + framing air, so its effective density is scaled down. Round-4
+// values (230/170, ~8 cm planking) left her TOO corky — "two voxels
+// underwater stays afloat … catches air going over waves" — so round 5
+// reads as ~10-11 cm planking plus stores/fittings. Target draft ≈ 0.3 of
+// the envelope (with the doubled keel ballast in shipwright.ts).
 export const MATERIALS: Record<number, Material> = {
-  [OAK]: { name: "oak", density: 230, color: [0.13, 0.085, 0.052], strength: 3 },
-  [PINE]: { name: "pine", density: 170, color: [0.21, 0.152, 0.095], strength: 2 },
+  [OAK]: { name: "oak", density: 300, color: [0.13, 0.085, 0.052], strength: 3 },
+  [PINE]: { name: "pine", density: 215, color: [0.21, 0.152, 0.095], strength: 2 },
   [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
 };

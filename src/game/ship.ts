@@ -109,6 +109,19 @@ export class Ship {
       .setDensity(0);
     world.createCollider(collider, this.body);
 
+    // the mast is solid — you should not be able to walk through it
+    // (playtest round 5: "the mast has no physical hitbox")
+    for (const m of build.masts) {
+      const mastCol = R.ColliderDesc.cylinder(7.2, 0.18)
+        .setTranslation(
+          (m.x + 0.5) * VOXEL_SIZE,
+          (build.deckY + 1) * VOXEL_SIZE + 6.8,
+          (m.z + 0.5) * VOXEL_SIZE,
+        )
+        .setDensity(0);
+      world.createCollider(mastCol, this.body);
+    }
+
     this.rebuildDeckCollider();
   }
 
@@ -327,6 +340,7 @@ export class Ship {
       const mass = this.body.mass();
       const v = body.linvel();
       const fwd = this.tmpV.set(1, 0, 0).applyQuaternion(this.tmpQ);
+      const pitch = Math.asin(Math.min(Math.max(fwd.y, -1), 1)); // bow-up +
       // keep drag axes horizontal so heave stays separable
       fwd.y = 0;
       fwd.normalize();
@@ -337,27 +351,27 @@ export class Ship {
       const vY = v.y;
 
       const fF = -mass * 0.04 * (1 + 0.08 * Math.abs(vF)) * vF * sub;
-      const fL = -mass * 1.1 * vL * sub;
-      const fY = -mass * 1.7 * vY * sub;
+      const fL = -mass * 1.7 * vL * sub;
+      const fY = -mass * 2.0 * vY * sub;
 
-      body.addForce({ x: fwd.x * fF + lat.x * fL, y: fY, z: fwd.z * fF + lat.z * fL }, true);
-
-      // lateral keel resistance acts below the COM → ships heel in turns
-      // (lever + share raised after playtest: "should lean more")
-      const keelDepth = 1.8; // m below COM
+      // forward + heave drag at the COM. LATERAL resistance belongs to the
+      // keel, and the keel is DEEP — applying it all below the COM is what
+      // banks her in turns and against a beam wind (playtest round 5:
+      // "the boat should have some sense of what G forces are happening")
+      body.addForce({ x: fwd.x * fF, y: fY, z: fwd.z * fF }, true);
+      const keelDepth = 2.2; // m below COM
       const com = body.worldCom();
       body.addForceAtPoint(
-        { x: lat.x * fL * 0.6, y: 0, z: lat.z * fL * 0.6 },
+        { x: lat.x * fL, y: 0, z: lat.z * fL },
         { x: com.x, y: com.y - keelDepth, z: com.z },
         true,
       );
 
       // angular damping decomposed in the SHIP frame: pitch is damped
-      // hardest — a real hull's waterplane kills porpoising almost dead, and
-      // without this the brig pitched violently instead of cutting through
-      // the waves (playtest round 4). Gated on "is she in the water at all"
-      // (wet), NOT on submergedFrac directly: a healthy ship only draws ~0.18
-      // of her envelope, which silently throttled the damping to nothing.
+      // hardest — a real hull's waterplane kills porpoising almost dead.
+      // Gated on "is she in the water at all" (wet), NOT submergedFrac:
+      // a healthy ship draws ~0.2 of her envelope, which silently throttled
+      // the damping to nothing (playtest round 4).
       const wet = Math.min(sub * 5, 1);
       const om = body.angvel();
       const [ix, iy, iz] = this.inertia;
@@ -366,11 +380,12 @@ export class Ship {
       const wRoll = om.x * fx + om.z * fz; // rate about the fore-aft axis
       const wPitch = om.x * lat.x + om.z * lat.z; // rate about the beam axis
       const tRoll = -wRoll * wet * 1.2 * ix;
-      // dynamic bow lift: under way the bow buries into wave backs and she
-      // trimmed ~4° down at speed — hull planing + wave-making moment lifts
-      // the bow back toward level, growing with speed²
-      const bowLift = wet * vF * Math.abs(vF) * mass * 0.5;
-      const tPitch = -wPitch * wet * 3.0 * iz + bowLift;
+      // speed trim: a RESTORING moment toward level, saturating at ±4° of
+      // error. Its predecessor was a one-signed bow lift growing with v²
+      // without limit — at full sail she pitched past vertical and looped
+      // (playtest round 5: "almost doing a wheelie … flipped upside down")
+      const trim = wet * vF * vF * mass * 12 * Math.min(Math.max(-pitch, -0.07), 0.07);
+      const tPitch = -wPitch * wet * 3.0 * iz + trim;
       body.addTorque(
         {
           x: tRoll * fx + tPitch * lat.x,

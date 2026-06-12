@@ -53,22 +53,34 @@ export class SailingController {
       wf = Math.max(Math.pow(Math.sin((x * Math.PI) / 2), 1.2) * runFade, 0.5);
     }
 
-    // thrust ∝ wind pressure on set canvas; tuned for ~7-8 m/s top speed
+    // thrust ∝ wind pressure on set canvas; tuned for ~12 m/s (23 kn) at
+    // full sail on a reach — realistic hull speeds were no fun (playtest)
     const mass = body.mass();
-    // arcade-tuned: ~12 m/s (23 kn) at full sail on a reach — playtest verdict
-    // was that realistic hull speeds are no fun
-    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.016;
+    // canvas only draws while she's upright: a heeled rig spills wind, a
+    // capsized one is in the water (playtest round 5: "even upside down,
+    // the ship is still thrusting forwards")
+    const rotUp = this.tmpF.set(0, 1, 0).applyQuaternion(this.tmpQ);
+    const upright = Math.min(Math.max(rotUp.y, 0), 1);
+    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.016 * upright;
 
     if (thrust > 0 && ship.submergedFrac > 0.02) {
-      // applied at COM height: thrust above the COM pitched the bow under at
-      // speed (playtest: "front heavy… clips beneath the waves"). Heel still
-      // comes from the keel's lateral resistance in turns.
       const m = ship.build.masts[0];
-      const ap = ship.localToWorld(
-        [(m.x + 0.5) * 0.25, ship.comLocal[1], (m.z + 0.5) * 0.25],
-        this.tmpF.clone(),
-      );
+      const mx = (m.x + 0.5) * 0.25;
+      const mz = (m.z + 0.5) * 0.25;
+      // drive applied at COM height (thrust high on the mast buried the bow;
+      // pitch is the trim controller's job now)
+      const ap = ship.localToWorld([mx, ship.comLocal[1], mz], this.tmpF.clone());
       body.addForceAtPoint({ x: fwd.x * thrust, y: 0, z: fwd.z * thrust }, ap, true);
+
+      // the wind's LATERAL push on the canvas, applied up the mast: this is
+      // what actually heels a square-rigger on a reach, and the deep keel
+      // resisting the resulting leeway completes the couple
+      const latX = -fwd.z;
+      const latZ = fwd.x;
+      const wLat = wind.speed * (wind.dirX * latX + wind.dirZ * latZ);
+      const heelF = this.sailSet * wLat * Math.abs(wLat) * mass * 0.012 * upright;
+      const hp = ship.localToWorld([mx, ship.comLocal[1] + 3.5, mz], this.tmpF.clone());
+      body.addForceAtPoint({ x: latX * heelF, y: 0, z: latZ * heelF }, hp, true);
     }
 
     // rudder: yaw torque scales with water flow over it, with a generous

@@ -34,9 +34,28 @@ export class PlayerControls {
   traverseDeg = 0;
   /** Pointer-lock state — when locked, the camera follows the bare mouse. */
   locked = false;
+  /** First-person look state: own yaw/pitch, FPS sign convention, full
+   *  vertical authority (the orbit mapping inverted left-right and clamped
+   *  pitch hard — playtest round 5). Third-person orbit is untouched. */
+  private firstPersonMode = false;
+  private fpYaw = Math.PI;
+  private fpPitch = 0;
   /** True while Q is held — spyglass zoom. */
   get spyglass(): boolean {
     return this.keys.has("KeyQ");
+  }
+
+  /** Switch look model when the view toggles; carries the view direction
+   *  across so the camera doesn't snap. */
+  syncFirstPerson(on: boolean): void {
+    if (on === this.firstPersonMode) return;
+    if (on) {
+      this.fpYaw = this.orbitYaw + Math.PI;
+      this.fpPitch = -this.orbitPitch + 0.45;
+    } else {
+      this.orbitYaw = this.fpYaw - Math.PI;
+    }
+    this.firstPersonMode = on;
   }
 
   constructor(dom: HTMLElement) {
@@ -80,35 +99,43 @@ export class PlayerControls {
       }
       if (!this.locked && !this.dragging) return;
       const k = this.locked ? 0.0026 : 0.005;
-      this.orbitYaw -= e.movementX * k;
-      this.orbitPitch = Math.min(Math.max(this.orbitPitch + e.movementY * (k * 0.8), 0.05), 1.25);
+      if (this.firstPersonMode) {
+        // FPS convention: mouse right looks right, mouse up looks up,
+        // near-vertical authority both ways
+        this.fpYaw += e.movementX * k;
+        this.fpPitch = Math.min(Math.max(this.fpPitch - e.movementY * k, -1.5), 1.5);
+      } else {
+        this.orbitYaw -= e.movementX * k;
+        this.orbitPitch = Math.min(Math.max(this.orbitPitch + e.movementY * (k * 0.8), 0.05), 1.25);
+      }
     });
     dom.addEventListener("wheel", (e) => {
       this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 7), 85);
     });
   }
 
-  /** Apply held keys to the sailing controller. Call once per fixed step. */
+  /** Apply held keys to the sailing controller. Call once per fixed step.
+   *  The helm is SET-AND-HOLD, like a real wheel: A/D walk the rudder over
+   *  and it STAYS where you leave it — no auto-centering "like a car"
+   *  (playtest round 5). The HUD shows the live rudder angle. */
   updateSailing(sail: SailingController, dt: number): void {
     if (this.keys.has("KeyW")) sail.sailSet = Math.min(sail.sailSet + dt * 0.6, 1);
     if (this.keys.has("KeyS")) sail.sailSet = Math.max(sail.sailSet - dt * 0.6, 0);
     const steer = (this.keys.has("KeyA") ? 1 : 0) + (this.keys.has("KeyD") ? -1 : 0);
     if (steer !== 0) {
-      sail.rudder = Math.min(Math.max(sail.rudder + steer * dt * 2.2, -1), 1);
-    } else {
-      sail.rudder *= Math.max(1 - dt * 3, 0);
-      if (Math.abs(sail.rudder) < 0.02) sail.rudder = 0;
+      sail.rudder = Math.min(Math.max(sail.rudder + steer * dt * 1.6, -1), 1);
     }
   }
 
   /** Horizontal camera angle, for camera-relative character movement. */
   cameraYaw(): number {
+    if (this.firstPersonMode) return this.fpYaw;
     return this.orbitYaw + Math.PI; // orbit offset points FROM target TO camera
   }
 
-  /** Vertical look angle for first person (inverted orbit pitch). */
+  /** Vertical look angle for first person. */
   lookPitch(): number {
-    return -this.orbitPitch + 0.45;
+    return this.firstPersonMode ? this.fpPitch : -this.orbitPitch + 0.45;
   }
 
   /** On-foot movement from WASD, camera-relative. */

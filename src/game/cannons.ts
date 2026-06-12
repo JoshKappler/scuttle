@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { G, VOXEL_SIZE } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
-import { muzzleWorld, type MuzzleOut } from "./gunnery";
+import { muzzleWorld, velocityAtPoint, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
 
 /**
@@ -35,11 +35,46 @@ export class Cannons {
     elevation: number;
     traverse: number;
   }[] = [];
-  reloadAt = 0; // simTime when the next broadside is allowed
+  /** Per-port reload clocks (simTime when that gun is loaded again) —
+   *  firing one gun from the deck must not lock the whole battery. */
+  private portReloadAt = new Map<string, number>();
   static RELOAD = 6; // s
+
+  private portKey(ship: Ship, portIndex: number): string {
+    return `${this.shipId(ship)}:${portIndex}`;
+  }
+
+  private shipIds = new WeakMap<Ship, number>();
+  private nextShipId = 1;
+  private shipId(ship: Ship): number {
+    let id = this.shipIds.get(ship);
+    if (id === undefined) {
+      id = this.nextShipId++;
+      this.shipIds.set(ship, id);
+    }
+    return id;
+  }
+
+  /** Seconds until the given gun is ready (0 = ready). */
+  portReload(ship: Ship, portIndex: number, simTime: number): number {
+    return Math.max((this.portReloadAt.get(this.portKey(ship, portIndex)) ?? 0) - simTime, 0);
+  }
+
+  /** Fraction of one side's guns currently loaded, for the HUD. */
+  sideReadiness(ship: Ship, side: 1 | -1, simTime: number): number {
+    let total = 0;
+    let ready = 0;
+    for (let p = 0; p < ship.build.cannonPorts.length; p++) {
+      if (ship.build.cannonPorts[p].side !== side) continue;
+      total++;
+      if (this.portReload(ship, p, simTime) <= 0) ready++;
+    }
+    return total > 0 ? ready / total : 0;
+  }
 
   private tmpV = new THREE.Vector3();
   private tmpDir = new THREE.Vector3();
+  private tmpVel = new THREE.Vector3();
   private tmpMuzzle: MuzzleOut = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
 
   constructor(
@@ -63,13 +98,13 @@ export class Cannons {
     }
   }
 
-  /** Queue a full broadside from one side of the ship. */
+  /** Queue a broadside: every LOADED gun on the side fires. */
   fireBroadside(ship: Ship, side: 1 | -1, simTime: number, elevationDeg = 5, traverseDeg = 0): boolean {
-    if (simTime < this.reloadAt) return false;
-    this.reloadAt = simTime + Cannons.RELOAD;
     let i = 0;
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
       if (ship.build.cannonPorts[p].side !== side) continue;
+      if (this.portReload(ship, p, simTime) > 0) continue;
+      this.portReloadAt.set(this.portKey(ship, p), simTime + Cannons.RELOAD);
       this.pendingShots.push({
         delay: i * STAGGER,
         side,
@@ -80,6 +115,21 @@ export class Cannons {
       });
       i++;
     }
+    return i > 0;
+  }
+
+  /** Fire a single gun (deck gunnery: F beside a cannon). */
+  fireOne(ship: Ship, portIndex: number, simTime: number, elevationDeg = 5, traverseDeg = 0): boolean {
+    if (this.portReload(ship, portIndex, simTime) > 0) return false;
+    this.portReloadAt.set(this.portKey(ship, portIndex), simTime + Cannons.RELOAD);
+    this.pendingShots.push({
+      delay: 0,
+      side: ship.build.cannonPorts[portIndex].side,
+      portIndex,
+      owner: ship,
+      elevation: elevationDeg,
+      traverse: traverseDeg,
+    });
     return true;
   }
 
@@ -91,9 +141,11 @@ export class Cannons {
       const shot = this.pendingShots[s];
       if (shot.delay > 0) continue;
       this.pendingShots.splice(s, 1);
-      // the ball leaves the actual barrel tip, along the actual barrel axis
+      // the ball leaves the actual barrel tip, along the actual barrel axis,
+      // CARRYING the ship's velocity at the muzzle (linear + rotational)
       const m = muzzleWorld(shot.owner, shot.portIndex, shot.elevation, shot.traverse, this.tmpMuzzle);
-      this.launch(m.pos, m.dir);
+      velocityAtPoint(shot.owner, m.pos, this.tmpVel);
+      this.launch(m.pos, m.dir, this.tmpVel);
       this.effects.muzzleSmoke(m.pos, m.dir);
     }
 
@@ -143,14 +195,14 @@ export class Cannons {
     }
   }
 
-  private launch(pos: THREE.Vector3, dir: THREE.Vector3): void {
+  private launch(pos: THREE.Vector3, dir: THREE.Vector3, baseVel: THREE.Vector3): void {
     const b = this.balls.find((x) => !x.alive);
     if (!b) return;
     b.alive = true;
     b.age = 0;
     b.pos.copy(pos);
     b.prev.copy(pos);
-    b.vel.copy(dir).multiplyScalar(MUZZLE_SPEED);
+    b.vel.copy(dir).multiplyScalar(MUZZLE_SPEED).add(baseVel);
     b.mesh.visible = true;
     b.mesh.position.copy(pos);
   }

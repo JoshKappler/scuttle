@@ -172,12 +172,11 @@ export class Pirate {
     return out.set(t.x, t.y, t.z);
   }
 
-  /** First-person: hide the head (+hat) so the camera doesn't sit inside it.
-   *  For rigged models the head BONE is shrunk — and re-shrunk after every
-   *  mixer update, since animation tracks may write bone scale back. */
+  /** First-person: hide the whole body — eye-level cameras inside a skinned
+   *  model otherwise show "the inside of the pirate's uniform" (round 5). */
   setFirstPerson(fp: boolean): void {
     this.fpHide = fp;
-    if (!fp && this.rig?.head) this.rig.head.scale.setScalar(1);
+    if (this.rig) this.rig.root.visible = !fp;
     for (const part of this.headParts) part.visible = !fp;
   }
 
@@ -190,7 +189,7 @@ export class Pirate {
     this.ship.worldToLocal(tmpAnchor.copy(pos), this.attachLocal);
     this.facing = facing;
     const t = this.body.translation();
-    this.mesh.position.set(t.x, t.y - 0.78, t.z);
+    this.mesh.position.set(t.x, t.y - 0.74, t.z);
     this.mesh.rotation.set(0, -facing, 0);
   }
 
@@ -267,14 +266,20 @@ export class Pirate {
     const nz = tr.z + m.z;
     this.body.setNextKinematicTranslation({ x: nx, y: ny, z: nz });
 
-    // re-anchor against the deck we're on; brief air (jumps, wave drops)
-    // keeps the anchor so the jump arc happens in the SHIP's frame
-    if (grounded || this.airTime < 0.5) {
+    // re-anchor against the deck we're on. The anchor HOLDS through the
+    // whole jump arc — the old 0.5 s timeout expired mid-jump, dropped the
+    // ship's velocity, and "launched me off the back of the ship"
+    // (playtest round 5). Only genuinely leaving the hull breaks it.
+    tmpAnchor.set(nx, ny, nz);
+    this.ship.worldToLocal(tmpAnchor, this.attachLocal);
+    const overboard =
+      this.attachLocal.x < -0.5 ||
+      this.attachLocal.x > 26.5 ||
+      Math.abs(this.attachLocal.z - 4) > 4.6;
+    if (!overboard && (grounded || this.airTime < 2.5)) {
       this.attachShip = this.ship;
-      tmpAnchor.set(nx, ny, nz);
-      this.ship.worldToLocal(tmpAnchor, this.attachLocal);
     } else {
-      this.attachShip = null; // genuinely falling — world frame
+      this.attachShip = null; // overboard or a very long fall — world frame
     }
 
     if (moveX * moveX + moveZ * moveZ > 0.01) this.facing = Math.atan2(moveZ, moveX);
@@ -315,7 +320,9 @@ export class Pirate {
 
   private syncMesh(): void {
     const t = this.body.translation();
-    this.mesh.position.set(t.x, t.y - 0.78, t.z);
+    // -0.74, not the exact capsule half-height: a few cm of lift keeps the
+    // feet from visually sinking into the deck planks
+    this.mesh.position.set(t.x, t.y - 0.74, t.z);
     if (this.alive) {
       // kick: brief forward lunge of the whole body (procedural body only —
       // the rigged model has a real Punch clip)
