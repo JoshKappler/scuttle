@@ -28,6 +28,7 @@ Choices made with the user during brainstorming:
 | Melee depth | Tight arcade melee (lock-on, slash/parry/kick); first-person toggle | Depth comes from the battlefield (listing decks), not the move list; FP is cheap if planned early |
 | Ranged weapons | Period-only: muskets, blunderbuss as scarce one-shot pickups | User choice; no anachronistic guns |
 | Ship visuals | Visible voxel ships ("Teardown at sea") | Sim == visuals; damage reads perfectly; simplest tech path; beauty from ocean + lighting |
+| Aesthetic target | **Somewhat realistic — explicitly NOT Minecraft-looking** (user directive) | Fine voxel cells (~20–25 cm), weathered realistic wood/material palette, no grid lines or per-face borders, ambient occlusion on voxel edges; smooth (non-voxel) characters, cannons, props, and cloth sails; lighting and post-processing carry the look. Teardown is the reference point, not Minecraft |
 | Session shape | Roguelite voyage: seeded sea, escalating encounters, death → leaderboard | Encounter chaining enables limping/ship-stealing; score-chase drives sharing |
 | Platform | Web-first (desktop browser primary) | ~37% browser-play conversion vs ~6% download; recruiters click links |
 | Single/multiplayer | Single-player v1; deterministic physics keeps multiplayer door open | User constraint (simplicity); v2 option |
@@ -52,6 +53,23 @@ One run = one voyage across a procedurally seeded archipelago. The player starts
 - Muskets/blunderbusses: scarce one-shot pickups on decks.
 - If the enemy ship is holed and actively sinking, looting the hold races the rising water — the timer is the simulation, not a UI element.
 
+### Gold is physical
+
+Gold is not an abstract counter — it lives in chests in your ship's hold (plus a small personal purse for port spending). Transferring loot between ships means **carrying chests by hand**: a two-handed carry that slows you and prevents fighting, with the chest lid open and gold visibly overflowing in classic cartoony fashion. If your ship goes down with gold aboard, the chests sink with the wreck — and you can **dive to recover them**. Score = gold currently in your possession (hold + purse), so losing your ship without recovering the chests genuinely costs you.
+
+### Swimming & diving
+
+The player can swim and dive freely — to flee, to board from the water, or to salvage sunken wrecks (gold chests, weapons). Diving uses a breath meter. **Armor weight governs swimming**: unarmored swims freely, light armor swims slowly, heavy armor can barely keep the surface — and **full plate sinks you to the bottom and drowns you**. Wrecks settle on the seafloor and persist for the encounter; sharks patrol them.
+
+### Weapons & armor
+
+A loadout system with legible, realistic trade-offs:
+
+- **Weapons** (cutlass, rapier, boarding axe, etc.): stats for attack speed, damage, and reach — fast/light vs slow/heavy vs long/narrow.
+- **Armor** (none / leather / breastplate / full plate): damage reduction vs movement speed, attack speed, and swimming ability. Full plate is the best fighter on a dry deck and a death sentence in the water — on a sinking ship, what you wear is a strategic decision.
+- Muskets/blunderbusses remain scarce one-shot pickups, not loadout items.
+- The **golden spyglass** is standard pirate issue: a functional zoom view for spotting and assessing distant ships (class, damage state, escort).
+
 ### The limp-home layer
 
 After a fight the player's ship is damaged too. Options:
@@ -61,11 +79,18 @@ After a fight the player's ship is damaged too. Options:
 - **Jettison cargo** to raise a flooded section above the waterline.
 - **Beach** in shallow water for safer repairs.
 - **Steal the enemy ship** — transfer flag and surviving crew to the vessel just fought (which the player already damaged; choices in the gunnery phase echo forward).
-- **Port repairs** — proper repairs and crew hiring at ports, **paid in gold (i.e., score)**. Greed vs survival is the central tension dial.
+- **Ports** — everything at port is **paid in gold (i.e., score)**: proper repairs, crew hiring, and a full upgrade tree — better sails (speed), sturdier rudder (maneuverability), cannon tiers (damage, reload, range), hull reinforcement, and trading up to a larger ship class. Plus flavor purchases: a **parrot** companion (purely for shits and giggles) and weapon/armor shops. Greed vs survival is the central tension dial.
 
 ### Legibility (core feature, not polish)
 
 One key toggles a **cutaway X-ray view**: every compartment, its water level, breach locations, pump status. Rationale from research: Ultimate Admiral: Dreadnoughts sits at 62% positive largely due to opaque flooding; Stormworks' visible water-filling compartments are beloved. The sim must be watchable.
+
+### Flavor & spectacle
+
+- **Ragdoll deaths**: killed or kicked characters go ragdoll — physics decides where they land (overboard, down a hatch, into a flooded compartment).
+- **Blood**: modest, readable hit feedback — splashes and deck stains, not gore.
+- **Sharks**: ambient ocean fauna that patrol wrecks and occasionally menace swimmers. Deliberately under-tuned — an aesthetic threat that makes the water feel alive and diving feel risky, never the thing that kills a good run.
+- **The parrot**: rides your shoulder, squawks contextually. Zero mechanical effect.
 
 ### Retention & sharing hooks
 
@@ -109,7 +134,7 @@ Multiplayer, ship-builder mode, open-world persistence/meta-progression, touch-s
 Each ship is **one rigid body** plus three data layers (the proven Stormworks/From the Depths pattern — never per-voxel rigid bodies, never simulated water particles):
 
 ### Voxel layer
-- 3D grid per ship, ~30 cm cells. Sloop ≈ low thousands of voxels; galleon ≈ tens of thousands.
+- 3D grid per ship, ~20–25 cm cells (fine enough to avoid Minecraft-look at gameplay camera distances). Sloop ≈ several thousand voxels; galleon ≈ tens of thousands.
 - Rendered as greedy-meshed 16³ chunks.
 - Cannonball hit → remove voxels in a small blast radius → remesh touched chunks only (amortized across frames) → update Rapier voxel collider.
 - Connectivity flood-fill from the keel detects severed islands (blown-off bow, falling mast) → spawn as short-lived independent debris bodies.
@@ -129,6 +154,11 @@ Each ship is **one rigid body** plus three data layers (the proven Stormworks/Fr
 ### Characters on decks
 - Kinematic capsule controllers simulated **in the ship's local frame** (stable footing on a moving deck) with **world-space gravity** (a listing deck genuinely becomes a slope; kicks send bodies downhill into the sea).
 - Known-hard problem → prototype spike scheduled in Milestone 1, not discovered in Milestone 4.
+- **Death/knockout → ragdoll handoff**: swap the kinematic capsule for a jointed dynamic ragdoll; physics resolves where the body ends up.
+- **Swimming state**: when in water, controller switches to a swim model with buoyancy scaled by carried/worn weight (armor tiers; carried chest). Breath meter while submerged. Full plate exceeds neutral buoyancy → sinks.
+
+### Ambient fauna
+- **Sharks**: simple steering agents that patrol wreck sites and occasionally make passes at swimmers. Tuned as atmosphere-with-teeth, not a primary threat.
 
 ### AI captains
 - State machines: patrol → intercept → broadside circling → flee / strike colors.
@@ -138,9 +168,9 @@ Each ship is **one rigid body** plus three data layers (the proven Stormworks/Fr
 
 1. **It floats** — Gerstner ocean, one voxel sloop, probe buoyancy, wind sailing, lighting pass, **character-on-deck spike**. Screenshot-worthy from week one.
 2. **It sinks** — cannonballs, voxel destruction, compartment flooding, listing, capsizing, debris, cutaway view. **First viral clip — post it the day it works.**
-3. **It fights back** — AI ship duels, player damage/limping, plank repairs, pumps.
-4. **Board her** — grappling, melee combat, muskets, looting, ship-stealing, first-person toggle.
-5. **The run** — roguelite encounter chain, ports, gold economy, death, leaderboard, daily seed.
+3. **It fights back** — AI ship duels, player damage/limping, plank repairs, pumps, spyglass.
+4. **Board her** — grappling, melee combat with weapon/armor loadouts, ragdolls, blood, muskets, physical gold chests, swimming/diving and wreck salvage, ship-stealing, first-person toggle.
+5. **The run** — roguelite encounter chain, ports (repairs, crew, upgrade tree, parrot), sharks, gold economy, death, leaderboard, daily seed.
 6. **Ship it** — sound, menus, perf pass against frame budget, itch.io + own domain, build-in-public posts.
 
 Milestone ordering doubles as marketing strategy: M1–M2 produce shareable content months before launch (the pattern behind every build-in-public success studied).
