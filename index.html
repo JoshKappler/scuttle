@@ -9,11 +9,14 @@
       #app { width: 100%; height: 100%; }
       #app canvas { display: block; }
       #hud { position: fixed; left: 12px; bottom: 10px; color: #cfe0d8; font: 12px/1.5 monospace; opacity: 0.85; user-select: none; pointer-events: none; white-space: pre; }
+      #banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: #e8e0cc; font: 700 42px/1.3 Georgia, serif; text-shadow: 0 2px 18px #000; background: radial-gradient(ellipse at center, rgba(2,18,24,0.25), rgba(2,18,24,0.78)); user-select: none; }
+      #banner small { font: 400 16px monospace; color: #9fc4d4; }
     </style>
   </head>
   <body>
     <div id="app"></div>
     <div id="hud"></div>
+    <div id="banner"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

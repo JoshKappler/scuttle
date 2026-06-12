@@ -92,6 +92,42 @@ export class Ship {
     world.createCollider(collider, this.body);
   }
 
+  /** Planks left for breach repairs. */
+  planks = 8;
+  /** Pump state: drains the most-flooded compartment while on. */
+  pumpOn = false;
+  private static PUMP_RATE = 0.12; // m³/s
+
+  /**
+   * Plug the deepest open breach with a plank. Returns true on success.
+   * (Channel time is the caller's concern — this is the instantaneous fix.)
+   */
+  plugBreach(): boolean {
+    if (this.planks <= 0) return false;
+    let bestComp = -1;
+    let bestIdx = -1;
+    let bestY = Infinity;
+    for (const [compId, cells] of this.breachCells) {
+      for (let i = 0; i < cells.length; i++) {
+        if (cells[i][1] < bestY) {
+          bestY = cells[i][1];
+          bestComp = compId;
+          bestIdx = i;
+        }
+      }
+    }
+    if (bestComp < 0) return false;
+    this.breachCells.get(bestComp)!.splice(bestIdx, 1);
+    this.planks--;
+    return true;
+  }
+
+  /** Any unplugged breaches left? */
+  hasBreaches(): boolean {
+    for (const cells of this.breachCells.values()) if (cells.length > 0) return true;
+    return false;
+  }
+
   /** Fill fraction (0..1) of a compartment. */
   floodFrac(compartmentId: number): number {
     const c = this.build.compartments[compartmentId];
@@ -150,6 +186,14 @@ export class Ship {
     }
 
     floodStep(this.build.compartments, this.openings, breaches, dt);
+
+    if (this.pumpOn) {
+      let worst: (typeof this.build.compartments)[number] | null = null;
+      for (const c of this.build.compartments) {
+        if (!worst || c.waterVolume > worst.waterVolume) worst = c;
+      }
+      if (worst) worst.waterVolume = Math.max(worst.waterVolume - Ship.PUMP_RATE * dt, 0);
+    }
   }
 
   /** Apply buoyancy + water drag for one fixed step. Call before world.step(). */

@@ -10,6 +10,7 @@ import { Ship } from "./game/ship";
 import { GameWorld } from "./game/world";
 import { SailingController, type Wind } from "./game/sailing";
 import { PlayerControls } from "./game/player";
+import { AICaptain } from "./game/ai";
 import { Cannons } from "./game/cannons";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
@@ -50,15 +51,15 @@ async function main() {
   const sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
 
-  // practice hulk: an anchored sister ship downwind to shoot at
-  const hulkBuild = buildSloop();
-  const hulkVisual = new ShipVisual(hulkBuild);
-  const hulk = new Ship(physics, hulkBuild, hulkVisual, {
-    x: -9 + waves[0].dirX * 70,
+  // enemy captain: spawns upwind and runs down on you
+  const enemyBuild = buildSloop();
+  const enemyVisual = new ShipVisual(enemyBuild);
+  const enemy = new Ship(physics, enemyBuild, enemyVisual, {
+    x: -9 - waves[0].dirX * 250,
     y: 0.2,
-    z: -3 + waves[0].dirZ * 70,
+    z: -3 - waves[0].dirZ * 250,
   });
-  world.addShip(hulk);
+  world.addShip(enemy);
 
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
@@ -70,25 +71,67 @@ async function main() {
   const cannons = new Cannons(scene, effects);
   const debris = new DebrisManager(physics, scene);
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
-  hulk.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, hulk));
+  enemy.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, enemy));
+
+  const captain = new AICaptain(enemy, scene, effects);
+  const banner = document.getElementById("banner")!;
+  let gameOver = false;
+  let plugChannel = 0; // seconds remaining on the current plank repair
+
+  const isSunk = (s: Ship) =>
+    s.body.translation().y < -12 ||
+    s.build.compartments.every((c) => c.waterVolume / c.volume > 0.95);
+
+  const endGame = (title: string, sub: string) => {
+    gameOver = true;
+    banner.style.display = "flex";
+    banner.innerHTML = `<div>${title}</div><small>${sub} — press Enter for another voyage</small>`;
+  };
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Enter" && gameOver) location.reload();
+  });
 
   world.onFixedStep = (t, dt) => {
     controls.updateSailing(sailing, dt);
     sailing.apply(sloop, wind);
+    if (!gameOver) captain.update(dt, t, waves, wind, sloop);
+
+    // plank repair channel: 4s, blocks firing
+    if (controls.plugPressed) {
+      controls.plugPressed = false;
+      if (plugChannel <= 0 && sloop.planks > 0 && sloop.hasBreaches()) plugChannel = 4;
+    }
+    if (plugChannel > 0) {
+      plugChannel -= dt;
+      if (plugChannel <= 0) sloop.plugBreach();
+    }
+    if (controls.pumpPressed) {
+      controls.pumpPressed = false;
+      sloop.pumpOn = !sloop.pumpOn;
+    }
 
     if (controls.firePressed) {
       controls.firePressed = false;
-      // fire the broadside facing the hulk
-      const tr = sloop.body.translation();
-      const rot = sloop.body.rotation();
-      const inv = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w).invert();
-      const ht = hulk.body.translation();
-      const rel = new THREE.Vector3(ht.x - tr.x, 0, ht.z - tr.z).applyQuaternion(inv);
-      cannons.fireBroadside(sloop, rel.z >= 0 ? 1 : -1, t);
+      if (plugChannel <= 0) {
+        // fire the broadside on the side the camera looks across
+        const tr = sloop.body.translation();
+        const rot = sloop.body.rotation();
+        const inv = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w).invert();
+        const rel = new THREE.Vector3(tr.x - camera.position.x, 0, tr.z - camera.position.z).applyQuaternion(inv);
+        cannons.fireBroadside(sloop, rel.z >= 0 ? 1 : -1, t, controls.elevationDeg);
+      }
     }
-    cannons.update(dt, t, waves, [hulk]);
+    cannons.update(dt, t, waves, [enemy]);
     debris.update(dt, t, waves);
     character?.update(dt, controls.cameraYaw());
+
+    if (!gameOver) {
+      if (isSunk(enemy)) {
+        endGame("PRIZE SUNK", "the sea takes her gold this time");
+      } else if (isSunk(sloop)) {
+        endGame("SHE'S GONE", "your gold sinks with her");
+      }
+    }
   };
 
   // character-on-deck spike (plan Task 13): ?spike=char, IJKL walk, U jump.
@@ -117,16 +160,17 @@ async function main() {
   window.addEventListener("keydown", (e) => {
     if (e.code === "KeyX") {
       cutaway = !cutaway;
-      for (const s of [sloop, hulk]) s.visual.setCutaway(cutaway ? cutPlane : null);
+      for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
     }
   });
 
   // dev console handle (also used by Playwright-driven verification)
   (window as unknown as Record<string, unknown>).DEBUG = {
     sloop,
-    hulk,
+    enemy,
     world,
     cannons,
+    captain,
     get character() {
       return character;
     },
@@ -143,6 +187,13 @@ async function main() {
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
     controls.updateCamera(camera, new THREE.Vector3(tr.x, tr.y, tr.z));
+
+    // spyglass zoom (Q)
+    const targetFov = controls.spyglass ? 16 : 60;
+    if (Math.abs(camera.fov - targetFov) > 0.1) {
+      camera.fov += (targetFov - camera.fov) * 0.18;
+      camera.updateProjectionMatrix();
+    }
 
     if (cutaway) {
       // hide the half of each hull facing the camera
@@ -163,11 +214,19 @@ async function main() {
       const q = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
       const e = new THREE.Euler().setFromQuaternion(q, "ZYX");
       const kn = (sailing.speed * 1.944).toFixed(1);
+      const floods = sloop.build.compartments
+        .map((c) => `${Math.round((c.waterVolume / c.volume) * 100)}%`)
+        .join(" ");
+      const reload = Math.max(cannons.reloadAt - world.simTime, 0);
+      const et = enemy.body.translation();
+      const range = Math.hypot(et.x - tr.x, et.z - tr.z);
       hud.textContent =
-        `${kn} kn   sails ${(sailing.sailSet * 100).toFixed(0)}%   wind ${sailing.angleOffWind.toFixed(0)}° off bow\n` +
+        `${kn} kn   sails ${(sailing.sailSet * 100).toFixed(0)}%   wind ${sailing.angleOffWind.toFixed(0)}° off bow   enemy ${range.toFixed(0)}m\n` +
         `roll ${THREE.MathUtils.radToDeg(e.x).toFixed(1)}°  pitch ${THREE.MathUtils.radToDeg(e.z).toFixed(1)}°  ` +
-        `draft ${sloop.submergedFrac.toFixed(2)}\n` +
-        `W/S sails  A/D rudder  F broadside  drag orbit  wheel zoom`;
+        `flood [${floods}]  planks ${sloop.planks}  pump ${sloop.pumpOn ? "ON" : "off"}\n` +
+        `guns ${reload > 0 ? reload.toFixed(1) + "s" : "READY"} @ ${controls.elevationDeg.toFixed(1)}°` +
+        `${plugChannel > 0 ? `   PLUGGING ${plugChannel.toFixed(1)}s` : ""}\n` +
+        `W/S sails  A/D rudder  F fire  RMB aim  Q spyglass  R plank  P pump  X cutaway`;
     }
   });
 }

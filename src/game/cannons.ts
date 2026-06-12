@@ -26,7 +26,7 @@ interface Ball {
 
 export class Cannons {
   private balls: Ball[] = [];
-  private pendingShots: { delay: number; side: 1 | -1; portIndex: number }[] = [];
+  private pendingShots: { delay: number; side: 1 | -1; portIndex: number; owner: Ship; elevation: number }[] = [];
   reloadAt = 0; // simTime when the next broadside is allowed
   static RELOAD = 6; // s
 
@@ -61,16 +61,11 @@ export class Cannons {
     let i = 0;
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
       if (ship.build.cannonPorts[p].side !== side) continue;
-      this.pendingShots.push({ delay: i * STAGGER, side, portIndex: p });
+      this.pendingShots.push({ delay: i * STAGGER, side, portIndex: p, owner: ship, elevation: elevationDeg });
       i++;
     }
-    this.elevation = elevationDeg;
-    this.owner = ship;
     return true;
   }
-
-  private elevation = 5;
-  private owner: Ship | null = null;
 
   /** Advance projectiles + pending shots one fixed step. */
   update(dt: number, simTime: number, waves: Wave[], targets: Ship[]): void {
@@ -80,22 +75,21 @@ export class Cannons {
       const shot = this.pendingShots[s];
       if (shot.delay > 0) continue;
       this.pendingShots.splice(s, 1);
-      if (!this.owner) continue;
-      const port = this.owner.build.cannonPorts[shot.portIndex];
+      const port = shot.owner.build.cannonPorts[shot.portIndex];
       const muzzleLocal: [number, number, number] = [
         (port.x + 0.5) * VOXEL_SIZE,
         (port.y + 0.5) * VOXEL_SIZE,
         (port.z + 0.5 + shot.side * 1.2) * VOXEL_SIZE,
       ];
-      const muzzle = this.owner.localToWorld(muzzleLocal, this.tmpV.clone());
+      const muzzle = shot.owner.localToWorld(muzzleLocal, this.tmpV.clone());
 
       // fire perpendicular to the hull on the chosen side, elevated
-      const rot = this.owner.body.rotation();
+      const rot = shot.owner.body.rotation();
       const q = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
       const dir = this.tmpDir.set(0, 0, shot.side).applyQuaternion(q);
       dir.y = 0;
       dir.normalize();
-      const el = (this.elevation * Math.PI) / 180;
+      const el = (shot.elevation * Math.PI) / 180;
       dir.y = Math.tan(el);
       dir.normalize();
 
