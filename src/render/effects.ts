@@ -102,30 +102,6 @@ export class Effects {
     }
   }
 
-  /** Continuous bow spray: call per frame while a ship is making way. */
-  bowWake(p: THREE.Vector3, fwd: THREE.Vector3, speed: number): void {
-    const n = Math.min(Math.round(speed * 0.7), 7);
-    const side = { x: -fwd.z, z: fwd.x };
-    for (let i = 0; i < n; i++) {
-      const s = Math.random() < 0.5 ? 1 : -1;
-      const out = (0.6 + Math.random() * 0.9) * Math.min(speed * 0.28, 3.2);
-      this.spawn(
-        p.x + fwd.x * (Math.random() * 1.4 - 0.4),
-        p.y + 0.1,
-        p.z + fwd.z * (Math.random() * 1.4 - 0.4),
-        [
-          side.x * out * s + fwd.x * speed * 0.35,
-          0.7 + Math.random() * Math.min(speed * 0.22, 2.4),
-          side.z * out * s + fwd.z * speed * 0.35,
-        ],
-        0.5 + Math.random() * 0.45,
-        [0.9, 0.95, 0.96],
-        -9.81,
-        0.7,
-      );
-    }
-  }
-
   splinters(p: THREE.Vector3, normal: THREE.Vector3): void {
     for (let i = 0; i < 18; i++) {
       this.spawn(

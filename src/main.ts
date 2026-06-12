@@ -529,31 +529,38 @@ async function main() {
     }
   }
 
-  // bow wake so hulls don't phase silently through the sea (playtest feedback)
+  // ship wash lives in the ocean shader now: bow swell + flank white water +
+  // a stern trail the foam follows (round 6: the sprite spray "appeared
+  // painted onto the ship itself instead of being a physical presence")
   const wakeV = new THREE.Vector3();
   const wakeF = new THREE.Vector3();
-  const emitBowWake = (ship: Ship) => {
+  const feedWake = (slot: 0 | 1, ship: Ship) => {
     const v = ship.body.linvel();
-    const speed = Math.hypot(v.x, v.z);
-    if (speed < 1.6 || ship.submergedFrac < 0.05) return;
+    const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
     const rot = ship.body.rotation();
     wakeF.set(1, 0, 0).applyQuaternion(new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w));
     wakeF.y = 0;
     wakeF.normalize();
-    // stem position at the waterline
-    ship.localToWorld(
-      [ship.build.footprint.maxX - 2.5, ship.build.deckY * 0.25 * 0.45, ship.build.footprint.zC],
-      wakeV,
+    const fp = ship.build.footprint;
+    ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
+    ocean.updateShipWake(
+      slot,
+      wakeV.x,
+      wakeV.z,
+      wakeF.x,
+      wakeF.z,
+      speed,
+      ship.build.lengthM / 2,
+      ship.build.beamM / 2,
+      world.simTime,
     );
-    wakeV.y = surfaceHeight(waves, wakeV.x, wakeV.z, world.simTime) + 0.05;
-    effects.bowWake(wakeV, wakeF, speed);
   };
 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
     world.step(dt);
-    emitBowWake(sloop);
-    emitBowWake(enemy);
+    feedWake(0, sloop);
+    feedWake(1, enemy);
     effects.update(dt);
     updateAimArc();
     sloopVisual.animate(
