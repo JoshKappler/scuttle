@@ -86,11 +86,12 @@ export class BoardingSystem {
       [17, dt, 4.8],
       [12, dt, 5.2],
     ];
-    for (const p of posts) {
-      const pirate = new Pirate(this.phys, this.scene, this.enemyShip, "enemy", p, 0x4a2330, 0x802020);
+    const looks = ["henry", "mako", "sharky", "anne"] as const;
+    posts.forEach((p, i) => {
+      const pirate = new Pirate(this.phys, this.scene, this.enemyShip, "enemy", p, 0x4a2330, 0x802020, looks[i % looks.length]);
       pirate.slashCd = Math.random() * ENEMY_SLASH_CD; // desync the mob
       this.enemies.push(pirate);
-    }
+    });
     this.chest.position.set(4.2, dt, 4);
   }
 
@@ -105,6 +106,7 @@ export class BoardingSystem {
       [4.2, this.deckTop(this.playerShip), 4],
       0x1d3a52,
       0x1c6e6e,
+      "captain",
     );
   }
 
@@ -172,8 +174,10 @@ export class BoardingSystem {
       this.player.ship = this.nearestShip(this.player);
       if (onFoot) {
         this.player.step(dt, input.moveX, input.moveZ, input.jump, waves, simTime);
+      } else {
+        // at the wheel the caller pins the body — keep the animation alive
+        this.player.idleTick(dt);
       }
-      // while at the wheel (not onFoot) the caller pins the body — no step
 
       if (onFoot && input.slash && this.slashCd <= 0) {
         this.slashCd = PLAYER_SLASH_CD;

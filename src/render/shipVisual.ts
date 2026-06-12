@@ -18,6 +18,25 @@ export class ShipVisual {
 
   private waterMeshes = new Map<number, THREE.Mesh>();
 
+  /** Real CC0 plank photos (ambientCG), shared by every ship. */
+  private static deckTex: THREE.Texture | null = null;
+  private static hullTex: THREE.Texture | null = null;
+  private static loadWood(): { deck: THREE.Texture; hull: THREE.Texture } {
+    if (!ShipVisual.deckTex) {
+      const loader = new THREE.TextureLoader();
+      const setup = (t: THREE.Texture) => {
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.colorSpace = THREE.SRGBColorSpace;
+        t.anisotropy = 4;
+      };
+      ShipVisual.deckTex = loader.load("/assets/textures/deck.jpg", setup);
+      ShipVisual.hullTex = loader.load("/assets/textures/hull.jpg", setup);
+      setup(ShipVisual.deckTex);
+      setup(ShipVisual.hullTex);
+    }
+    return { deck: ShipVisual.deckTex, hull: ShipVisual.hullTex! };
+  }
+
   constructor(build: ShipBuild) {
     this.build = build;
     this.hullMaterial = new THREE.MeshStandardMaterial({
@@ -26,28 +45,47 @@ export class ShipVisual {
       metalness: 0.02,
       side: THREE.DoubleSide, // cutaway shows hull interior, not see-through walls
     });
-    // wood grain: per-plank value variation + fine along-grain striping,
-    // computed from ship-local position (playtest: "solid colored blocks")
+    // real tileable plank textures, planar-mapped in SHIP-LOCAL space by the
+    // face's dominant axis (greedy-mesh quads carry no UVs). Vertex color
+    // still supplies material tint + baked AO; the photo supplies the wood.
+    // Replaces the procedural sine grain (playtest: "static-like" shimmer).
+    const wood = ShipVisual.loadWood();
     this.hullMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms.uDeckTex = { value: wood.deck };
+      shader.uniforms.uHullTex = { value: wood.hull };
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nvarying vec3 vShipLocal;")
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvShipLocal = position;");
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec3 vShipLocal;\nvarying vec3 vShipNormal;",
+        )
+        .replace(
+          "#include <begin_vertex>",
+          "#include <begin_vertex>\nvShipLocal = position;\nvShipNormal = normal;",
+        );
       shader.fragmentShader = shader.fragmentShader
-        .replace("#include <common>", "#include <common>\nvarying vec3 vShipLocal;")
+        .replace(
+          "#include <common>",
+          `#include <common>
+          varying vec3 vShipLocal;
+          varying vec3 vShipNormal;
+          uniform sampler2D uDeckTex;
+          uniform sampler2D uHullTex;`,
+        )
         .replace(
           "#include <color_fragment>",
           `#include <color_fragment>
           {
-            // plank id: one strake per voxel row, ~2m plank lengths
-            float plankId = floor(vShipLocal.y / 0.25) * 13.0
-                          + floor((vShipLocal.x + floor(vShipLocal.y / 0.25) * 0.7) / 2.0) * 7.0
-                          + floor(vShipLocal.z / 0.25) * 3.0;
-            float h = fract(sin(plankId * 127.1) * 43758.5453);
-            // low-frequency, low-contrast: high-freq stripes aliased into
-            // static-like shimmer at distance (playtest)
-            float grain = 0.93 + 0.10 * h;
-            grain *= 0.985 + 0.015 * sin(vShipLocal.x * 7.0 + h * 41.0);
-            diffuseColor.rgb *= grain;
+            vec3 an = abs(vShipNormal);
+            vec3 tex;
+            if (an.y > 0.6) {
+              tex = texture2D(uDeckTex, vShipLocal.zx * 0.22).rgb; // planks run fore-aft
+            } else if (an.z >= an.x) {
+              tex = texture2D(uHullTex, vShipLocal.xy * 0.22).rgb; // broadside strakes
+            } else {
+              tex = texture2D(uHullTex, vShipLocal.zy * 0.22).rgb; // bow/stern
+            }
+            // normalize the photo around its mean so vertex tint + AO stay in charge
+            diffuseColor.rgb *= tex * 2.2;
           }`,
         );
     };

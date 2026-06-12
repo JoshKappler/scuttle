@@ -44,6 +44,10 @@ async function main() {
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
+  // rigged CC0 pirates (Quaternius) — loaded up front so every Pirate can be
+  // built synchronously; falls back to procedural bodies if it fails
+  const { loadPirateLibrary } = await import("./render/pirateModel");
+  await loadPirateLibrary();
   const world = new GameWorld(physics, waves, scene);
 
   // spawn the sloop just above the surface; it splashes down and settles

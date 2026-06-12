@@ -3,6 +3,7 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import { G } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
+import { createPirateRig, type ModelName, type PirateRig, type ClipKey } from "../render/pirateModel";
 import type { Physics } from "./physics";
 import type { Ship } from "./ship";
 
@@ -57,6 +58,7 @@ export class Pirate {
     deckLocal: [number, number, number],
     bodyColor: number,
     sashColor: number,
+    model?: ModelName,
   ) {
     const { world, RAPIER: R } = phys;
     const spawn = ship.localToWorld(deckLocal, new THREE.Vector3());
@@ -79,9 +81,16 @@ export class Pirate {
     this.controller.enableSnapToGround(0.6); // generous: decks drop with the swell
     this.controller.setMaxSlopeClimbAngle((50 * Math.PI) / 180);
 
-    // built pirate: legs, torso, arms, head, hat/bandana, cutlass — placeholder
-    // until a real CC0 character pack lands, but no longer a pill
+    // visual body: a real rigged CC0 pirate (Quaternius) when the library
+    // loaded; the old hand-built figure stands in if we're offline
     this.mesh = new THREE.Group();
+    this.rig = createPirateRig(model ?? (faction === "player" ? "captain" : "henry"));
+    if (this.rig) {
+      this.mesh.add(this.rig.root);
+      this.rig.play("idle");
+      scene.add(this.mesh);
+      return;
+    }
     const skin = new THREE.MeshStandardMaterial({ color: 0xc8a07a, roughness: 0.7 });
     const cloth = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.85 });
     const accent = new THREE.MeshStandardMaterial({ color: sashColor, roughness: 0.8 });
@@ -141,20 +150,34 @@ export class Pirate {
     scene.add(this.mesh);
   }
 
-  private swordArm!: THREE.Group;
+  private swordArm: THREE.Group | null = null;
   private headParts: THREE.Object3D[] = [];
+  /** Rigged GLB character (null → procedural fallback body). */
+  rig: PirateRig | null = null;
+  private animKey: ClipKey | "" = "";
+  private fpHide = false;
   /** Set by combat when this pirate swings; drives the chop animation. */
   attackTimer = 0;
   /** Set by combat on kick; drives the lunge animation. */
   kickTimer = 0;
+
+  private setAnim(key: ClipKey): void {
+    if (!this.rig || this.animKey === key) return;
+    this.animKey = key;
+    this.rig.play(key);
+  }
 
   worldPos(out: THREE.Vector3): THREE.Vector3 {
     const t = this.body.translation();
     return out.set(t.x, t.y, t.z);
   }
 
-  /** First-person: hide the head + hat so the camera doesn't sit inside them. */
+  /** First-person: hide the head (+hat) so the camera doesn't sit inside it.
+   *  For rigged models the head BONE is shrunk — and re-shrunk after every
+   *  mixer update, since animation tracks may write bone scale back. */
   setFirstPerson(fp: boolean): void {
+    this.fpHide = fp;
+    if (!fp && this.rig?.head) this.rig.head.scale.setScalar(1);
     for (const part of this.headParts) part.visible = !fp;
   }
 
@@ -175,6 +198,8 @@ export class Pirate {
   step(dt: number, moveX: number, moveZ: number, jump: boolean, waves: Wave[], simTime: number): void {
     this.attackTimer = Math.max(this.attackTimer - dt, 0);
     this.kickTimer = Math.max(this.kickTimer - dt, 0);
+    this.rig?.update(dt);
+    if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
     if (!this.alive) {
       this.syncMesh();
       this.ragdollAge += dt;
@@ -199,6 +224,8 @@ export class Pirate {
         z: tr.z + (moveZ * WALK_SPEED * k + this.pendingShove.z) * dt,
       });
       this.decayShove(dt);
+      if (moveX * moveX + moveZ * moveZ > 0.01) this.facing = Math.atan2(moveZ, moveX);
+      this.setAnim(this.attackTimer > 0 ? "attack" : "walk"); // doggy paddle
       this.syncMesh();
       return;
     }
@@ -251,7 +278,24 @@ export class Pirate {
     }
 
     if (moveX * moveX + moveZ * moveZ > 0.01) this.facing = Math.atan2(moveZ, moveX);
+
+    // animation: combat one-shots win, then airtime, then locomotion
+    if (this.attackTimer > 0) this.setAnim("attack");
+    else if (this.kickTimer > 0) this.setAnim("punch");
+    else if (!grounded && this.airTime > 0.18) this.setAnim("jump");
+    else if (moveX * moveX + moveZ * moveZ > 0.01) this.setAnim("run");
+    else this.setAnim("idle");
+
     this.syncMesh();
+  }
+
+  /** Mixer-only tick for frames when the body is externally pinned (wheel). */
+  idleTick(dt: number): void {
+    this.attackTimer = Math.max(this.attackTimer - dt, 0);
+    this.kickTimer = Math.max(this.kickTimer - dt, 0);
+    this.setAnim("idle");
+    this.rig?.update(dt);
+    if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
   }
 
   private decayShove(dt: number): void {
@@ -273,12 +317,15 @@ export class Pirate {
     const t = this.body.translation();
     this.mesh.position.set(t.x, t.y - 0.78, t.z);
     if (this.alive) {
-      // kick: brief forward lunge of the whole body
-      const kickP = this.kickTimer > 0 ? Math.sin((1 - this.kickTimer / 0.3) * Math.PI) : 0;
+      // kick: brief forward lunge of the whole body (procedural body only —
+      // the rigged model has a real Punch clip)
+      const kickP = this.kickTimer > 0 && !this.rig ? Math.sin((1 - this.kickTimer / 0.3) * Math.PI) : 0;
       this.mesh.rotation.set(0, -this.facing, kickP * 0.28);
-      // slash: overhead chop of the sword arm
-      const swingP = this.attackTimer > 0 ? Math.sin((1 - this.attackTimer / 0.28) * Math.PI) : 0;
-      this.swordArm.rotation.x = 0.18 - swingP * 1.9;
+      // slash: overhead chop of the stand-in's sword arm
+      if (this.swordArm) {
+        const swingP = this.attackTimer > 0 ? Math.sin((1 - this.attackTimer / 0.28) * Math.PI) : 0;
+        this.swordArm.rotation.x = 0.18 - swingP * 1.9;
+      }
     } else {
       const r = this.body.rotation();
       this.mesh.position.set(t.x, t.y, t.z);
@@ -329,6 +376,7 @@ export class Pirate {
     );
     this.collider = world.createCollider(R.ColliderDesc.capsule(0.5, 0.28).setDensity(985), this.body);
     this.controller = null;
+    this.rig?.play("death");
   }
 
   /** True once a corpse can be cleaned up (sunk or 8 s old). */
