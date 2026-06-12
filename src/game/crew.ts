@@ -180,21 +180,49 @@ export class Pirate {
     for (const part of this.headParts) part.visible = !fp;
   }
 
-  /** Pin to a world position with a fixed facing (used while at the wheel). */
-  pin(pos: THREE.Vector3, facing: number): void {
+  /** Pin to a world position with a fixed facing (used while at the wheel).
+   *  `helmRudder` drives the steering pose: hands on the rim, working it. */
+  pin(pos: THREE.Vector3, facing: number, helmRudder = 0): void {
     this.body.setNextKinematicTranslation({ x: pos.x, y: pos.y, z: pos.z });
     // keep the anchor current so stepping away from the wheel doesn't yank
     // us back to where we first grabbed it
     this.attachShip = this.ship;
     this.ship.worldToLocal(tmpAnchor.copy(pos), this.attachLocal);
     this.facing = facing;
+    this.atHelm = true;
+    this.helmRudder = helmRudder;
     const t = this.body.translation();
     this.mesh.position.set(t.x, t.y - 0.74, t.z);
     this.mesh.rotation.set(0, -facing, 0);
   }
 
+  private atHelm = false;
+  private helmRudder = 0;
+  private armBones: Record<string, THREE.Object3D> | null = null;
+
+  /** Helmsman pose, applied AFTER the mixer so it wins the frame: both arms
+   *  reach forward to the wheel rim and lean with the set rudder (round 6:
+   *  "actually went up to the wheel and was touching it and articulating
+   *  his arms to steer it"). */
+  private helmPose(): void {
+    if (!this.rig) return;
+    if (!this.armBones) {
+      this.armBones = {};
+      this.rig.root.traverse((o) => {
+        if (/^(Upper|Lower)Arm[LR]$/.test(o.name)) this.armBones![o.name] = o;
+      });
+    }
+    const b = this.armBones;
+    const r = this.helmRudder;
+    if (b.UpperArmL) b.UpperArmL.rotation.x -= 1.05 - r * 0.3;
+    if (b.UpperArmR) b.UpperArmR.rotation.x -= 1.05 + r * 0.3;
+    if (b.LowerArmL) b.LowerArmL.rotation.x -= 0.38;
+    if (b.LowerArmR) b.LowerArmR.rotation.x -= 0.38;
+  }
+
   /** Move one fixed step. moveX/moveZ are a world-space direction (≤1). */
   step(dt: number, moveX: number, moveZ: number, jump: boolean, waves: Wave[], simTime: number): void {
+    this.atHelm = false;
     this.attackTimer = Math.max(this.attackTimer - dt, 0);
     this.kickTimer = Math.max(this.kickTimer - dt, 0);
     this.rig?.update(dt);
@@ -253,6 +281,20 @@ export class Pirate {
       this.airTime += dt;
     }
 
+    // standing still on your own deck: ride the anchor EXACTLY. Feeding the
+    // carry through collide-and-slide let hard turns shave a few centimeters
+    // off every step — the captain slowly skated across the deck (round 6:
+    // "still seeing some issues with the character … sliding around the
+    // boat when under heavy turning")
+    const wantsMove = moveX * moveX + moveZ * moveZ > 0.01 || jump;
+    const shoved = this.pendingShove.lengthSq() > 0.05;
+    if (grounded && !wantsMove && !shoved && this.attachShip === this.ship) {
+      this.body.setNextKinematicTranslation({ x: tr.x + carryX, y: tr.y + carryY, z: tr.z + carryZ });
+      this.setAnim(this.attackTimer > 0 ? "attack" : this.kickTimer > 0 ? "punch" : "idle");
+      this.syncMesh();
+      return;
+    }
+
     const desired = {
       x: carryX + (moveX * WALK_SPEED + this.pendingShove.x) * dt,
       y: carryY + this.vy * dt,
@@ -272,10 +314,11 @@ export class Pirate {
     // (playtest round 5). Only genuinely leaving the hull breaks it.
     tmpAnchor.set(nx, ny, nz);
     this.ship.worldToLocal(tmpAnchor, this.attachLocal);
+    const fp = this.ship.build.footprint;
     const overboard =
-      this.attachLocal.x < -0.5 ||
-      this.attachLocal.x > 26.5 ||
-      Math.abs(this.attachLocal.z - 4) > 4.6;
+      this.attachLocal.x < fp.minX ||
+      this.attachLocal.x > fp.maxX ||
+      Math.abs(this.attachLocal.z - fp.zC) > fp.halfZ;
     if (!overboard && (grounded || this.airTime < 2.5)) {
       this.attachShip = this.ship;
     } else {
@@ -300,6 +343,7 @@ export class Pirate {
     this.kickTimer = Math.max(this.kickTimer - dt, 0);
     this.setAnim("idle");
     this.rig?.update(dt);
+    if (this.atHelm) this.helmPose();
     if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
   }
 

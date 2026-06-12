@@ -21,7 +21,26 @@ export interface Ocean {
    *  can't occlude the view into the hull from low angles. Unlike clip
    *  planes this never splits the ocean to the horizon. */
   setCutaway(on: boolean): void;
+  /** Size the cutaway hole/wedge for the ship being inspected (half-length,
+   *  half-beam in meters — the brig and the sloop differ). */
+  setFootprint(halfL: number, halfB: number): void;
   updateCutaway(shipPos: THREE.Vector3, fwdX: number, fwdZ: number, cutPlane: THREE.Plane): void;
+  /** Feed a ship's state once per frame (slot 0 = player, 1 = enemy): drives
+   *  the bow swell (the sea genuinely lifts at the stem), the white water
+   *  shouldered along the forward flanks, and a stern trail the foam laces
+   *  between — a wake that follows the actual path sailed, curves and all
+   *  (round 6: the old white water "appeared painted onto the ship"). */
+  updateShipWake(
+    slot: 0 | 1,
+    centerX: number,
+    centerZ: number,
+    fwdX: number,
+    fwdZ: number,
+    speed: number,
+    halfL: number,
+    halfB: number,
+    time: number,
+  ): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -41,6 +60,8 @@ const VERT = /* glsl */ `
 uniform float uTime;
 uniform vec4 uWaveA[4]; // dirX, dirZ, amplitude, k
 uniform vec2 uWaveB[4]; // qa, omega
+uniform vec4 uShipA[2]; // bow x, bow z, fwdX, fwdZ
+uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -73,6 +94,31 @@ void main() {
     nz -= dir.y * k * amp * c;
     ny -= k * qa * s;
     crest += (s * 0.5 + 0.5) * amp;
+  }
+
+  // bow wave: the stem physically shoulders water aside — a mound right at
+  // the cutting point that spills into a raised ridge running down the
+  // forward flanks, which the fragment stage froths and rolls into the wake
+  // (round 6.5: "the front of the ship pushes water aside and causes it to
+  // bulge, which then gradually becomes the wake")
+  for (int s2 = 0; s2 < 2; s2++) {
+    float spd = uShipB[s2].x;
+    if (spd < 1.0) continue;
+    vec2 bow = uShipA[s2].xy;
+    vec2 f2 = uShipA[s2].zw;
+    float hL = uShipB[s2].y;
+    float hB = uShipB[s2].z;
+    vec2 rel = p.xz - (bow - f2 * hL); // from hull center
+    float along = dot(rel, f2);
+    float across = dot(rel, vec2(-f2.y, f2.x));
+    float sF = clamp(spd / 8.0, 0.0, 1.2);
+    float bd2 = dot(p.xz - bow, p.xz - bow);
+    p.y += sF * 0.7 * exp(-bd2 / 3.5);
+    // flank ridge: strongest just abaft the stem, fading toward midship
+    float ridge = exp(-pow((abs(across) - (hB + 0.4)) / 1.4, 2.0));
+    float span = smoothstep(-hL * 0.35, hL * 0.55, along) * (1.0 - smoothstep(hL * 0.8, hL * 1.1, along));
+    p.y += sF * 0.38 * ridge * span;
+    crest += sF * (0.9 * exp(-bd2 / 3.5) + 0.55 * ridge * span);
   }
 
   vWorldPos = p;
@@ -116,6 +162,9 @@ uniform vec2 uShipPos; // world xz of the cutaway ship
 uniform vec2 uFwd; // unit fore-aft axis, world xz
 uniform vec2 uHalf; // half-length, half-beam of the footprint
 uniform vec4 uCutPlane; // xyz = normal, w = constant (THREE.Plane form)
+uniform vec4 uShipA[2]; // bow x, bow z, fwdX, fwdZ
+uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
+uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 
 void main() {
   #include <clipping_planes_fragment>
@@ -179,7 +228,54 @@ void main() {
   // hard whitecaps right at breaking crests (steep + high)
   float cap = smoothstep(0.72, 0.92, crestF) * smoothstep(0.97, 0.88, N.y);
   float flat_ = smoothstep(0.94, 1.0, N.y);
-  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9, 0.0, 1.0));
+
+  // ship wash: (a) churned white along the forward hull flanks where the
+  // stem shoulders the sea aside, (b) a turbulent trail laced between the
+  // recorded stern-path points — it follows the actual track, curves and
+  // all, widening and fading as it ages (round 6: "leaving a wake behind")
+  float wash = 0.0;
+  for (int s = 0; s < 2; s++) {
+    float spd = uShipB[s].x;
+    if (spd < 1.0) continue;
+    vec2 fwd2 = uShipA[s].zw;
+    vec2 bow = uShipA[s].xy;
+    float hL = uShipB[s].y;
+    float hB = uShipB[s].z;
+    vec2 rel = vWorldPos.xz - (bow - fwd2 * hL);
+    float along = dot(rel, fwd2);
+    float across = dot(rel, vec2(-fwd2.y, fwd2.x));
+    float sF = clamp(spd / 8.0, 0.0, 1.2);
+    // froth grows continuously from a sliver at the stem to a full churned
+    // band by the stern — no hard cutoffs (round 6.5: the froth "abruptly
+    // cuts off slightly ahead of the ship and at the halfway mark")
+    float inHull = smoothstep(hL * 1.25, hL * 0.95, along) * smoothstep(-hL * 1.35, -hL * 0.6, along);
+    float devel = 1.0 - smoothstep(-hL * 0.55, hL * 1.1, along); // 0 at stem → 1 astern
+    float taper = 1.0 - 0.5 * smoothstep(hL * 0.3, hL * 1.05, along);
+    float edge = abs(across) - (hB * taper + 0.2);
+    float bandW = mix(0.5, hB * 0.9, devel);
+    wash += sF * (0.3 + 0.7 * devel) * inHull * exp(-pow(max(edge, 0.0) / bandW, 2.0));
+  }
+  for (int i = 0; i < 63; i++) {
+    if (i == 31) continue; // slot boundary: don't lace ship 0's tail to ship 1's head
+    vec4 A = uTrail[i];
+    vec4 B = uTrail[i + 1];
+    if (A.w <= 0.0 || B.w <= 0.0) continue;
+    vec2 ab = B.xy - A.xy;
+    float L2 = dot(ab, ab);
+    if (L2 < 0.04 || L2 > 400.0) continue;
+    float h = clamp(dot(vWorldPos.xz - A.xy, ab) / L2, 0.0, 1.0);
+    float dseg = length(vWorldPos.xz - (A.xy + ab * h));
+    float ageM = mix(A.z, B.z, h);
+    // the wake leaves the stern at FULL ship beam and spreads as it ages
+    float hb2 = i < 32 ? uShipB[0].z : uShipB[1].z;
+    float width = hb2 + 0.3 + ageM * 0.75;
+    wash += exp(-pow(dseg / width, 2.0)) * exp(-ageM * 0.24) * mix(A.w, B.w, h);
+  }
+  // break the wash up so it reads as churned water, not paint
+  wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
+
+  col = mix(col, vec3(0.92, 0.96, 0.95),
+            clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.7, 0.0, 0.93));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);
@@ -223,16 +319,49 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
       uFwd: { value: new THREE.Vector2(1, 0) },
       uHalf: { value: new THREE.Vector2(12.9, 3.7) },
       uCutPlane: { value: new THREE.Vector4(0, 0, 1, 0) },
+      uShipA: { value: [new THREE.Vector4(), new THREE.Vector4()] },
+      uShipB: { value: [new THREE.Vector4(), new THREE.Vector4()] },
+      uTrail: { value: Array.from({ length: 64 }, () => new THREE.Vector4()) },
     },
   });
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
 
+  // stern-path ring buffers (one per ship slot): points are laid every few
+  // meters of travel and age out; the fragment shader laces foam between them
+  const trails: { x: number; z: number; t: number; w: number }[][] = [[], []];
+
   return {
     mesh,
     setCutaway(on) {
       mat.uniforms.uCutOn.value = on ? 1 : 0;
+    },
+    setFootprint(halfL, halfB) {
+      (mat.uniforms.uHalf.value as THREE.Vector2).set(halfL, halfB);
+    },
+    updateShipWake(slot, centerX, centerZ, fwdX, fwdZ, speed, halfL, halfB, time) {
+      const a = (mat.uniforms.uShipA.value as THREE.Vector4[])[slot];
+      const b = (mat.uniforms.uShipB.value as THREE.Vector4[])[slot];
+      a.set(centerX + fwdX * halfL, centerZ + fwdZ * halfL, fwdX, fwdZ);
+      b.set(speed, halfL, halfB, 0);
+
+      const trail = trails[slot];
+      const sx = centerX - fwdX * (halfL + 0.8);
+      const sz = centerZ - fwdZ * (halfL + 0.8);
+      const last = trail[trail.length - 1];
+      if (speed > 1.5 && (!last || Math.hypot(sx - last.x, sz - last.z) > 2.4)) {
+        trail.push({ x: sx, z: sz, t: time, w: Math.min(speed / 6, 1.1) });
+      }
+      while (trail.length > 31 || (trail.length > 0 && time - trail[0].t > 16)) trail.shift();
+
+      const u = mat.uniforms.uTrail.value as THREE.Vector4[];
+      const base = slot * 32;
+      for (let i = 0; i < 32; i++) {
+        const pt = trail[i];
+        if (pt) u[base + i].set(pt.x, pt.z, time - pt.t, pt.w);
+        else u[base + i].set(0, 0, 0, 0);
+      }
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

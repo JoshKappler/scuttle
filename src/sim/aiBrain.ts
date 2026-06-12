@@ -19,6 +19,7 @@ export interface AIDecision {
 }
 
 const GUN_RANGE = 90; // m
+const CLOSE_RANGE = 55; // m — run the target down to here before turning abeam
 const ABEAM_TOLERANCE = 20; // degrees around ±90
 
 /** Rudder sign that moves the current bearing toward the desired bearing. */
@@ -31,32 +32,34 @@ function steerToward(bearingDeg: number, desiredDeg: number): -1 | 0 | 1 {
 }
 
 export function decideAI(v: AIView): AIDecision {
-  // crippled: run with the wind, guns silent
-  if (v.floodFrac >= 0.5) {
+  // crippled: run with the wind, guns silent. The threshold is HIGH — the
+  // captain stays aggressive until genuinely sinking (playtest round 6:
+  // "they should be pretty aggressive until they're very damaged")
+  if (v.floodFrac >= 0.55) {
     const desired = v.bearingDeg >= 0 ? 180 : -180;
     return { sailSet: 1, rudderSign: steerToward(v.bearingDeg, desired), fire: null };
   }
 
-  // pinned in irons: bear away from the wind FIRST or we're anchored forever
-  // (this is how the playtest enemy got lost over the horizon)
-  if (Math.abs(v.windBearingDeg) < 32 && v.range > 40) {
+  // pinned in irons FAR from the fight: bear away from the wind or be
+  // anchored forever. Never mid-fight — bearing away there read as fleeing
+  // ("the enemy ship still isn't really chasing me", round 6)
+  if (Math.abs(v.windBearingDeg) < 32 && v.range > 120) {
     const sign = v.windBearingDeg >= 0 ? -1 : 1; // turn the bow AWAY from the wind
     return { sailSet: 1, rudderSign: sign, fire: null };
   }
 
-  // closing: aim the bow at the target
-  if (v.range > GUN_RANGE) {
-    return { sailSet: 1, rudderSign: steerToward(v.bearingDeg, 0), fire: null };
-  }
-
-  // gun range: bring the nearer broadside to bear
-  const desired = v.bearingDeg >= 0 ? 90 : -90;
-  const rudderSign = steerToward(v.bearingDeg, desired);
-
+  // a broadside that bears is a broadside that fires — even while closing
   let fire: AIDecision["fire"] = null;
-  if (v.reloadReady && Math.abs(Math.abs(v.bearingDeg) - 90) <= ABEAM_TOLERANCE) {
+  if (v.range <= GUN_RANGE && v.reloadReady && Math.abs(Math.abs(v.bearingDeg) - 90) <= ABEAM_TOLERANCE) {
     fire = v.bearingDeg >= 0 ? "starboard" : "port";
   }
 
-  return { sailSet: 0.75, rudderSign, fire };
+  // the chase: bow on the target at FULL sail until close aboard
+  if (v.range > CLOSE_RANGE) {
+    return { sailSet: 1, rudderSign: steerToward(v.bearingDeg, 0), fire };
+  }
+
+  // close action: keep way on and dance the nearer broadside onto them
+  const desired = v.bearingDeg >= 0 ? 90 : -90;
+  return { sailSet: 0.85, rudderSign: steerToward(v.bearingDeg, desired), fire };
 }

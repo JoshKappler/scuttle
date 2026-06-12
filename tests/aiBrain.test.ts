@@ -22,11 +22,26 @@ describe("AI captain brain", () => {
     expect(decideAI({ ...base, range: 200, bearingDeg: -40 }).rudderSign).toBe(-1);
   });
 
-  it("in range: maneuvers to put the target abeam", () => {
-    // target dead ahead at 60m → keep turning so bearing moves toward ±90
-    const d = decideAI({ ...base, range: 60, bearingDeg: 5 });
+  it("close aboard: maneuvers to put the target abeam", () => {
+    // target dead ahead at 50m → keep turning so bearing moves toward ±90
+    const d = decideAI({ ...base, range: 50, bearingDeg: 5 });
     expect(d.rudderSign).not.toBe(0);
     expect(d.fire).toBeNull(); // not abeam yet
+  });
+
+  it("chases at FULL sail, bow on the target, until close aboard (round 6)", () => {
+    const d = decideAI({ ...base, range: 70, bearingDeg: 30 });
+    expect(d.sailSet).toBe(1);
+    expect(d.rudderSign).toBe(1); // turning toward bearing 0
+    // and an opportune broadside while closing still fires
+    const passing = decideAI({ ...base, range: 70, bearingDeg: 85 });
+    expect(passing.fire).toBe("starboard");
+  });
+
+  it("stays in the fight even pointed near the wind at mid range", () => {
+    const d = decideAI({ ...base, range: 80, bearingDeg: 10, windBearingDeg: 8 });
+    expect(d.rudderSign).toBe(1); // chasing, not bearing away
+    expect(d.sailSet).toBe(1);
   });
 
   it("fires the correct broadside when target is abeam and loaded", () => {

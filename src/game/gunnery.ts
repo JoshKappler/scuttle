@@ -9,9 +9,17 @@ import type { Ship } from "./ship";
  * genuinely leaves it (playtest round 4: "the trajectory line is originating
  * from the base of the cannon instead of from the end of the barrel").
  */
-export const BARREL_PIVOT_UP = 0.62; // m above the deck surface (trunnion height)
+export const BARREL_PIVOT_UP = 0.62; // pivot origin above the deck surface
 export const BARREL_INBOARD = 2.6; // voxels the carriage sits inboard of the port cell
-export const BARREL_TIP = 1.6; // m from the trunnion pivot to the muzzle face
+
+// The gun's true geometry — gunnery owns these numbers and the procedural
+// gun model in shipVisual is BUILT from them, so the visible bore is the
+// firing solution by construction (playtest round 6: the CC0 prop was one
+// merged mesh with ~37° of elevation baked in; its preview line "isn't
+// facing with where the cannon itself appears to be pointing").
+export const BORE_UP = -0.1; // bore height above the pivot origin (0.52 above deck)
+export const TRUNNION_OUT = 0.45; // pivot origin → trunnion, along the level bore
+export const TIP_FROM_TRUNNION = 1.32; // trunnion → muzzle face
 
 export interface MuzzleOut {
   pos: THREE.Vector3;
@@ -73,9 +81,14 @@ export function muzzleWorld(
   out: MuzzleOut,
 ): MuzzleOut {
   const port = ship.build.cannonPorts[portIndex];
-  barrelDirLocal(port.side, elevationDeg, traverseDeg, out.dir);
   pivotLocal(ship, portIndex, out.pos);
-  out.pos.addScaledVector(out.dir, BARREL_TIP);
+  // exactly the visual model's articulation: traverse slews the carriage
+  // (trunnion rides the level bore line), elevation pitches about the trunnion
+  barrelDirLocal(port.side, 0, traverseDeg, out.dir);
+  out.pos.y += BORE_UP;
+  out.pos.addScaledVector(out.dir, TRUNNION_OUT);
+  barrelDirLocal(port.side, elevationDeg, traverseDeg, out.dir);
+  out.pos.addScaledVector(out.dir, TIP_FROM_TRUNNION);
   const rot = ship.body.rotation();
   tmpQ.set(rot.x, rot.y, rot.z, rot.w);
   out.pos.applyQuaternion(tmpQ);

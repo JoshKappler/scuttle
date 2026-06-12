@@ -9,11 +9,15 @@ export class PlayerControls {
   private keys = new Set<string>();
   private orbitYaw = 2.6;
   private orbitPitch = 0.32; // radians above horizon
-  private dist = 30;
+  private dist = 46; // the brig needs a longer default orbit
   private dragging = false;
 
-  /** Set on KeyF keydown; cleared by whoever consumes the shot. */
-  firePressed = false;
+  /** Set on left-click while pointer-locked; cleared by the consumer.
+   *  LMB is THE action button: fires the broadside while aiming (RMB held),
+   *  swings the sword on foot otherwise (playtest round 6: "shooting should
+   *  only happen when you are holding right click to aim and should be
+   *  fired with a left click … slashing should be done with a left click"). */
+  lmbPressed = false;
   /** Set on KeyR keydown; cleared by the repair handler. */
   plugPressed = false;
   /** Set on KeyP keydown; cleared by the pump handler. */
@@ -62,7 +66,6 @@ export class PlayerControls {
     window.addEventListener("keydown", (e) => {
       this.keys.add(e.code);
       if (e.repeat) return; // OS key auto-repeat must not re-trigger actions
-      if (e.code === "KeyF") this.firePressed = true;
       if (e.code === "KeyR") this.plugPressed = true;
       if (e.code === "KeyP") this.pumpPressed = true;
       if (e.code === "KeyC") this.kickPressed = true;
@@ -84,6 +87,7 @@ export class PlayerControls {
 
     dom.addEventListener("mousedown", (e) => {
       if (e.button === 2) this.aiming = true;
+      else if (e.button === 0 && this.locked) this.lmbPressed = true;
       else if (!this.locked) this.dragging = true; // drag fallback when unlocked
     });
     window.addEventListener("mouseup", (e) => {
@@ -110,7 +114,7 @@ export class PlayerControls {
       }
     });
     dom.addEventListener("wheel", (e) => {
-      this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 7), 85);
+      this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 8), 130);
     });
   }
 

@@ -135,10 +135,20 @@ export function createPirateRig(name: ModelName, heightM = 1.72): PirateRig | nu
   const mixer = new THREE.AnimationMixer(inner);
   const actions = new Map<ClipKey, THREE.AnimationAction>();
   const oneShot: ClipKey[] = ["attack", "punch", "hit", "death", "jump"];
+  // combat clips must animate IN PLACE: the kit bakes root translation into
+  // some swings, which displaced the mesh off the capsule mid-attack
+  // ("it actually clips you towards the back of the vessel", round 6).
+  // The capsule owns position; rotation tracks carry the whole swing.
+  const inPlace: ClipKey[] = ["attack", "punch", "hit"];
   for (const key of Object.keys(CLIP_PATTERNS) as ClipKey[]) {
     const clip = pickClip(gltf.animations, key);
     if (!clip) continue;
-    const action = mixer.clipAction(clip);
+    let useClip = clip;
+    if (inPlace.includes(key)) {
+      useClip = clip.clone();
+      useClip.tracks = useClip.tracks.filter((t) => !t.name.endsWith(".position"));
+    }
+    const action = mixer.clipAction(useClip);
     if (oneShot.includes(key)) {
       action.setLoop(THREE.LoopOnce, 1);
       action.clampWhenFinished = true;

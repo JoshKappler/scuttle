@@ -69,9 +69,14 @@ export class BoardingSystem {
 
   private crewSpawned = false;
 
-  /** Deck-top height in local meters for a ship. */
-  private deckTop(ship: Ship): number {
-    return (ship.build.deckY + 2) * 0.25;
+  /** Walk-surface height in local meters at a station (quarterdecks rise). */
+  private deckTop(ship: Ship, xM = 4): number {
+    return (ship.build.deckYAt(Math.round(xM / 0.25)) + 2) * 0.25;
+  }
+
+  /** Centerline z in local meters. */
+  private midZ(ship: Ship): number {
+    return ship.build.footprint.zC;
   }
 
   /** Spawn crews shortly after launch — pirates are anchored in their
@@ -103,7 +108,7 @@ export class BoardingSystem {
       this.scene,
       this.playerShip,
       "player",
-      [4.2, this.deckTop(this.playerShip), 4],
+      [4.2, this.deckTop(this.playerShip, 4.2), this.midZ(this.playerShip)],
       0x1d3a52,
       0x1c6e6e,
       "captain",
@@ -266,7 +271,10 @@ export class BoardingSystem {
       this.message = "you lost the chest overboard!";
     }
     this.player.ship = this.playerShip;
-    const p = this.playerShip.localToWorld([4.2, this.deckTop(this.playerShip) + 1, 4], this.tmpA);
+    const p = this.playerShip.localToWorld(
+      [4.2, this.deckTop(this.playerShip, 4.2) + 1, this.midZ(this.playerShip)],
+      this.tmpA,
+    );
     this.player.teleport(p);
   }
 
@@ -274,8 +282,10 @@ export class BoardingSystem {
     const t = p.body.translation();
     const a = this.playerShip.body.translation();
     const b = this.enemyShip.body.translation();
-    const da = Math.hypot(a.x + 13 - t.x, a.z + 4 - t.z); // rough hull centers
-    const db = Math.hypot(b.x + 13 - t.x, b.z + 4 - t.z);
+    const af = this.playerShip.build.footprint;
+    const bf = this.enemyShip.build.footprint;
+    const da = Math.hypot(a.x + (af.minX + af.maxX) / 2 - t.x, a.z + af.zC - t.z);
+    const db = Math.hypot(b.x + (bf.minX + bf.maxX) / 2 - t.x, b.z + bf.zC - t.z);
     return da <= db ? this.playerShip : this.enemyShip;
   }
 
@@ -317,7 +327,10 @@ export class BoardingSystem {
 
     if (this.chestCarried) {
       // bank when back near your own quarterdeck
-      const home = this.playerShip.localToWorld([3.4, this.deckTop(this.playerShip), 4], this.tmpB);
+      const home = this.playerShip.localToWorld(
+        [3.4, this.deckTop(this.playerShip, 3.4), this.midZ(this.playerShip)],
+        this.tmpB,
+      );
       if (Math.hypot(home.x - pp.x, home.y - pp.y, home.z - pp.z) < 3.2) {
         this.chestBanked = true;
         this.chestCarried = false;

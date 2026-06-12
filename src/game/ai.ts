@@ -24,9 +24,13 @@ export class AICaptain {
     public readonly ship: Ship,
     scene: THREE.Scene,
     effects: Effects,
-    jitterDeg = 1.5,
+    jitterDeg = 2.5,
   ) {
-    this.cannons = new Cannons(scene, effects);
+    // the AI crew is deliberately WORSE than yours: slower reloads, slower
+    // helm, leaner sail trim, wider shot spread — aggressive but beatable
+    // (round 6: "both of the ships are so equally matched … nerf the enemy")
+    this.cannons = new Cannons(scene, effects, 9.5);
+    this.sailing.efficiency = 0.82;
     this.accuracyJitter = jitterDeg;
   }
 
@@ -63,7 +67,7 @@ export class AICaptain {
     if (d.rudderSign === 0) {
       this.sailing.rudder *= Math.max(1 - dt * 3, 0);
     } else {
-      this.sailing.rudder = Math.min(Math.max(this.sailing.rudder + rudderTarget * dt * 2.0, -1), 1);
+      this.sailing.rudder = Math.min(Math.max(this.sailing.rudder + rudderTarget * dt * 1.4, -1), 1);
     }
     this.sailing.apply(this.ship, wind);
 
