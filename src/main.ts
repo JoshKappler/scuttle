@@ -11,6 +11,7 @@ import { GameWorld } from "./game/world";
 import { SailingController, type Wind } from "./game/sailing";
 import { PlayerControls } from "./game/player";
 import { Cannons } from "./game/cannons";
+import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
 
 async function main() {
@@ -65,6 +66,9 @@ async function main() {
   const effects = new Effects();
   scene.add(effects.points);
   const cannons = new Cannons(scene, effects);
+  const debris = new DebrisManager(physics, scene);
+  sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
+  hulk.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, hulk));
 
   world.onFixedStep = (t, dt) => {
     controls.updateSailing(sailing, dt);
@@ -81,6 +85,7 @@ async function main() {
       cannons.fireBroadside(sloop, rel.z >= 0 ? 1 : -1, t);
     }
     cannons.update(dt, t, waves, [hulk]);
+    debris.update(dt, t, waves);
   };
 
   window.addEventListener("resize", () => {

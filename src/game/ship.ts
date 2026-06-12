@@ -4,6 +4,7 @@ import { VOXEL_SIZE, WATER_DENSITY } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeProbes, probeForce, submergedFraction, type Probe } from "../sim/buoyancy";
 import { sphereCells } from "../sim/ballistics";
+import { findSevered, type Island } from "../sim/connectivity";
 import { IRON } from "../sim/materials";
 import type { ShipBuild } from "../sim/shipwright";
 import type { ShipVisual } from "../render/shipVisual";
@@ -23,6 +24,10 @@ export class Ship {
   /** Diagnostic: 0..1 share of envelope currently below the surface. */
   submergedFrac = 0;
 
+  /** Fired when damage severs hull sections; receiver spawns debris bodies. */
+  onSevered?: (islands: Island[]) => void;
+
+  private keelAnchor: [number, number, number];
   private inertia: [number, number, number];
   private tmpV = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
@@ -31,6 +36,14 @@ export class Ship {
     this.build = build;
     this.visual = visual;
     this.probes = makeProbes(build.grid, build.compartments);
+
+    // keel anchor: lowest solid cell on the midship centerline
+    const [kx, , knz] = build.grid.dims;
+    const ax = Math.floor(kx / 2);
+    const az = Math.floor(knz / 2);
+    let ay = 0;
+    while (ay < build.grid.dims[1] && !build.grid.isSolid(ax, ay, az)) ay++;
+    this.keelAnchor = [ax, ay, az];
 
     const { world, RAPIER: R } = phys;
     const mass = build.grid.totalMass();
@@ -170,7 +183,18 @@ export class Ship {
       grid.remove(x, y, z);
       removed++;
     }
-    if (removed > 0) this.recomputeMassProperties();
+    if (removed === 0) return 0;
+
+    // anything no longer connected to the keel breaks off as debris
+    const islands = findSevered(grid, this.keelAnchor);
+    if (islands.length > 0) {
+      for (const island of islands) {
+        for (const c of island.cells) grid.remove(c.x, c.y, c.z);
+      }
+      this.onSevered?.(islands);
+    }
+
+    this.recomputeMassProperties();
     return removed;
   }
 
