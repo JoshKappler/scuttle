@@ -11,6 +11,7 @@ import { GameWorld } from "./game/world";
 import { SailingController, type Wind } from "./game/sailing";
 import { PlayerControls } from "./game/player";
 import { Cannons } from "./game/cannons";
+import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
 
@@ -87,7 +88,21 @@ async function main() {
     }
     cannons.update(dt, t, waves, [hulk]);
     debris.update(dt, t, waves);
+    character?.update(dt, controls.cameraYaw());
   };
+
+  // character-on-deck spike (plan Task 13): ?spike=char, IJKL walk, U jump.
+  // Spawns once the ship has settled from its splash-down.
+  let character: CharacterSpike | null = null;
+  if (new URLSearchParams(location.search).get("spike") === "char") {
+    const trySpawn = setInterval(() => {
+      if (world.simTime > 6) {
+        character = new CharacterSpike(physics, scene, sloop);
+        character.respawn();
+        clearInterval(trySpawn);
+      }
+    }, 500);
+  }
 
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -107,7 +122,15 @@ async function main() {
   });
 
   // dev console handle (also used by Playwright-driven verification)
-  (window as unknown as Record<string, unknown>).DEBUG = { sloop, hulk, world, cannons };
+  (window as unknown as Record<string, unknown>).DEBUG = {
+    sloop,
+    hulk,
+    world,
+    cannons,
+    get character() {
+      return character;
+    },
+  };
 
   const clock = new THREE.Clock();
   let hudTimer = 0;

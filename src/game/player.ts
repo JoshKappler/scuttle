@@ -46,6 +46,11 @@ export class PlayerControls {
     }
   }
 
+  /** Horizontal camera angle, for camera-relative character movement. */
+  cameraYaw(): number {
+    return this.orbitYaw + Math.PI; // orbit offset points FROM target TO camera
+  }
+
   /** Position the camera around the followed point. Call once per frame. */
   updateCamera(camera: THREE.PerspectiveCamera, target: THREE.Vector3): void {
     const cy = Math.cos(this.orbitPitch);
