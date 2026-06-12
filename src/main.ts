@@ -13,6 +13,7 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
+import { muzzleWorld } from "./game/gunnery";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -180,12 +181,9 @@ async function main() {
     if (controls.firePressed && !onFoot) {
       controls.firePressed = false;
       if (plugChannel <= 0) {
-        // fire the broadside on the side the camera looks across
-        const tr = sloop.body.translation();
-        const rot = sloop.body.rotation();
-        const inv = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w).invert();
-        const rel = new THREE.Vector3(tr.x - camera.position.x, 0, tr.z - camera.position.z).applyQuaternion(inv);
-        cannons.fireBroadside(sloop, rel.z >= 0 ? 1 : -1, t, controls.elevationDeg);
+        // fire the broadside on the side the camera looks across, with the
+        // player's laid elevation + traverse
+        cannons.fireBroadside(sloop, aimSide(), t, controls.elevationDeg, controls.traverseDeg);
       }
     }
     cannons.update(dt, t, waves, [enemy]);
@@ -344,15 +342,18 @@ async function main() {
       hudEls.gunStatus.textContent = "GUNS READY";
       hudEls.gunStatus.className = "ready";
     }
-    hudEls.gunSub.textContent = `elevation ${controls.elevationDeg.toFixed(1)}°${controls.aiming ? " — AIMING" : ""}`;
+    hudEls.gunSub.textContent =
+      `elev ${controls.elevationDeg.toFixed(1)}° · trav ${controls.traverseDeg >= 0 ? "+" : ""}${controls.traverseDeg.toFixed(0)}°` +
+      `${controls.aiming ? " — AIMING" : ""}`;
     hudEls.gold.textContent = String(boarding.gold);
 
     hudEls.hpRow.style.display = onFoot ? "flex" : "none";
     if (onFoot) hudEls.hpBar.style.width = `${(boarding.playerHp / 5) * 100}%`;
 
+    const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
     hudEls.hints.textContent = onFoot
-      ? `WASD move · Space jump · F slash · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : "W/S sails · A/D rudder · F fire · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway";
+      ? `${lockHint}WASD move · Space jump · F slash · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
+      : `${lockHint}W/S sails · A/D rudder · F fire · RMB aim · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
@@ -374,44 +375,39 @@ async function main() {
     aimLines.push({ line, pos });
   }
 
+  // which broadside the camera is looking ACROSS — from the camera's look
+  // direction, so it works identically in first person and orbit views
+  const lookV = new THREE.Vector3();
   function aimSide(): 1 | -1 {
-    const tr2 = sloop.body.translation();
     const rot2 = sloop.body.rotation();
     const inv = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w).invert();
-    const rel = new THREE.Vector3(tr2.x - camera.position.x, 0, tr2.z - camera.position.z).applyQuaternion(inv);
-    return rel.z >= 0 ? 1 : -1;
+    camera.getWorldDirection(lookV).applyQuaternion(inv);
+    return lookV.z >= 0 ? 1 : -1;
   }
 
+  const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
   function updateAimArc(): void {
     if (!controls.aiming || onFoot) {
       for (const a of aimLines) a.line.visible = false;
       return;
     }
-    const rot2 = sloop.body.rotation();
-    const q2 = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w);
     const side = aimSide();
-    const ports = sloop.build.cannonPorts.filter((p) => p.side === side);
-    const el = (controls.elevationDeg * Math.PI) / 180;
+    const portIdxs: number[] = [];
+    sloop.build.cannonPorts.forEach((p, i) => {
+      if (p.side === side) portIdxs.push(i);
+    });
 
     for (let pi = 0; pi < aimLines.length; pi++) {
       const arc = aimLines[pi];
-      const port = ports[pi];
-      if (!port) {
+      if (pi >= portIdxs.length) {
         arc.line.visible = false;
         continue;
       }
       arc.line.visible = true;
-      const muzzle = sloop.localToWorld(
-        [(port.x + 0.5) * 0.25, (port.y + 0.5) * 0.25, (port.z + 0.5 + side * 1.2) * 0.25],
-        new THREE.Vector3(),
-      );
-      const dir = new THREE.Vector3(0, 0, side).applyQuaternion(q2);
-      dir.y = 0;
-      dir.normalize();
-      dir.y = Math.tan(el);
-      dir.normalize();
-      const v = dir.multiplyScalar(55);
-      const p = muzzle.clone();
+      // arc starts at the barrel TIP and follows the true firing solution
+      muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
+      const v = arcMuzzle.dir.clone().multiplyScalar(55);
+      const p = arcMuzzle.pos.clone();
       const step = 0.06;
       for (let i = 0; i < ARC_PTS; i++) {
         arc.pos[i * 3] = p.x;
@@ -463,7 +459,9 @@ async function main() {
       world.simTime,
       sailing.rudder,
       sailing.sailSet,
-      controls.aiming && !onFoot ? { side: aimSide(), elevationDeg: controls.elevationDeg } : null,
+      controls.aiming && !onFoot
+        ? { side: aimSide(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
+        : null,
     );
     enemyVisual.animate(world.simTime, captain.sailing.rudder, captain.sailing.sailSet);
 

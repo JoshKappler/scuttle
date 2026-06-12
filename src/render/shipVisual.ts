@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
+import { barrelDirLocal } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
 import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
@@ -96,8 +97,13 @@ export class ShipVisual {
 
   /** Per-frame rig animation: sail flutter/fill, rudder + wheel answer the
    *  helm (smoothed, correct sense: port turn → trailing edge to port),
-   *  cannon barrels track the aiming elevation on the aiming side. */
-  animate(time: number, rudderNorm: number, sailSet: number, aim?: { side: 1 | -1; elevationDeg: number } | null): void {
+   *  cannon barrels track the aim (elevation AND traverse) on the aiming side. */
+  animate(
+    time: number,
+    rudderNorm: number,
+    sailSet: number,
+    aim?: { side: 1 | -1; elevationDeg: number; traverseDeg: number } | null,
+  ): void {
     const dt = Math.min(Math.max(time - this.lastAnimT, 0), 0.1);
     this.lastAnimT = time;
     this.dispRudder += (rudderNorm - this.dispRudder) * Math.min(dt * 6, 1);
@@ -113,14 +119,17 @@ export class ShipVisual {
     if (this.rudderPivot) this.rudderPivot.rotation.y = -this.dispRudder * 0.55;
     if (this.wheelSpin) this.wheelSpin.rotation.z = -this.dispRudder * 2.6;
 
-    const elRad = ((aim?.elevationDeg ?? 2) * Math.PI) / 180;
+    // barrels share the gunnery module's direction math, so what you see is
+    // exactly where the ball will go
     for (const b of this.barrels) {
       const active = aim && b.side === aim.side;
-      const el = active ? elRad : (2 * Math.PI) / 180;
-      b.mesh.rotation.x = b.side === 1 ? -el : Math.PI + el;
-      if (b.side === -1) b.mesh.rotation.y = 0; // rotation.x = π already flips the muzzle to −z
+      barrelDirLocal(b.side, active ? aim.elevationDeg : 2, active ? aim.traverseDeg : 0, ShipVisual.tmpDir);
+      b.mesh.quaternion.setFromUnitVectors(ShipVisual.Z_AXIS, ShipVisual.tmpDir);
     }
   }
+
+  private static tmpDir = new THREE.Vector3();
+  private static Z_AXIS = new THREE.Vector3(0, 0, 1);
 
   /** Cutaway: clip the hull against a world-space plane (null disables).
    *  Water boxes stay unclipped so flooding reads through the cut. */
@@ -230,9 +239,11 @@ export class ShipVisual {
    *  bowsprit, stern rudder, and the helm wheel. */
   private addRig(): void {
     const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.8 });
+    const cloth = ShipVisual.clothTexture();
+    cloth.repeat.set(4, 3); // the canvas is big now — keep the weave fine
     const sailMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      map: ShipVisual.clothTexture(),
+      map: cloth,
       roughness: 0.92,
       side: THREE.DoubleSide,
     });
@@ -255,51 +266,63 @@ export class ShipVisual {
           "#include <begin_vertex>",
           `#include <begin_vertex>
           {
-            // uv.y: 0 at the lower yard → 1 at the upper yard (both pinned);
-            // uv.x: 0..1 across the width (edges nearly pinned by sheets)
-            float belly = sin(uv.y * 3.14159) * (0.35 + 0.65 * sin(uv.x * 3.14159)) * 1.1 * uFill;
+            // uv.y: 0 at one yard → 1 at the other (both pinned, vertical
+            // bulge between); uv.x: edges nearly pinned by the sheets.
+            // Geometry is pre-rotated: +x is FORWARD, away from the mast.
+            float belly = sin(uv.y * 3.14159) * (0.35 + 0.65 * sin(uv.x * 3.14159)) * 1.0 * uFill;
             float flutter = sin(uTime * 4.6 + uv.x * 8.0 + uv.y * 5.0) * 0.05 * uFill;
-            transformed.z += belly + flutter;
+            transformed.x += belly + flutter;
           }`,
         );
     };
 
     for (const m of this.build.masts) {
-      const mastH = 12;
+      const mastH = 15;
       const deckTop = (this.build.deckY + 1) * VOXEL_SIZE;
       const mx = (m.x + 0.5) * VOXEL_SIZE;
       const mz = (m.z + 0.5) * VOXEL_SIZE;
 
-      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.17, mastH, 8), woodMat);
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.18, mastH, 8), woodMat);
       mast.position.set(mx, deckTop + mastH / 2 - 0.5, mz);
       mast.castShadow = true;
       this.group.add(mast);
 
-      // two yards CENTERED on the mast, running beam-wise (port↔starboard),
-      // suspending the sail between them
-      const yardLow = deckTop + 3.4;
-      const yardHigh = deckTop + 8.6;
-      const yardGeoLong = new THREE.CylinderGeometry(0.06, 0.06, 8.0, 6);
-      yardGeoLong.rotateX(Math.PI / 2); // axis along z (beam-wise)
-      const yardGeoShort = new THREE.CylinderGeometry(0.05, 0.05, 6.8, 6);
-      yardGeoShort.rotateX(Math.PI / 2);
-      const lowYard = new THREE.Mesh(yardGeoLong, woodMat);
-      lowYard.position.set(mx, yardLow, mz);
-      lowYard.castShadow = true;
-      const highYard = new THREE.Mesh(yardGeoShort, woodMat);
-      highYard.position.set(mx, yardHigh, mz);
-      highYard.castShadow = true;
-      this.group.add(lowYard, highYard);
-
-      // square sail hanging between the yards, centered on the mast
-      const sailW = 7.4;
-      const sailH = yardHigh - yardLow - 0.15;
-      const sailGeo = new THREE.PlaneGeometry(sailW, sailH, 12, 12);
-      const sail = new THREE.Mesh(sailGeo, sailMat);
-      sail.rotation.y = Math.PI / 2; // spans beam-wise; normal fore-aft, belly forward
-      sail.position.set(mx - 0.25, (yardLow + yardHigh) / 2, mz);
-      sail.castShadow = true;
-      this.group.add(sail);
+      // square rig, canvas up to the masthead (playtest round 4): three
+      // yards crossing the FORE side of the mast, two tapered sails laced
+      // tight between consecutive yards. The whole cloth hangs forward of
+      // the mast so the mast never cuts through it, and each yard's span
+      // matches its sail edge (tiny symmetric yardarm overhang only).
+      const yardOff = 0.3; // fore of the mast centerline
+      const levels = [
+        { y: deckTop + 2.6, w: 10.6 }, // course yard
+        { y: deckTop + 8.4, w: 8.6 }, // topsail yard
+        { y: deckTop + 13.2, w: 6.4 }, // topgallant yard
+      ];
+      for (const lv of levels) {
+        const yardGeo = new THREE.CylinderGeometry(0.07, 0.07, lv.w + 0.3, 6);
+        yardGeo.rotateX(Math.PI / 2); // axis beam-wise
+        const yard = new THREE.Mesh(yardGeo, woodMat);
+        yard.position.set(mx + yardOff, lv.y, mz);
+        yard.castShadow = true;
+        this.group.add(yard);
+      }
+      for (let i = 0; i < levels.length - 1; i++) {
+        const foot = levels[i];
+        const head = levels[i + 1];
+        const h = head.y - foot.y - 0.12; // laced to both yards, no air gap
+        const geo = new THREE.PlaneGeometry(foot.w, h, 14, 10);
+        // taper the head to the upper yard's span (trapezoid, like real canvas)
+        const pos = geo.attributes.position as THREE.BufferAttribute;
+        for (let vi = 0; vi < pos.count; vi++) {
+          const f = (pos.getY(vi) + h / 2) / h; // 0 at foot → 1 at head
+          pos.setX(vi, pos.getX(vi) * (1 - f + (f * head.w) / foot.w));
+        }
+        geo.rotateY(Math.PI / 2); // width spans the beam; normal points forward
+        const sail = new THREE.Mesh(geo, sailMat);
+        sail.position.set(mx + yardOff + 0.16, (foot.y + head.y) / 2, mz);
+        sail.castShadow = true;
+        this.group.add(sail);
+      }
     }
 
     // stern rudder: hinged blade reaching below the keel line so its area is
@@ -358,7 +381,6 @@ export class ShipVisual {
       this.group.add(carriage);
       const barrel = new THREE.Mesh(barrelGeo, ironMat);
       barrel.position.set(px, py + 0.62, pz + port.side * 0.2);
-      if (port.side < 0) barrel.rotation.y = Math.PI;
       barrel.castShadow = true;
       this.group.add(barrel);
       this.barrels.push({ mesh: barrel, side: port.side });
