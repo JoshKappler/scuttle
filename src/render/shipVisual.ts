@@ -302,13 +302,17 @@ export class ShipVisual {
       this.group.add(sail);
     }
 
-    // stern rudder: hinged blade below the waterline that visibly answers the helm
+    // stern rudder: hinged blade reaching below the keel line so its area is
+    // in clear flow (playtest: "blocked by the ship — it wouldn't be able to
+    // turn in reality"), broader at the bottom like a real barn-door rudder
     const sternX = 4 * VOXEL_SIZE;
     this.rudderPivot = new THREE.Group();
     this.rudderPivot.position.set(sternX + 0.1, 1.8, (this.build.grid.dims[2] / 2) * VOXEL_SIZE);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.4, 0.14), woodMat);
-    blade.position.set(-0.6, -0.2, 0);
-    this.rudderPivot.add(blade);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(1.0, 3.1, 0.14), woodMat);
+    blade.position.set(-0.55, -0.6, 0);
+    const heel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.1, 0.14), woodMat);
+    heel.position.set(-0.78, -1.55, 0);
+    this.rudderPivot.add(blade, heel);
     this.group.add(this.rudderPivot);
 
     // the wheel: classic spoked helm on the quarterdeck, clear of the rig

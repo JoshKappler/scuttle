@@ -82,10 +82,12 @@ export class Ship {
     const h = ny * VOXEL_SIZE;
     const w = nz * VOXEL_SIZE;
 
-    // box-approximated principal inertia about the COM
+    // box-approximated principal inertia about the COM. Pitch/yaw carry a
+    // 1.45× added-mass factor: a hull drags entrained water with it when it
+    // pitches, and the bare box value let the brig hobby-horse in the swell
     const ixx = (mass / 12) * (w * w + h * h);
-    const iyy = (mass / 12) * (l * l + w * w);
-    const izz = (mass / 12) * (l * l + h * h);
+    const iyy = (mass / 12) * (l * l + w * w) * 1.45;
+    const izz = (mass / 12) * (l * l + h * h) * 1.45;
     this.inertia = [ixx, iyy, izz];
 
     const desc = R.RigidBodyDesc.dynamic()
@@ -350,10 +352,26 @@ export class Ship {
         true,
       );
 
+      // angular damping decomposed in the SHIP frame: pitch is damped
+      // hardest — a real hull's waterplane kills porpoising almost dead, and
+      // without this the brig pitched violently instead of cutting through
+      // the waves (playtest round 4)
       const om = body.angvel();
-      const ka = sub * 1.1;
       const [ix, iy, iz] = this.inertia;
-      body.addTorque({ x: -om.x * ka * ix, y: -om.y * ka * iy * 0.6, z: -om.z * ka * iz }, true);
+      const fx = fwd.x;
+      const fz = fwd.z;
+      const wRoll = om.x * fx + om.z * fz; // rate about the fore-aft axis
+      const wPitch = om.x * lat.x + om.z * lat.z; // rate about the beam axis
+      const tRoll = -wRoll * sub * 1.1 * ix;
+      const tPitch = -wPitch * sub * 3.0 * iz;
+      body.addTorque(
+        {
+          x: tRoll * fx + tPitch * lat.x,
+          y: -om.y * sub * 0.66 * iy,
+          z: tRoll * fz + tPitch * lat.z,
+        },
+        true,
+      );
     }
   }
 
