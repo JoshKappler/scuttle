@@ -172,7 +172,9 @@ async function main() {
           Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4
         ) {
           boarding.player.ship = sloop;
-          boarding.player.teleport(sloop.localToWorld([2.6, 5.3, 4.0], climbTarget));
+          boarding.player.teleport(
+            sloop.localToWorld([2.6, (sloop.build.deckY + 1) * 0.25 + 1.05, 4.0], climbTarget),
+          );
           boarding.message = "you haul yourself up the stern ladder";
         } else {
           interact = true;

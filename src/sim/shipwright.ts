@@ -24,16 +24,19 @@ export interface ShipBuild {
 
 export function buildSloop(): ShipBuild {
   // a proper fighting brig: 24 m hull (playtest: the 16 m boat "looks like a
-  // fishing vessel and somehow has eight cannons")
+  // fishing vessel and somehow has eight cannons"), with a TALL hull —
+  // round-5 references: cross-section is a wide oval with the top sliced
+  // off for the deck, widest at the waterline belt, narrow rounded bottom,
+  // tumblehome above, and a lot of ship under the water
   const nx = 104;
-  const ny = 26;
+  const ny = 30;
   const nz = 32;
   const grid = createGrid(nx, ny, nz);
 
   const x0 = 4; // first station
   const L = 96; // stations along x (24 m)
-  const deckY = 16;
-  const halfBeamMax = 13; // cells from centerline → beam ≈ 6.5 m
+  const deckY = 20; // 5 m depth of hold keel-to-deck
+  const halfBeamMax = 13; // cells from centerline → beam ≈ 6.5 m at the belt
   const cz = (nz - 1) / 2; // centerline between cells
 
   const stationT = (x: number) => (x - x0) / (L - 1);
@@ -42,7 +45,12 @@ export function buildSloop(): ShipBuild {
   const sectionHalfBeam = (t: number, y: number) => {
     const k = keelY(t);
     const f = Math.min(Math.max((y - k) / (deckY - k), 0), 1);
-    return halfBeam(t) * (0.42 + 0.58 * Math.pow(f, 0.65));
+    // egg section: widest at 62% of depth, ~32% beam at the rounded bottom,
+    // deck edge pulled back in to ~76% (tumblehome)
+    const d = f - 0.62;
+    const a = d < 0 ? 0.64 : 0.56;
+    const oval = Math.sqrt(Math.max(1 - (d / a) * (d / a), 0));
+    return halfBeam(t) * (0.1 + 0.9 * oval);
   };
 
   const inside = (x: number, y: number, z: number): boolean => {
@@ -84,15 +92,23 @@ export function buildSloop(): ShipBuild {
     const t = stationT(x);
     if (t < 0.15 || t > 0.95) continue;
     const by = keelY(t) + 1;
-    for (const z of [14, 15, 16, 17]) {
+    for (const z of [13, 14, 15, 16, 17, 18]) {
       if (inside(x, by, z) && grid.get(x, by, z) === EMPTY) grid.set(x, by, z, IRON);
     }
-    // second, shorter tier: more mass low for a deeper, steadier ride
-    // (round 5: too corky, caught air over waves) and a lower COM for
-    // honest G-force banking
-    if (t < 0.25 || t > 0.85) continue;
-    for (const z of [15, 16]) {
+    // upper tiers: enough mass low that she floats at the widest belt of
+    // the egg section — round-5 references: "much more of the ship should
+    // be underwater" — with the COM deep for honest banking
+    if (t < 0.2 || t > 0.9) continue;
+    for (const z of [13, 14, 15, 16, 17, 18]) {
       if (inside(x, by + 1, z) && grid.get(x, by + 1, z) === EMPTY) grid.set(x, by + 1, z, IRON);
+    }
+    if (t < 0.3 || t > 0.8) continue;
+    for (const z of [14, 15, 16, 17]) {
+      if (inside(x, by + 2, z) && grid.get(x, by + 2, z) === EMPTY) grid.set(x, by + 2, z, IRON);
+    }
+    if (t < 0.4 || t > 0.7) continue;
+    for (const z of [15, 16]) {
+      if (inside(x, by + 3, z) && grid.get(x, by + 3, z) === EMPTY) grid.set(x, by + 3, z, IRON);
     }
   }
 

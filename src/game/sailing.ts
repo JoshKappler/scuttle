@@ -18,6 +18,9 @@ export class SailingController {
 
   private tmpQ = new THREE.Quaternion();
   private tmpF = new THREE.Vector3();
+  // separate temp for the up vector — reusing tmpF here once ALIASED fwd
+  // (thrust silently pointed straight up; both ships drifted at 2 kn)
+  private tmpU = new THREE.Vector3();
 
   /** Current forward speed (m/s, signed) for the HUD. */
   speed = 0;
@@ -59,9 +62,11 @@ export class SailingController {
     // canvas only draws while she's upright: a heeled rig spills wind, a
     // capsized one is in the water (playtest round 5: "even upside down,
     // the ship is still thrusting forwards")
-    const rotUp = this.tmpF.set(0, 1, 0).applyQuaternion(this.tmpQ);
+    const rotUp = this.tmpU.set(0, 1, 0).applyQuaternion(this.tmpQ);
     const upright = Math.min(Math.max(rotUp.y, 0), 1);
-    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.016 * upright;
+    // 0.019: the deep round-5 hull drags more wetted surface than the old
+    // canoe — this keeps full sail in the low-20s of knots
+    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.019 * upright;
 
     if (thrust > 0 && ship.submergedFrac > 0.02) {
       const m = ship.build.masts[0];
