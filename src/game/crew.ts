@@ -281,6 +281,20 @@ export class Pirate {
       this.airTime += dt;
     }
 
+    // standing still on your own deck: ride the anchor EXACTLY. Feeding the
+    // carry through collide-and-slide let hard turns shave a few centimeters
+    // off every step — the captain slowly skated across the deck (round 6:
+    // "still seeing some issues with the character … sliding around the
+    // boat when under heavy turning")
+    const wantsMove = moveX * moveX + moveZ * moveZ > 0.01 || jump;
+    const shoved = this.pendingShove.lengthSq() > 0.05;
+    if (grounded && !wantsMove && !shoved && this.attachShip === this.ship) {
+      this.body.setNextKinematicTranslation({ x: tr.x + carryX, y: tr.y + carryY, z: tr.z + carryZ });
+      this.setAnim(this.attackTimer > 0 ? "attack" : this.kickTimer > 0 ? "punch" : "idle");
+      this.syncMesh();
+      return;
+    }
+
     const desired = {
       x: carryX + (moveX * WALK_SPEED + this.pendingShove.x) * dt,
       y: carryY + this.vy * dt,

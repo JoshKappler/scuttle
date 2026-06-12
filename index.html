@@ -5,47 +5,53 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SCUTTLE</title>
     <style>
+      /* antique chart-room look (round 6.5): aged leather panels, brass
+         rules, parchment lettering — serif everywhere, no system-UI gray */
       html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #04161e; }
       #app { width: 100%; height: 100%; }
       #app canvas { display: block; }
       #hud { display: none; }
-      .panel { position: fixed; background: linear-gradient(180deg, rgba(8,22,28,0.78), rgba(4,12,16,0.85)); border: 1px solid rgba(212,160,23,0.35); border-radius: 8px; color: #cfe0d8; font: 12px/1.45 "Segoe UI", system-ui, sans-serif; padding: 10px 14px; user-select: none; pointer-events: none; box-shadow: 0 4px 18px rgba(0,0,0,0.45); }
-      #ship-panel { left: 14px; bottom: 14px; min-width: 210px; }
-      #ship-panel .speed { font: 700 30px/1 Georgia, serif; color: #e9e1cd; }
-      #ship-panel .speed small { font-size: 13px; color: #9fc4d4; }
+      .panel { position: fixed; background: linear-gradient(170deg, rgba(34,24,14,0.86), rgba(18,12,7,0.92)); border: 1px solid rgba(201,162,39,0.55); outline: 1px solid rgba(201,162,39,0.18); outline-offset: 3px; border-radius: 4px; color: #d8c9a3; font: 12px/1.5 Georgia, "Times New Roman", serif; padding: 11px 15px; user-select: none; pointer-events: none; box-shadow: 0 5px 20px rgba(0,0,0,0.55), inset 0 0 22px rgba(0,0,0,0.35); }
+      #ship-panel { left: 14px; bottom: 14px; min-width: 215px; }
+      #ship-panel .speed { font: 700 30px/1 Georgia, serif; color: #efe3c2; }
+      #ship-panel .speed small { font-size: 13px; color: #b59d6b; font-style: italic; }
       .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-      .lbl { color: #8aa8b0; min-width: 52px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-      .bar { flex: 1; height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden; }
-      .bar > div { height: 100%; background: #2e8b9e; border-radius: 4px; width: 0%; transition: width 0.2s; }
-      .bar.flood > div { background: #3a7ec2; }
-      .bar.hp > div { background: #b03a2e; }
+      .lbl { color: #a8895c; min-width: 52px; font-size: 10.5px; font-variant: small-caps; letter-spacing: 0.12em; }
+      .bar { flex: 1; height: 8px; background: rgba(0,0,0,0.45); border: 1px solid rgba(201,162,39,0.25); border-radius: 2px; overflow: hidden; }
+      .bar > div { height: 100%; background: linear-gradient(180deg, #b08d3c, #8a6c2a); width: 0%; transition: width 0.2s; }
+      .bar.flood > div { background: linear-gradient(180deg, #3f7e9e, #2c5871); }
+      .bar.hp > div { background: linear-gradient(180deg, #a8392c, #7c2a20); }
       .bar.rudder { position: relative; overflow: visible; }
-      .bar.rudder::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: rgba(207,224,216,0.5); }
-      .bar.rudder > div { position: absolute; top: -1px; width: 10px; height: 10px; left: 50%; transform: translateX(-50%); background: #e3b341; border-radius: 3px; transition: left 0.1s linear; }
-      #gun-panel { right: 14px; bottom: 14px; min-width: 190px; text-align: center; }
-      #gun-status { font: 700 22px/1.1 Georgia, serif; color: #e3b341; letter-spacing: 0.08em; }
-      #gun-status.ready { color: #7ec97e; }
-      #gun-sub { color: #8aa8b0; font-size: 11px; margin-top: 4px; }
-      #gold-panel { right: 14px; top: 14px; font: 700 18px Georgia, serif; color: #e3b341; }
-      #compass { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); width: 92px; height: 92px; pointer-events: none; }
-      #compass .ring { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(8,22,28,0.72) 58%, rgba(8,22,28,0.88)); border: 1px solid rgba(212,160,23,0.4); }
-      #compass .rose { position: absolute; inset: 6px; border-radius: 50%; transition: transform 0.1s linear; }
-      #compass .rose .n { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); color: #e3b341; font: 700 13px Georgia, serif; }
-      #compass .rose .pt { position: absolute; color: #cfe0d8; font: 700 11px Georgia, serif; }
+      .bar.rudder::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: rgba(216,201,163,0.55); }
+      .bar.rudder > div { position: absolute; top: -2px; width: 9px; height: 11px; left: 50%; transform: translateX(-50%); background: #d8b24a; border: 1px solid #6b521c; border-radius: 2px; transition: left 0.1s linear; }
+      #gun-panel { right: 14px; bottom: 14px; min-width: 195px; text-align: center; }
+      #gun-status { font: 700 21px/1.1 Georgia, serif; color: #d8b24a; letter-spacing: 0.1em; font-variant: small-caps; }
+      #gun-status.ready { color: #93b56b; }
+      #gun-sub { color: #a8895c; font-size: 11px; margin-top: 4px; font-style: italic; }
+      #gold-panel { right: 14px; top: 14px; font: 700 18px Georgia, serif; color: #d8b24a; }
+      #compass { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); width: 98px; height: 98px; pointer-events: none; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.5)); }
+      #compass .ring { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(38,28,16,0.78) 52%, rgba(20,14,8,0.92)); border: 2px solid rgba(201,162,39,0.65); box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), inset 0 0 16px rgba(0,0,0,0.55); }
+      #compass .rose { position: absolute; inset: 7px; border-radius: 50%; transition: transform 0.1s linear; }
+      #compass .rose .n { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); color: #d8b24a; font: 700 14px Georgia, serif; }
+      #compass .rose .pt { position: absolute; color: #cdbb91; font: 700 11px Georgia, serif; }
       #compass .rose .e { top: 50%; right: 3px; transform: translateY(-50%); }
       #compass .rose .s { bottom: 2px; left: 50%; transform: translateX(-50%); }
       #compass .rose .w { top: 50%; left: 3px; transform: translateY(-50%); }
-      #compass .tick { position: absolute; left: 50%; top: 50%; width: 2px; height: 7px; background: rgba(207,224,216,0.45); transform-origin: 1px 0; margin-left: -1px; }
-      #hdg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #e9e1cd; font: 700 14px Georgia, serif; text-shadow: 0 1px 4px #000; }
+      #compass .tick { position: absolute; left: 50%; top: 50%; width: 2px; height: 7px; background: rgba(205,187,145,0.5); transform-origin: 1px 0; margin-left: -1px; }
+      #hdg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #efe3c2; font: 700 14px Georgia, serif; text-shadow: 0 1px 4px #000; }
       #underwater { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity 0.25s; background: radial-gradient(ellipse at center, rgba(12,58,68,0.45), rgba(5,30,38,0.75)); }
       #compass .marker { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-origin: 0 0; }
-      #compass .marker .dot { position: absolute; left: -4px; top: -38px; width: 8px; height: 8px; border-radius: 50%; }
-      #compass .enemy .dot { background: #d64541; box-shadow: 0 0 6px #d64541; }
-      #compass .wind .dot { background: #58c4d4; width: 0; height: 0; border-radius: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 9px solid #58c4d4; left: -5px; }
-      #toast { position: fixed; bottom: 118px; left: 50%; transform: translateX(-50%); color: #e9e1cd; font: 600 15px Georgia, serif; text-shadow: 0 1px 8px #000; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
-      #hints { position: fixed; bottom: 4px; left: 50%; transform: translateX(-50%); color: rgba(207,224,216,0.55); font: 11px monospace; pointer-events: none; white-space: pre; }
-      #banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: #e8e0cc; font: 700 42px/1.3 Georgia, serif; text-shadow: 0 2px 18px #000; background: radial-gradient(ellipse at center, rgba(2,18,24,0.25), rgba(2,18,24,0.78)); user-select: none; }
-      #banner small { font: 400 16px monospace; color: #9fc4d4; }
+      #compass .marker .dot { position: absolute; left: -4px; top: -40px; width: 8px; height: 8px; border-radius: 50%; }
+      #compass .enemy .dot { background: #d64541; box-shadow: 0 0 6px #d64541; border: 1px solid #5e120f; }
+      /* the wind is an ARROW flying with the wind: shaft + head, at the rim
+         (round 6.5: "the cube is hard to follow") */
+      #compass .wind .dot { background: none; border-radius: 0; width: 0; height: 0; left: 0; top: 0; }
+      #compass .wind .dot::before { content: ""; position: absolute; left: -1.5px; top: -46px; width: 3px; height: 13px; background: #6fd3e3; box-shadow: 0 0 5px rgba(111,211,227,0.8); }
+      #compass .wind .dot::after { content: ""; position: absolute; left: -6px; top: -34px; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 9px solid #6fd3e3; filter: drop-shadow(0 0 4px rgba(111,211,227,0.8)); }
+      #toast { position: fixed; bottom: 118px; left: 50%; transform: translateX(-50%); color: #efe3c2; font: italic 600 15px Georgia, serif; text-shadow: 0 1px 8px #000; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+      #hints { position: fixed; bottom: 4px; left: 50%; transform: translateX(-50%); color: rgba(216,201,163,0.6); font: 11px Georgia, serif; font-variant: small-caps; letter-spacing: 0.04em; pointer-events: none; white-space: pre; }
+      #banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: #efe3c2; font: 700 44px/1.3 Georgia, serif; letter-spacing: 0.06em; text-shadow: 0 2px 18px #000; background: radial-gradient(ellipse at center, rgba(20,14,6,0.3), rgba(12,8,4,0.82)); user-select: none; }
+      #banner small { font: italic 400 16px Georgia, serif; color: #b59d6b; }
     </style>
   </head>
   <body>

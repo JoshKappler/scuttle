@@ -305,7 +305,8 @@ async function main() {
     holeFwd.set(1, 0, 0).applyQuaternion(holeQ);
     holeFwd.y = 0;
     holeFwd.normalize();
-    sloop.localToWorld([13, 2, 4], holeCenter);
+    const fp = sloop.build.footprint;
+    sloop.localToWorld([(fp.minX + fp.maxX) / 2, 2, fp.zC], holeCenter);
     ocean.updateCutaway(holeCenter, holeFwd.x, holeFwd.z, cutPlane);
   };
   window.addEventListener("keydown", (e) => {
@@ -460,7 +461,14 @@ async function main() {
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     const line = new THREE.Line(
       geo,
-      new THREE.LineBasicMaterial({ color: 0xe3b341, transparent: true, opacity: 0.8 }),
+      // red dashes: reads as a gunner's PREDICTION, not a laser (round 6.5)
+      new THREE.LineDashedMaterial({
+        color: 0xe03434,
+        dashSize: 1.1,
+        gapSize: 0.85,
+        transparent: true,
+        opacity: 0.95,
+      }),
     );
     line.frustumCulled = false;
     line.visible = false;
@@ -526,6 +534,7 @@ async function main() {
         }
       }
       (arc.line.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+      arc.line.computeLineDistances(); // dashes need fresh arc lengths
     }
   }
 

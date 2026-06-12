@@ -96,17 +96,29 @@ void main() {
     crest += (s * 0.5 + 0.5) * amp;
   }
 
-  // bow wave: the sea physically mounds at a moving stem — a swell that
-  // rides with the bow point, scaled by speed (round 6: "see it actually
-  // pushing some water up as it cuts through")
+  // bow wave: the stem physically shoulders water aside — a mound right at
+  // the cutting point that spills into a raised ridge running down the
+  // forward flanks, which the fragment stage froths and rolls into the wake
+  // (round 6.5: "the front of the ship pushes water aside and causes it to
+  // bulge, which then gradually becomes the wake")
   for (int s2 = 0; s2 < 2; s2++) {
     float spd = uShipB[s2].x;
     if (spd < 1.0) continue;
     vec2 bow = uShipA[s2].xy;
-    float bd2 = dot(p.xz - bow, p.xz - bow);
+    vec2 f2 = uShipA[s2].zw;
+    float hL = uShipB[s2].y;
+    float hB = uShipB[s2].z;
+    vec2 rel = p.xz - (bow - f2 * hL); // from hull center
+    float along = dot(rel, f2);
+    float across = dot(rel, vec2(-f2.y, f2.x));
     float sF = clamp(spd / 8.0, 0.0, 1.2);
-    p.y += sF * 0.55 * exp(-bd2 / 5.0);
-    crest += sF * 0.8 * exp(-bd2 / 5.0);
+    float bd2 = dot(p.xz - bow, p.xz - bow);
+    p.y += sF * 0.7 * exp(-bd2 / 3.5);
+    // flank ridge: strongest just abaft the stem, fading toward midship
+    float ridge = exp(-pow((abs(across) - (hB + 0.4)) / 1.4, 2.0));
+    float span = smoothstep(-hL * 0.35, hL * 0.55, along) * (1.0 - smoothstep(hL * 0.8, hL * 1.1, along));
+    p.y += sF * 0.38 * ridge * span;
+    crest += sF * (0.9 * exp(-bd2 / 3.5) + 0.55 * ridge * span);
   }
 
   vWorldPos = p;
@@ -227,16 +239,21 @@ void main() {
     if (spd < 1.0) continue;
     vec2 fwd2 = uShipA[s].zw;
     vec2 bow = uShipA[s].xy;
-    vec2 cen = bow - fwd2 * uShipB[s].y; // hull center
-    vec2 rel = vWorldPos.xz - cen;
+    float hL = uShipB[s].y;
+    float hB = uShipB[s].z;
+    vec2 rel = vWorldPos.xz - (bow - fwd2 * hL);
     float along = dot(rel, fwd2);
     float across = dot(rel, vec2(-fwd2.y, fwd2.x));
     float sF = clamp(spd / 8.0, 0.0, 1.2);
-    if (along > uShipB[s].y * 0.1 && along < uShipB[s].y * 1.18) {
-      float taper = 1.0 - 0.55 * max(along - uShipB[s].y * 0.45, 0.0) / (uShipB[s].y * 0.75);
-      float edge = abs(across) - (uShipB[s].z * taper + 0.25);
-      wash += sF * 0.95 * exp(-pow(max(edge, 0.0) / 1.0, 2.0));
-    }
+    // froth grows continuously from a sliver at the stem to a full churned
+    // band by the stern — no hard cutoffs (round 6.5: the froth "abruptly
+    // cuts off slightly ahead of the ship and at the halfway mark")
+    float inHull = smoothstep(hL * 1.25, hL * 0.95, along) * smoothstep(-hL * 1.35, -hL * 0.6, along);
+    float devel = 1.0 - smoothstep(-hL * 0.55, hL * 1.1, along); // 0 at stem → 1 astern
+    float taper = 1.0 - 0.5 * smoothstep(hL * 0.3, hL * 1.05, along);
+    float edge = abs(across) - (hB * taper + 0.2);
+    float bandW = mix(0.5, hB * 0.9, devel);
+    wash += sF * (0.3 + 0.7 * devel) * inHull * exp(-pow(max(edge, 0.0) / bandW, 2.0));
   }
   for (int i = 0; i < 63; i++) {
     if (i == 31) continue; // slot boundary: don't lace ship 0's tail to ship 1's head
@@ -249,8 +266,10 @@ void main() {
     float h = clamp(dot(vWorldPos.xz - A.xy, ab) / L2, 0.0, 1.0);
     float dseg = length(vWorldPos.xz - (A.xy + ab * h));
     float ageM = mix(A.z, B.z, h);
-    float width = 0.95 + ageM * 0.9;
-    wash += exp(-pow(dseg / width, 2.0)) * exp(-ageM * 0.26) * mix(A.w, B.w, h);
+    // the wake leaves the stern at FULL ship beam and spreads as it ages
+    float hb2 = i < 32 ? uShipB[0].z : uShipB[1].z;
+    float width = hb2 + 0.3 + ageM * 0.75;
+    wash += exp(-pow(dseg / width, 2.0)) * exp(-ageM * 0.24) * mix(A.w, B.w, h);
   }
   // break the wash up so it reads as churned water, not paint
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);

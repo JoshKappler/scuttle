@@ -308,7 +308,7 @@ export class ShipVisual {
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
-          "#include <common>\nuniform float uTime;\nuniform float uFill;",
+          "#include <common>\nuniform float uTime;\nuniform float uFill;\nattribute float aBelly;",
         )
         .replace(
           "#include <begin_vertex>",
@@ -317,8 +317,10 @@ export class ShipVisual {
             // uv.y: 0 at one yard → 1 at the other (both pinned, vertical
             // bulge between); uv.x: edges nearly pinned by the sheets.
             // Geometry is pre-rotated: +x is FORWARD, away from the mast.
-            float belly = sin(uv.y * 3.14159) * (0.35 + 0.65 * sin(uv.x * 3.14159)) * 1.0 * uFill;
-            float flutter = sin(uTime * 4.6 + uv.x * 8.0 + uv.y * 5.0) * 0.05 * uFill;
+            // aBelly carries each sail's own depth (∝ its width) — a flat
+            // 1 m bulge on a 15 m course read as paper (round 6.5)
+            float belly = sin(uv.y * 3.14159) * (0.35 + 0.65 * sin(uv.x * 3.14159)) * aBelly * uFill;
+            float flutter = sin(uTime * 4.6 + uv.x * 8.0 + uv.y * 5.0) * (0.04 + aBelly * 0.03) * uFill;
             transformed.x += belly + flutter;
           }`,
         );
@@ -370,6 +372,8 @@ export class ShipVisual {
           pos.setX(vi, pos.getX(vi) * (1 - f + (f * head.w) / foot.w));
         }
         geo.rotateY(Math.PI / 2); // width spans the beam; normal points forward
+        const bellyArr = new Float32Array(pos.count).fill(foot.w * 0.17);
+        geo.setAttribute("aBelly", new THREE.BufferAttribute(bellyArr, 1));
         const sail = new THREE.Mesh(geo, sailMat);
         sail.position.set(mx + yardOff + 0.16, (foot.y + head.y) / 2, mz);
         sail.castShadow = true;
@@ -382,13 +386,14 @@ export class ShipVisual {
     // helm (round 6: "the rudder should extend further upwards so that you
     // can actually see it turning when maneuvering")
     const sternX = 4 * VOXEL_SIZE;
-    const bladeH = this.build.deckY * VOXEL_SIZE * 0.78;
+    const bladeH = this.build.deckY * VOXEL_SIZE * 0.95;
+    const bladeW = 0.9 + this.build.lengthM * 0.022; // chord grows with the ship
     this.rudderPivot = new THREE.Group();
     this.rudderPivot.position.set(sternX + 0.1, 1.8, (this.build.grid.dims[2] / 2) * VOXEL_SIZE);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(1.0, bladeH, 0.14), woodMat);
-    blade.position.set(-0.55, bladeH / 2 - 2.3, 0);
-    const heel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.1, 0.14), woodMat);
-    heel.position.set(-0.78, -1.55, 0);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(bladeW, bladeH, 0.17), woodMat);
+    blade.position.set(-bladeW / 2 - 0.05, bladeH / 2 - 2.4, 0);
+    const heel = new THREE.Mesh(new THREE.BoxGeometry(bladeW + 0.6, 1.25, 0.17), woodMat);
+    heel.position.set(-bladeW / 2 - 0.28, -1.7, 0);
     this.rudderPivot.add(blade, heel);
     this.group.add(this.rudderPivot);
 
@@ -510,10 +515,9 @@ export class ShipVisual {
     this.group.add(ladder);
     this.ladderLocal = [0.88, 2.0, lz];
 
-    // bowsprit at the bow (max-x end): a real spar now, scaled to the hull
-    // and steeved upward (round 6: "the front stick coming out … is now too
-    // low and too small for the new ship")
-    const [nx] = this.build.grid.dims;
+    // bowsprit: a real spar scaled to the hull, ROOTED on the foredeck — its
+    // heel sits 2 m inboard of the stem so it visibly belongs to the ship
+    // (round 6.5: "the front mast … is floating slightly ahead of the ship")
     const spritLen = this.build.lengthM * 0.28;
     const steeve = 0.3; // radians above horizontal
     const sprit = new THREE.Mesh(
@@ -521,11 +525,12 @@ export class ShipVisual {
       woodMat,
     );
     sprit.rotation.z = -Math.PI / 2 + steeve;
-    const bowX = nx * VOXEL_SIZE - 1.0;
+    const stemX = this.build.footprint.maxX - 1.5; // true bow tip (margin off)
+    const heelX = stemX - 2.0;
     const bowDeckTop = (this.build.deckY + 2) * VOXEL_SIZE;
     sprit.position.set(
-      bowX + Math.cos(steeve) * (spritLen / 2 - 1.6),
-      bowDeckTop + Math.sin(steeve) * (spritLen / 2 - 1.6),
+      heelX + (Math.cos(steeve) * spritLen) / 2,
+      bowDeckTop + (Math.sin(steeve) * spritLen) / 2 - 0.15,
       (this.build.grid.dims[2] / 2) * VOXEL_SIZE,
     );
     sprit.castShadow = true;
