@@ -254,9 +254,33 @@ async function main() {
   new ResizeObserver(fitViewport).observe(app);
 
   // cutaway damage view (X): clips the near half of each hull so compartment
-  // water levels read at a glance — flooding legibility is a core spec feature
+  // water levels read at a glance — flooding legibility is a core spec feature.
+  // The ocean gets a box hole around the PLAYER ship (one hole is all the
+  // clip-plane intersection can express; the enemy hull is inspected from afar)
   let cutaway = false;
   const cutPlane = new THREE.Plane();
+  const holePlanes = [new THREE.Plane(), new THREE.Plane(), new THREE.Plane(), new THREE.Plane()];
+  const holeQ = new THREE.Quaternion();
+  const holeFwd = new THREE.Vector3();
+  const holeLat = new THREE.Vector3();
+  const holeN = new THREE.Vector3();
+  const holeCenter = new THREE.Vector3();
+  const holePt = new THREE.Vector3();
+  const updateHole = () => {
+    const rotS = sloop.body.rotation();
+    holeQ.set(rotS.x, rotS.y, rotS.z, rotS.w);
+    holeFwd.set(1, 0, 0).applyQuaternion(holeQ);
+    holeFwd.y = 0;
+    holeFwd.normalize();
+    holeLat.set(-holeFwd.z, 0, holeFwd.x);
+    sloop.localToWorld([13, 2, 4], holeCenter);
+    const HX = 13.6; // half-length of the hole, m
+    const HZ = 4.5; // half-width
+    holePlanes[0].setFromNormalAndCoplanarPoint(holeFwd, holePt.copy(holeCenter).addScaledVector(holeFwd, HX));
+    holePlanes[1].setFromNormalAndCoplanarPoint(holeN.copy(holeFwd).negate(), holePt.copy(holeCenter).addScaledVector(holeFwd, -HX));
+    holePlanes[2].setFromNormalAndCoplanarPoint(holeLat, holePt.copy(holeCenter).addScaledVector(holeLat, HZ));
+    holePlanes[3].setFromNormalAndCoplanarPoint(holeN.copy(holeLat).negate(), holePt.copy(holeCenter).addScaledVector(holeLat, -HZ));
+  };
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
     if (e.code === "KeyV" && boarding.player) {
@@ -266,7 +290,8 @@ async function main() {
     if (e.code === "KeyX") {
       cutaway = !cutaway;
       for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
-      ocean.setClipPlane(cutaway ? cutPlane : null);
+      if (cutaway) updateHole();
+      ocean.setCutawayHole(cutaway ? holePlanes : null);
     }
   });
 
@@ -300,15 +325,19 @@ async function main() {
     gunSub: $("gun-sub"),
     gold: $("gold"),
     rose: $("rose"),
+    hdg: $("hdg"),
     enemyMarker: $("enemy-marker"),
     windMarker: $("wind-marker"),
     toast: $("toast"),
     hints: $("hints"),
+    underwater: $("underwater"),
   };
   let lastToast = "";
   let toastTimer = 0;
   const hdgQ = new THREE.Quaternion();
   const hdgV = new THREE.Vector3();
+  let wasUnder = false;
+  const underFog = new THREE.FogExp2(0x0c3a44, 0.055);
 
   function updateHud(dt: number, tr: { x: number; y: number; z: number }): void {
     // smooth elements every frame
@@ -317,6 +346,7 @@ async function main() {
     hdgV.set(1, 0, 0).applyQuaternion(hdgQ);
     const heading = Math.atan2(hdgV.z, hdgV.x); // world yaw of the bow
     hudEls.rose.style.transform = `rotate(${(-heading * 180) / Math.PI}deg)`;
+    hudEls.hdg.textContent = `${Math.round(((heading * 180) / Math.PI + 360) % 360)}°`;
     const et = enemy.body.translation();
     const enemyBearing = Math.atan2(et.z - tr.z, et.x - tr.x) - heading;
     hudEls.enemyMarker.style.transform = `rotate(${(enemyBearing * 180) / Math.PI}deg)`;
@@ -514,11 +544,23 @@ async function main() {
       camera.updateProjectionMatrix();
     }
 
+    // submerged camera: the sea closes over the lens — teal murk + dense fog
+    // instead of a clean cut to the skybox (playtest round 4)
+    const camUnder =
+      camera.position.y < surfaceHeight(waves, camera.position.x, camera.position.z, world.simTime) - 0.05;
+    if (camUnder !== wasUnder) {
+      wasUnder = camUnder;
+      hudEls.underwater.style.opacity = camUnder ? "1" : "0";
+      scene.fog = camUnder ? underFog : null;
+    }
+
     if (cutaway) {
-      // hide the half of each hull facing the camera
+      // hide the half of each hull facing the camera; keep the ocean hole
+      // tracking the hull footprint
       const com = sloop.body.worldCom();
       const n = new THREE.Vector3(com.x - camera.position.x, 0, com.z - camera.position.z).normalize();
       cutPlane.setFromNormalAndCoplanarPoint(n, new THREE.Vector3(com.x, com.y, com.z));
+      updateHole();
     }
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);

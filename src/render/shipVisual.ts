@@ -18,8 +18,6 @@ export class ShipVisual {
 
   private waterMeshes = new Map<number, THREE.Mesh>();
 
-  private interiorShell: THREE.Mesh;
-
   constructor(build: ShipBuild) {
     this.build = build;
     this.hullMaterial = new THREE.MeshStandardMaterial({
@@ -56,24 +54,10 @@ export class ShipVisual {
     this.remeshAll();
     this.addRig();
     this.addWaterPlanes();
-
-    // dark bilge backdrop: occludes the world ocean inside the hull during
-    // cutaway (otherwise the open sea shows through the cut and reads as
-    // "the whole ship is full of water" — playtest bug)
-    const [nx, ny, nz] = build.grid.dims;
-    const shellGeo = new THREE.BoxGeometry(nx * VOXEL_SIZE * 0.92, build.deckY * VOXEL_SIZE * 0.85, nz * VOXEL_SIZE * 0.7);
-    this.interiorShell = new THREE.Mesh(
-      shellGeo,
-      new THREE.MeshStandardMaterial({ color: 0x0b0f12, roughness: 1, side: THREE.BackSide }),
-    );
-    this.interiorShell.position.set(
-      (nx * VOXEL_SIZE) / 2,
-      (build.deckY * VOXEL_SIZE * 0.85) / 2 + VOXEL_SIZE,
-      (nz * VOXEL_SIZE) / 2,
-    );
-    this.interiorShell.visible = false;
-    this.group.add(this.interiorShell);
-    void ny;
+    // NOTE: the old "interior shell" black box that used to hide the ocean
+    // inside the hull during cutaway is gone — the ocean itself now gets a
+    // hole punched around the ship (ocean.setCutawayHole), so the interior
+    // shows real timber and real flood water only.
   }
 
   /** One translucent box per compartment, scaled to its fill level. */
@@ -136,7 +120,6 @@ export class ShipVisual {
   setCutaway(plane: THREE.Plane | null): void {
     this.hullMaterial.clippingPlanes = plane ? [plane] : null;
     this.hullMaterial.needsUpdate = true;
-    this.interiorShell.visible = plane !== null;
   }
 
   /** Reflect current flooding levels. Call once per frame. */

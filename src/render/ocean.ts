@@ -15,9 +15,11 @@ const SEGMENTS = 400;
 export interface Ocean {
   mesh: THREE.Mesh;
   update(time: number, cameraPos: THREE.Vector3): void;
-  /** Cutaway support: clip the sea on the camera side of the plane so the
-   *  hull interior reads dry instead of "full of ocean". */
-  setClipPlane(plane: THREE.Plane | null): void;
+  /** Cutaway support: punch a box-shaped HOLE in the sea around the ship's
+   *  footprint (clipIntersection of 4 outward planes). Unlike a half-plane
+   *  clip, this neither splits the ocean to the horizon nor lets the open
+   *  sea read as "water inside the hull" (playtest rounds 2–4). */
+  setCutawayHole(planes: THREE.Plane[] | null): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -172,6 +174,8 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
     vertexShader: VERT,
     fragmentShader: FRAG,
     clipping: true,
+    side: THREE.DoubleSide, // a submerged camera must see the surface above
+    // it, not a missing polygon that cuts straight to the skybox (playtest)
     uniforms: {
       uTime: { value: 0 },
       uWaveA: { value: a },
@@ -193,8 +197,11 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
 
   return {
     mesh,
-    setClipPlane(plane) {
-      mat.clippingPlanes = plane ? [plane] : null;
+    setCutawayHole(planes) {
+      mat.clippingPlanes = planes;
+      // intersection semantics: a fragment is discarded only when it is on
+      // the clipped side of ALL planes — i.e. inside the ship's box
+      mat.clipIntersection = planes !== null;
       mat.needsUpdate = true;
     },
     update(time, cameraPos) {
