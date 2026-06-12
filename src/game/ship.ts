@@ -4,6 +4,7 @@ import { VOXEL_SIZE, WATER_DENSITY } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeProbes, probeForce, submergedFraction, type Probe } from "../sim/buoyancy";
 import { sphereCells } from "../sim/ballistics";
+import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
 import { IRON } from "../sim/materials";
 import type { ShipBuild } from "../sim/shipwright";
@@ -29,6 +30,13 @@ export class Ship {
 
   private keelAnchor: [number, number, number];
   private inertia: [number, number, number];
+
+  /** cell index → compartment id, for breach detection. */
+  private cellComp = new Map<number, number>();
+  /** Per compartment: breach cell coordinates (hull holes below decks). */
+  private breachCells = new Map<number, [number, number, number][]>();
+  /** Holes shot through bulkheads connecting compartments. */
+  private openings: Opening[] = [];
   private tmpV = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
 
@@ -44,6 +52,11 @@ export class Ship {
     let ay = 0;
     while (ay < build.grid.dims[1] && !build.grid.isSolid(ax, ay, az)) ay++;
     this.keelAnchor = [ax, ay, az];
+
+    for (const c of build.compartments) {
+      for (const cell of c.cells) this.cellComp.set(cell, c.id);
+      this.breachCells.set(c.id, []);
+    }
 
     const { world, RAPIER: R } = phys;
     const mass = build.grid.totalMass();
@@ -79,8 +92,68 @@ export class Ship {
     world.createCollider(collider, this.body);
   }
 
+  /** Fill fraction (0..1) of a compartment. */
+  floodFrac(compartmentId: number): number {
+    const c = this.build.compartments[compartmentId];
+    return c ? c.waterVolume / c.volume : 0;
+  }
+
+  /** Total water aboard, m³ — for HUD/AI. */
+  waterAboard(): number {
+    return this.build.compartments.reduce((s, c) => s + c.waterVolume, 0);
+  }
+
+  /**
+   * Advance flooding one fixed step: aggregate per-breach depths below the
+   * live wave surface (including deck-hatch downflooding once hatches go
+   * under), then integrate compartment fill and inter-compartment exchange.
+   */
+  updateFlooding(dt: number, waves: Wave[], t: number): void {
+    const breaches: BreachInput[] = [];
+    const p = this.tmpV;
+
+    for (const c of this.build.compartments) {
+      const cells = this.breachCells.get(c.id);
+      if (cells && cells.length > 0) {
+        // aggregate: average depth across breach cells, total area
+        let depthSum = 0;
+        let wet = 0;
+        for (const [x, y, z] of cells) {
+          this.localToWorld([(x + 0.5) * VOXEL_SIZE, (y + 0.5) * VOXEL_SIZE, (z + 0.5) * VOXEL_SIZE], p);
+          const d = surfaceHeight(waves, p.x, p.z, t) - p.y;
+          if (d > 0) {
+            depthSum += d;
+            wet++;
+          }
+        }
+        if (wet > 0) {
+          breaches.push({
+            compartmentId: c.id,
+            area: wet * VOXEL_SIZE * VOXEL_SIZE,
+            depth: depthSum / wet,
+          });
+        }
+      }
+
+      // deck hatches downflood once the water tops the hatch coaming (a
+      // raised lip): waves slopping across the deck don't flood the hold
+      if (c.hatchArea > 0) {
+        const COAMING = 0.4; // m
+        const hx = (c.bboxMin[0] + c.bboxMax[0]) / 2;
+        this.localToWorld(
+          [(hx + 0.5) * VOXEL_SIZE, (this.build.deckY + 0.5) * VOXEL_SIZE, (this.build.grid.dims[2] / 2) * VOXEL_SIZE],
+          p,
+        );
+        const d = surfaceHeight(waves, p.x, p.z, t) - p.y - COAMING;
+        if (d > 0) breaches.push({ compartmentId: c.id, area: c.hatchArea, depth: d });
+      }
+    }
+
+    floodStep(this.build.compartments, this.openings, breaches, dt);
+  }
+
   /** Apply buoyancy + water drag for one fixed step. Call before world.step(). */
-  applyForces(waves: Wave[], t: number, floodFrac: (compartmentId: number) => number): void {
+  applyForces(waves: Wave[], t: number): void {
     const body = this.body;
     body.resetForces(true);
     body.resetTorques(true);
@@ -98,8 +171,11 @@ export class Ship {
       const wy = wp.y + tr.y;
       const wz = wp.z + tr.z;
       const surfaceY = surfaceHeight(waves, wx, wz, t);
-      const flood = p.compartmentId >= 0 ? floodFrac(p.compartmentId) : 0;
-      const f = probeForce(p, wy, surfaceY, flood);
+      // flood = 0 here deliberately: the hull envelope always displaces;
+      // flooded water is accounted as WEIGHT below (scaling lift AND adding
+      // weight would double-count — a full submerged compartment must be
+      // net-zero, and weight-only handles partial submersion correctly)
+      const f = probeForce(p, wy, surfaceY, 0);
       totalVolume += p.volume;
       if (f > 0) {
         const sub = submergedFraction(p, wy, surfaceY);
@@ -117,6 +193,21 @@ export class Ship {
       }
     }
     this.submergedFrac = totalVolume > 0 ? submergedVolume / totalVolume : 0;
+
+    // flooded water is cargo: its weight bears at each compartment's water
+    // centroid, so a flooded bow pulls the bow down — listing is emergent
+    for (const c of this.build.compartments) {
+      if (c.waterVolume <= 0) continue;
+      const fill = c.waterVolume / c.volume;
+      const waterY =
+        (c.bboxMin[1] + (c.bboxMax[1] + 1 - c.bboxMin[1]) * fill * 0.5 + 0.5) * VOXEL_SIZE;
+      const wp = this.tmpV.set(c.centroid[0], waterY, c.centroid[2]).applyQuaternion(this.tmpQ);
+      body.addForceAtPoint(
+        { x: 0, y: -c.waterVolume * WATER_DENSITY * 9.81, z: 0 },
+        { x: wp.x + tr.x, y: wp.y + tr.y, z: wp.z + tr.z },
+        true,
+      );
+    }
 
     // water drag split into ship-frame components: a hull slips easily
     // forward, resists sideways motion strongly (the keel), and damps heave
@@ -172,7 +263,10 @@ export class Ship {
    */
   applyDamage(cell: [number, number, number], radiusVox: number): number {
     const grid = this.build.grid;
+    const [nx, ny] = grid.dims;
+    const cidx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
     let removed = 0;
+    const removedCells: [number, number, number][] = [];
     for (const [x, y, z] of sphereCells(cell, radiusVox)) {
       const mat = grid.get(x, y, z);
       if (mat === 0) continue;
@@ -181,9 +275,36 @@ export class Ship {
         if (d > radiusVox * 0.55) continue; // iron shrugs off the blast fringe
       }
       grid.remove(x, y, z);
+      removedCells.push([x, y, z]);
       removed++;
     }
     if (removed === 0) return 0;
+
+    // breach registration: a removed cell adjacent to one compartment is a
+    // hull breach for it; adjacent to two compartments, a bulkhead opening
+    for (const [x, y, z] of removedCells) {
+      const adj = new Set<number>();
+      for (const [px, py, pz] of [
+        [x - 1, y, z],
+        [x + 1, y, z],
+        [x, y - 1, z],
+        [x, y + 1, z],
+        [x, y, z - 1],
+        [x, y, z + 1],
+      ] as [number, number, number][]) {
+        const comp = this.cellComp.get(cidx(px, py, pz));
+        if (comp !== undefined) adj.add(comp);
+      }
+      if (adj.size === 1) {
+        const id = adj.values().next().value!;
+        this.breachCells.get(id)?.push([x, y, z]);
+      } else if (adj.size >= 2) {
+        const ids = [...adj];
+        for (let i = 0; i < ids.length - 1; i++) {
+          this.openings.push({ a: ids[i], b: ids[i + 1], area: VOXEL_SIZE * VOXEL_SIZE });
+        }
+      }
+    }
 
     // anything no longer connected to the keel breaks off as debris
     const islands = findSevered(grid, this.keelAnchor);
@@ -217,12 +338,17 @@ export class Ship {
     this.probes = makeProbes(grid, this.build.compartments);
   }
 
-  /** World-space position of the ship-local point (meters). */
+  /** World-space position of the ship-local point (meters). Alias-safe:
+   *  no internal temp vectors, so `out` may be any vector including temps. */
   localToWorld(local: [number, number, number], out: THREE.Vector3): THREE.Vector3 {
     const tr = this.body.translation();
     const rot = this.body.rotation();
     this.tmpQ.set(rot.x, rot.y, rot.z, rot.w);
-    return out.set(local[0], local[1], local[2]).applyQuaternion(this.tmpQ).add(this.tmpV.set(tr.x, tr.y, tr.z));
+    out.set(local[0], local[1], local[2]).applyQuaternion(this.tmpQ);
+    out.x += tr.x;
+    out.y += tr.y;
+    out.z += tr.z;
+    return out;
   }
 
   /** Density-ratio draft estimate (diagnostics): expected submerged fraction at rest. */

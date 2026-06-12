@@ -18,10 +18,15 @@ describe("shipwright sloop", () => {
     }
   });
 
-  it("average density is well below seawater (it will float)", () => {
-    expect(ship.grid.totalMass()).toBeLessThan(0.6 * ship.envelopeVolume * WATER_DENSITY);
+  it("average density is below seawater (it will float)", () => {
+    expect(ship.grid.totalMass()).toBeLessThan(0.68 * ship.envelopeVolume * WATER_DENSITY);
     // ...but it is not a cork either: a ship sits IN the water
     expect(ship.grid.totalMass()).toBeGreaterThan(0.12 * ship.envelopeVolume * WATER_DENSITY);
+  });
+
+  it("fully flooded she SINKS: solid mass exceeds solid-cell displacement", () => {
+    const solidDisplacement = ship.grid.solidCount() * 0.25 ** 3 * WATER_DENSITY;
+    expect(ship.grid.totalMass()).toBeGreaterThan(solidDisplacement);
   });
 
   it("has exactly three watertight compartments", () => {

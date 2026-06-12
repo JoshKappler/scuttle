@@ -53,7 +53,7 @@ async function main() {
   const hulkVisual = new ShipVisual(hulkBuild);
   const hulk = new Ship(physics, hulkBuild, hulkVisual, {
     x: -9 + waves[0].dirX * 70,
-    y: -1.2,
+    y: 0.2,
     z: -3 + waves[0].dirZ * 70,
   });
   world.addShip(hulk);

@@ -35,13 +35,15 @@ export class GameWorld {
       this.accumulator -= FIXED_DT;
       this.simTime += FIXED_DT;
       for (const ship of this.ships) {
-        ship.applyForces(this.waves, this.simTime, () => 0); // flooding lands in plan Task 11
+        ship.updateFlooding(FIXED_DT, this.waves, this.simTime);
+        ship.applyForces(this.waves, this.simTime);
       }
       this.onFixedStep?.(this.simTime, FIXED_DT);
       this.physics.world.step();
     }
     for (const ship of this.ships) {
       ship.visual.refresh();
+      ship.visual.updateWater(ship.build.compartments);
       ship.syncVisual();
     }
   }

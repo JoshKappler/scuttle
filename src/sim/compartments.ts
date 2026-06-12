@@ -17,6 +17,69 @@ export interface Compartment {
   hatchArea: number;
   /** Lowest cell y (voxels) — used for water-level rendering and breach depth. */
   floorY: number;
+  /** Cell-space bounding box (inclusive), for water-plane rendering. */
+  bboxMin: [number, number, number];
+  bboxMax: [number, number, number];
+}
+
+/** A hole connecting two compartments (e.g. a shot-through bulkhead). */
+export interface Opening {
+  a: number; // compartment id
+  b: number; // compartment id
+  area: number; // m²
+}
+
+/** An aggregated hull breach feeding one compartment this step. */
+export interface BreachInput {
+  compartmentId: number;
+  area: number; // m²
+  depth: number; // m below the local water surface (≤0 = above water)
+}
+
+const DISCHARGE = 0.6; // sharp-edged orifice coefficient
+const EXCHANGE_HEAD_SCALE = 2.0; // m of head per unit fill-fraction difference
+
+/** Bernoulli orifice inflow rate, m³/s. Zero above the waterline. */
+export function breachInflow(area: number, depth: number): number {
+  if (depth <= 0) return 0;
+  return DISCHARGE * area * Math.sqrt(2 * 9.81 * depth);
+}
+
+/**
+ * Advance flooding one step: breach inflows, then inter-compartment exchange
+ * through openings (driven by fill-level difference), clamped to capacity.
+ */
+export function floodStep(
+  compartments: Compartment[],
+  openings: Opening[],
+  breaches: BreachInput[],
+  dt: number,
+): void {
+  const byId = new Map<number, Compartment>();
+  for (const c of compartments) byId.set(c.id, c);
+
+  for (const br of breaches) {
+    const c = byId.get(br.compartmentId);
+    if (!c) continue;
+    c.waterVolume = Math.min(c.waterVolume + breachInflow(br.area, br.depth) * dt, c.volume);
+  }
+
+  for (const o of openings) {
+    const a = byId.get(o.a);
+    const b = byId.get(o.b);
+    if (!a || !b) continue;
+    const fillA = a.waterVolume / a.volume;
+    const fillB = b.waterVolume / b.volume;
+    const head = (fillA - fillB) * EXCHANGE_HEAD_SCALE;
+    if (Math.abs(head) < 1e-9) continue;
+    const rate = DISCHARGE * o.area * Math.sqrt(2 * 9.81 * Math.abs(head)) * Math.sign(head);
+    let flow = rate * dt; // + = a→b
+    // clamp by available water and remaining capacity
+    flow = Math.min(flow, a.waterVolume, b.volume - b.waterVolume);
+    flow = Math.max(flow, -b.waterVolume, -(a.volume - a.waterVolume));
+    a.waterVolume -= flow;
+    b.waterVolume += flow;
+  }
 }
 
 /**
@@ -76,6 +139,8 @@ export function findCompartments(grid: VoxelGrid, deckY: number): Compartment[] 
         let sy = 0;
         let sz = 0;
         let floorY = ny;
+        const bboxMin: [number, number, number] = [nx, ny, nz];
+        const bboxMax: [number, number, number] = [0, 0, 0];
         for (const c of cells) {
           const cx = c % nx;
           const cy = Math.floor(c / nx) % ny;
@@ -84,6 +149,12 @@ export function findCompartments(grid: VoxelGrid, deckY: number): Compartment[] 
           sy += cy + 0.5;
           sz += cz + 0.5;
           if (cy < floorY) floorY = cy;
+          bboxMin[0] = Math.min(bboxMin[0], cx);
+          bboxMin[1] = Math.min(bboxMin[1], cy);
+          bboxMin[2] = Math.min(bboxMin[2], cz);
+          bboxMax[0] = Math.max(bboxMax[0], cx);
+          bboxMax[1] = Math.max(bboxMax[1], cy);
+          bboxMax[2] = Math.max(bboxMax[2], cz);
         }
         const n = cells.length;
         compartments.push({
@@ -94,6 +165,8 @@ export function findCompartments(grid: VoxelGrid, deckY: number): Compartment[] 
           centroid: [(sx / n) * VOXEL_SIZE, (sy / n) * VOXEL_SIZE, (sz / n) * VOXEL_SIZE],
           hatchArea: 0, // measured by the caller (shipwright) which knows hatch placement
           floorY,
+          bboxMin,
+          bboxMax,
         });
       }
     }

@@ -73,14 +73,25 @@ export function buildSloop(): ShipBuild {
     }
   }
 
-  // iron ballast along the keel: without it the deck makes the ship top-heavy
-  // and she turtles (negative metacentric height) — discovered empirically
+  // iron ballast along the keel. Two jobs: (1) without it the deck makes the
+  // ship top-heavy and she turtles (negative metacentric height); (2) the
+  // solid mass must exceed the solid displacement, or a fully flooded wooden
+  // hull just floats awash forever instead of going down. Both found empirically.
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);
     if (t < 0.08 || t > 0.92) continue;
     const by = keelY(t) + 1;
-    for (const z of [11, 12]) {
+    // 2-wide strip everywhere, widened + double-stacked on alternating
+    // stations — enough iron to sink her when flooded while keeping a
+    // seaworthy freeboard
+    const zs = x % 2 === 0 ? [10, 11, 12, 13] : [11, 12];
+    for (const z of zs) {
       if (inside(x, by, z) && grid.get(x, by, z) === EMPTY) grid.set(x, by, z, IRON);
+    }
+    if (x % 2 === 0) {
+      for (const z of [11, 12]) {
+        if (inside(x, by + 1, z) && grid.get(x, by + 1, z) === EMPTY) grid.set(x, by + 1, z, IRON);
+      }
     }
   }
 

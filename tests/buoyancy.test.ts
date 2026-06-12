@@ -44,7 +44,7 @@ describe("buoyancy", () => {
   it("equilibrium sanity: floating fraction equals density ratio and is boat-like", () => {
     const frac = ship.grid.totalMass() / (WATER_DENSITY * ship.envelopeVolume);
     expect(frac).toBeGreaterThan(0.15);
-    expect(frac).toBeLessThan(0.6);
+    expect(frac).toBeLessThan(0.7);
   });
 
   it("flooding the bow compartment shifts net force aft (listing torque exists)", () => {

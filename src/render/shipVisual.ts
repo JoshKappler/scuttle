@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
 import { meshChunk } from "./voxelMesher";
+import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
 
 /**
@@ -14,6 +15,8 @@ export class ShipVisual {
   private hullMaterial: THREE.MeshStandardMaterial;
   private build: ShipBuild;
 
+  private waterMeshes = new Map<number, THREE.Mesh>();
+
   constructor(build: ShipBuild) {
     this.build = build;
     this.hullMaterial = new THREE.MeshStandardMaterial({
@@ -23,6 +26,49 @@ export class ShipVisual {
     });
     this.remeshAll();
     this.addRig();
+    this.addWaterPlanes();
+  }
+
+  /** One translucent box per compartment, scaled to its fill level. */
+  private addWaterPlanes(): void {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x16424c,
+      transparent: true,
+      opacity: 0.82,
+      roughness: 0.25,
+      depthWrite: false,
+    });
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    geo.translate(0, 0.5, 0); // origin at the bottom face
+    for (const c of this.build.compartments) {
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.visible = false;
+      this.group.add(mesh);
+      this.waterMeshes.set(c.id, mesh);
+    }
+  }
+
+  /** Reflect current flooding levels. Call once per frame. */
+  updateWater(compartments: Compartment[]): void {
+    for (const c of compartments) {
+      const mesh = this.waterMeshes.get(c.id);
+      if (!mesh) continue;
+      const fill = c.waterVolume / c.volume;
+      if (fill < 0.01) {
+        mesh.visible = false;
+        continue;
+      }
+      mesh.visible = true;
+      const w = (c.bboxMax[0] + 1 - c.bboxMin[0]) * VOXEL_SIZE;
+      const h = (c.bboxMax[1] + 1 - c.bboxMin[1]) * VOXEL_SIZE;
+      const d = (c.bboxMax[2] + 1 - c.bboxMin[2]) * VOXEL_SIZE;
+      mesh.position.set(
+        ((c.bboxMin[0] + c.bboxMax[0] + 1) / 2) * VOXEL_SIZE,
+        c.bboxMin[1] * VOXEL_SIZE,
+        ((c.bboxMin[2] + c.bboxMax[2] + 1) / 2) * VOXEL_SIZE,
+      );
+      mesh.scale.set(w * 0.98, Math.max(h * fill, 0.02), d * 0.98);
+    }
   }
 
   /** Rebuild every chunk that the grid has marked dirty. */
