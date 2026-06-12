@@ -183,11 +183,19 @@ async function main() {
     }, 500);
   }
 
-  window.addEventListener("resize", () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
+  // robust sizing: ResizeObserver catches fullscreen/zoom cases the resize
+  // event misses (playtest: "unable to scale past a certain point")
+  const fitViewport = () => {
+    const w = app.clientWidth || window.innerWidth;
+    const h = app.clientHeight || window.innerHeight;
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(w, h);
+  };
+  window.addEventListener("resize", fitViewport);
+  document.addEventListener("fullscreenchange", fitViewport);
+  new ResizeObserver(fitViewport).observe(app);
 
   // cutaway damage view (X): clips the near half of each hull so compartment
   // water levels read at a glance — flooding legibility is a core spec feature

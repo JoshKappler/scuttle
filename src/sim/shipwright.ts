@@ -31,7 +31,7 @@ export function buildSloop(): ShipBuild {
 
   const x0 = 4; // first station
   const L = 64; // stations along x (16 m)
-  const deckY = 12;
+  const deckY = 13; // raised one layer for freeboard (playtest: rode too deep)
   const halfBeamMax = 9.5; // cells from centerline → beam ≈ 4.75 m
   const cz = (nz - 1) / 2; // 11.5, centerline between cells
 

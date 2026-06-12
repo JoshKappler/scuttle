@@ -318,10 +318,11 @@ export class Ship {
       body.addForce({ x: fwd.x * fF + lat.x * fL, y: fY, z: fwd.z * fF + lat.z * fL }, true);
 
       // lateral keel resistance acts below the COM → ships heel in turns
-      const keelDepth = 1.0; // m below COM
+      // (lever + share raised after playtest: "should lean more")
+      const keelDepth = 1.8; // m below COM
       const com = body.worldCom();
       body.addForceAtPoint(
-        { x: lat.x * fL * 0.35, y: 0, z: lat.z * fL * 0.35 },
+        { x: lat.x * fL * 0.6, y: 0, z: lat.z * fL * 0.6 },
         { x: com.x, y: com.y - keelDepth, z: com.z },
         true,
       );

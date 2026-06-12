@@ -97,8 +97,10 @@ export class Pirate {
 
     this.swimming = tr.y < surf + 0.4;
     if (this.swimming) {
-      // crude swim: buoyed to the surface, slow movement, ships don't carry you
-      this.vy = Math.min(this.vy + (surf + 0.55 - tr.y) * 6 * dt, 2.5);
+      // damped spring to the surface — undamped buoyancy made swimmers
+      // oscillate into 50-foot breaches (playtest bug)
+      this.vy += ((surf - 0.45 - tr.y) * 5 - this.vy * 3.2) * dt;
+      this.vy = Math.min(Math.max(this.vy, -3), 3);
       const k = 0.35;
       this.body.setNextKinematicTranslation({
         x: tr.x + moveX * WALK_SPEED * k * dt,

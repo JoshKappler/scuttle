@@ -6,6 +6,8 @@ export interface AIView {
   range: number; // m to target
   bearingDeg: number; // target bearing off own bow, -180..180 (+ starboard)
   angleOffWindDeg: number; // own bow vs wind-from direction
+  /** Bearing of the wind's SOURCE off own bow, -180..180 (+ starboard). */
+  windBearingDeg: number;
   floodFrac: number; // own worst compartment fill 0..1
   reloadReady: boolean;
 }
@@ -33,6 +35,13 @@ export function decideAI(v: AIView): AIDecision {
   if (v.floodFrac >= 0.5) {
     const desired = v.bearingDeg >= 0 ? 180 : -180;
     return { sailSet: 1, rudderSign: steerToward(v.bearingDeg, desired), fire: null };
+  }
+
+  // pinned in irons: bear away from the wind FIRST or we're anchored forever
+  // (this is how the playtest enemy got lost over the horizon)
+  if (Math.abs(v.windBearingDeg) < 32 && v.range > 40) {
+    const sign = v.windBearingDeg >= 0 ? -1 : 1; // turn the bow AWAY from the wind
+    return { sailSet: 1, rudderSign: sign, fire: null };
   }
 
   // closing: aim the bow at the target

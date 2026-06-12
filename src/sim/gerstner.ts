@@ -22,7 +22,7 @@ export function makeWaves(rng: Rng, count = 4): Wave[] {
   for (let i = 0; i < count; i++) {
     // longest wave first; each subsequent wave roughly halves the wavelength
     const wavelength = 70 / Math.pow(1.8, i) + rng.range(-2, 2);
-    const amplitude = 0.85 * Math.pow(0.62, i) + rng.range(-0.04, 0.04);
+    const amplitude = 0.72 * Math.pow(0.62, i) + rng.range(-0.04, 0.04);
     const angle = primary + rng.range(-0.9, 0.9);
     waves.push({
       dirX: Math.cos(angle),

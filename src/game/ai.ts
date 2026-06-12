@@ -44,10 +44,15 @@ export class AICaptain {
       worstFlood = Math.max(worstFlood, c.waterVolume / c.volume);
     }
 
+    // bearing of the wind's source in ship frame
+    const wrel = new THREE.Vector3(-wind.dirX, 0, -wind.dirZ).applyQuaternion(this.tmpQ);
+    const windBearingDeg = (Math.atan2(wrel.z, wrel.x) * 180) / Math.PI;
+
     const d = decideAI({
       range,
       bearingDeg,
       angleOffWindDeg: this.sailing.angleOffWind,
+      windBearingDeg,
       floodFrac: worstFlood,
       reloadReady: t >= this.cannons.reloadAt,
     });

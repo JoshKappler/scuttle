@@ -40,18 +40,8 @@ export class BoardingSystem {
     private playerShip: Ship,
     private enemyShip: Ship,
   ) {
-    // enemy crew on their deck
-    const posts: [number, number, number][] = [
-      [6, 3.6, 3],
-      [10, 3.6, 2],
-      [12, 3.6, 4],
-      [8, 3.6, 4.5],
-    ];
-    for (const p of posts) {
-      const pirate = new Pirate(phys, scene, enemyShip, "enemy", p, 0x4a2330, 0x802020);
-      pirate.slashCd = Math.random() * ENEMY_SLASH_CD; // desync the mob
-      this.enemies.push(pirate);
-    }
+    // enemy crew spawn DEFERRED until the ships settle from splash-down —
+    // spawning at t=0 dropped them into the sea (playtest bug)
 
     // the prize: an overflowing gold chest on the enemy quarterdeck
     const chestGroup = new THREE.Mesh(
@@ -77,10 +67,44 @@ export class BoardingSystem {
     enemyShip.visual.group.add(this.chest);
   }
 
-  /** Put the player pirate on their own quarterdeck (first T press). */
+  private crewSpawned = false;
+
+  /** Deck-top height in local meters for a ship. */
+  private deckTop(ship: Ship): number {
+    return (ship.build.deckY + 2) * 0.25;
+  }
+
+  /** Spawn crews once the world has settled. Called from update(). */
+  private ensureCrew(simTime: number): void {
+    if (this.crewSpawned || simTime < 6) return;
+    this.crewSpawned = true;
+    const dt = this.deckTop(this.enemyShip);
+    const posts: [number, number, number][] = [
+      [6, dt, 3],
+      [10, dt, 2],
+      [12, dt, 4],
+      [8, dt, 4.5],
+    ];
+    for (const p of posts) {
+      const pirate = new Pirate(this.phys, this.scene, this.enemyShip, "enemy", p, 0x4a2330, 0x802020);
+      pirate.slashCd = Math.random() * ENEMY_SLASH_CD; // desync the mob
+      this.enemies.push(pirate);
+    }
+    this.chest.position.set(4.2, dt, 3);
+  }
+
+  /** Put the player pirate at the helm of their own ship. */
   spawnPlayer(): void {
     if (this.player) return;
-    this.player = new Pirate(this.phys, this.scene, this.playerShip, "player", [4.5, 3.6, 3], 0x1d3a52, 0x1c6e6e);
+    this.player = new Pirate(
+      this.phys,
+      this.scene,
+      this.playerShip,
+      "player",
+      [4.5, this.deckTop(this.playerShip), 3],
+      0x1d3a52,
+      0x1c6e6e,
+    );
   }
 
   shipsRange(): number {
@@ -109,6 +133,7 @@ export class BoardingSystem {
     input: { moveX: number; moveZ: number; jump: boolean; slash: boolean; kick: boolean; interact: boolean },
     onFoot: boolean,
   ): boolean {
+    this.ensureCrew(simTime);
     this.slashCd = Math.max(this.slashCd - dt, 0);
     this.kickCd = Math.max(this.kickCd - dt, 0);
     let playerDied = false;
@@ -226,11 +251,12 @@ export class BoardingSystem {
     if (this.chestCarried) {
       // the chest goes down with you — back to the enemy deck it falls
       this.chestCarried = false;
+      this.player.mesh.remove(this.chest);
       this.enemyShip.visual.group.add(this.chest);
-      this.chest.position.set(4.2, 3.6, 3);
+      this.chest.position.set(4.2, this.deckTop(this.enemyShip), 3);
       this.message = "you lost the chest overboard!";
     }
-    const p = this.playerShip.localToWorld([4.5, 4.6, 3], this.tmpA);
+    const p = this.playerShip.localToWorld([4.5, this.deckTop(this.playerShip) + 1, 3], this.tmpA);
     this.player.body.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
   }
 
@@ -281,7 +307,7 @@ export class BoardingSystem {
 
     if (this.chestCarried) {
       // bank when back near your own quarterdeck
-      const home = this.playerShip.localToWorld([4.5, 3.6, 3], this.tmpB);
+      const home = this.playerShip.localToWorld([4.5, this.deckTop(this.playerShip), 3], this.tmpB);
       if (Math.hypot(home.x - pp.x, home.y - pp.y, home.z - pp.z) < 3.2) {
         this.chestBanked = true;
         this.chestCarried = false;

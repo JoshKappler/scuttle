@@ -42,13 +42,15 @@ export class SailingController {
     const a = Math.acos(Math.min(Math.max(cosA, -1), 1));
     this.angleOffWind = (a * 180) / Math.PI;
 
-    // 0 in irons (±30°), rising to 1 at ~110-150°, slightly less dead downwind
+    // near-zero in irons (±24°), rising to 1 at ~105-150°. A small steerage
+    // floor remains even in irons so you're never anchored bow-to-wind
+    // (playtest: "essentially anchored" — no fun)
     const deg = this.angleOffWind;
-    let wf = 0;
-    if (deg > 28) {
-      const x = Math.min((deg - 28) / 82, 1); // 28°..110° ramp
+    let wf = 0.08;
+    if (deg > 24) {
+      const x = Math.min((deg - 24) / 81, 1);
       const runFade = deg > 150 ? 1 - ((deg - 150) / 30) * 0.25 : 1;
-      wf = Math.pow(Math.sin((x * Math.PI) / 2), 1.2) * runFade;
+      wf = Math.max(Math.pow(Math.sin((x * Math.PI) / 2), 1.2) * runFade, 0.08);
     }
 
     // thrust ∝ wind pressure on set canvas; tuned for ~7-8 m/s top speed
@@ -67,9 +69,9 @@ export class SailingController {
       body.addForceAtPoint({ x: fwd.x * thrust, y: 0, z: fwd.z * thrust }, ap, true);
     }
 
-    // rudder: yaw torque scales with water flow over it, with a small
-    // low-speed floor so you can work the bow out of irons (arcade concession)
-    const flow = Math.sign(this.speed || 1) * (0.8 + Math.abs(this.speed));
+    // rudder: yaw torque scales with water flow over it, with a generous
+    // low-speed floor so you can always work the bow off the wind
+    const flow = Math.sign(this.speed || 1) * (1.5 + Math.abs(this.speed));
     const yaw = this.rudder * flow * mass * 0.5;
     body.addTorque({ x: 0, y: yaw, z: 0 }, true);
   }
