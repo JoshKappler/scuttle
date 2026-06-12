@@ -19,7 +19,6 @@ import { Effects } from "./render/effects";
 
 async function main() {
   const app = document.getElementById("app")!;
-  const hud = document.getElementById("hud")!;
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -224,6 +223,158 @@ async function main() {
   const clock = new THREE.Clock();
   let hudTimer = 0;
 
+  // ---- styled HUD ----
+  const $ = (id: string) => document.getElementById(id)!;
+  const hudEls = {
+    spd: $("spd"),
+    sailsBar: $("sails-bar"),
+    fl: [$("fl0"), $("fl1"), $("fl2")],
+    crewLine: $("crew-line"),
+    hpRow: $("hp-row"),
+    hpBar: $("hp-bar"),
+    gunStatus: $("gun-status"),
+    gunBar: $("gun-bar"),
+    gunSub: $("gun-sub"),
+    gold: $("gold"),
+    rose: $("rose"),
+    enemyMarker: $("enemy-marker"),
+    windMarker: $("wind-marker"),
+    toast: $("toast"),
+    hints: $("hints"),
+  };
+  let lastToast = "";
+  let toastTimer = 0;
+  const hdgQ = new THREE.Quaternion();
+  const hdgV = new THREE.Vector3();
+
+  function updateHud(dt: number, tr: { x: number; y: number; z: number }): void {
+    // smooth elements every frame
+    const rot = sloop.body.rotation();
+    hdgQ.set(rot.x, rot.y, rot.z, rot.w);
+    hdgV.set(1, 0, 0).applyQuaternion(hdgQ);
+    const heading = Math.atan2(hdgV.z, hdgV.x); // world yaw of the bow
+    hudEls.rose.style.transform = `rotate(${(-heading * 180) / Math.PI}deg)`;
+    const et = enemy.body.translation();
+    const enemyBearing = Math.atan2(et.z - tr.z, et.x - tr.x) - heading;
+    hudEls.enemyMarker.style.transform = `rotate(${(enemyBearing * 180) / Math.PI}deg)`;
+    const windBearing = Math.atan2(-wind.dirZ, -wind.dirX) - heading;
+    hudEls.windMarker.style.transform = `rotate(${(windBearing * 180) / Math.PI}deg)`;
+
+    const reload = Math.max(cannons.reloadAt - world.simTime, 0);
+    hudEls.gunBar.style.width = `${(1 - reload / Cannons.RELOAD) * 100}%`;
+
+    // toast lifecycle
+    if (boarding.message && boarding.message !== lastToast) {
+      lastToast = boarding.message;
+      hudEls.toast.textContent = boarding.message;
+      hudEls.toast.style.opacity = "1";
+      toastTimer = 3.2;
+    }
+    if (toastTimer > 0) {
+      toastTimer -= dt;
+      if (toastTimer <= 0) {
+        hudEls.toast.style.opacity = "0";
+        boarding.message = "";
+        lastToast = "";
+      }
+    }
+
+    hudTimer += dt;
+    if (hudTimer < 0.2) return;
+    hudTimer = 0;
+
+    hudEls.spd.textContent = (sailing.speed * 1.944).toFixed(1);
+    hudEls.sailsBar.style.width = `${sailing.sailSet * 100}%`;
+    sloop.build.compartments.forEach((c, i) => {
+      if (hudEls.fl[i]) hudEls.fl[i].style.width = `${(c.waterVolume / c.volume) * 100}%`;
+    });
+    hudEls.crewLine.textContent =
+      `planks ${sloop.planks} · pump ${sloop.pumpOn ? "ON" : "off"}` +
+      `${boarding.grappled ? " · GRAPPLED" : ""}` +
+      `${plugChannel > 0 ? ` · plugging ${plugChannel.toFixed(1)}s` : ""}`;
+
+    if (plugChannel > 0) {
+      hudEls.gunStatus.textContent = "REPAIRING";
+      hudEls.gunStatus.className = "";
+    } else if (reload > 0) {
+      hudEls.gunStatus.textContent = `${reload.toFixed(1)}s`;
+      hudEls.gunStatus.className = "";
+    } else {
+      hudEls.gunStatus.textContent = "GUNS READY";
+      hudEls.gunStatus.className = "ready";
+    }
+    hudEls.gunSub.textContent = `elevation ${controls.elevationDeg.toFixed(1)}°${controls.aiming ? " — AIMING" : ""}`;
+    hudEls.gold.textContent = String(boarding.gold);
+
+    hudEls.hpRow.style.display = onFoot ? "flex" : "none";
+    if (onFoot) hudEls.hpBar.style.width = `${(boarding.playerHp / 5) * 100}%`;
+
+    hudEls.hints.textContent = onFoot
+      ? `WASD move · Space jump · F slash · C kick · E grab · T helm${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
+      : "W/S sails · A/D rudder · F fire · RMB aim · Q spyglass · R plank · P pump · G grapple · T board · X cutaway";
+  }
+
+  // broadside trajectory preview while aiming (RMB) — playtest: "can't tell
+  // what right mouse aiming is doing"
+  const ARC_PTS = 48;
+  const aimGeo = new THREE.BufferGeometry();
+  const aimPos = new Float32Array(ARC_PTS * 3);
+  aimGeo.setAttribute("position", new THREE.BufferAttribute(aimPos, 3));
+  const aimLine = new THREE.Line(
+    aimGeo,
+    new THREE.LineBasicMaterial({ color: 0xe3b341, transparent: true, opacity: 0.85 }),
+  );
+  aimLine.frustumCulled = false;
+  aimLine.visible = false;
+  scene.add(aimLine);
+
+  function updateAimArc(): void {
+    if (!controls.aiming || onFoot) {
+      aimLine.visible = false;
+      return;
+    }
+    aimLine.visible = true;
+    const tr2 = sloop.body.translation();
+    const rot2 = sloop.body.rotation();
+    const q2 = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w);
+    const inv = q2.clone().invert();
+    const rel = new THREE.Vector3(tr2.x - camera.position.x, 0, tr2.z - camera.position.z).applyQuaternion(inv);
+    const side = rel.z >= 0 ? 1 : -1;
+    const muzzle = sloop.localToWorld(
+      [9, (sloop.build.deckY + 1.5) * 0.25, side > 0 ? 6.2 : -0.2],
+      new THREE.Vector3(),
+    );
+    const dir = new THREE.Vector3(0, 0, side).applyQuaternion(q2);
+    dir.y = 0;
+    dir.normalize();
+    const el = (controls.elevationDeg * Math.PI) / 180;
+    dir.y = Math.tan(el);
+    dir.normalize();
+    const v = dir.multiplyScalar(55);
+    const p = muzzle.clone();
+    const step = 0.06;
+    for (let i = 0; i < ARC_PTS; i++) {
+      aimPos[i * 3] = p.x;
+      aimPos[i * 3 + 1] = p.y;
+      aimPos[i * 3 + 2] = p.z;
+      const sp = v.length();
+      v.x += -0.006 * sp * v.x * step;
+      v.y += (-9.81 - 0.006 * sp * v.y) * step;
+      v.z += -0.006 * sp * v.z * step;
+      p.addScaledVector(v, step);
+      if (p.y < surfaceHeight(waves, p.x, p.z, world.simTime)) {
+        // pin remaining points at the splash so the line ends at the water
+        for (let j = i + 1; j < ARC_PTS; j++) {
+          aimPos[j * 3] = p.x;
+          aimPos[j * 3 + 1] = p.y;
+          aimPos[j * 3 + 2] = p.z;
+        }
+        break;
+      }
+    }
+    aimGeo.attributes.position.needsUpdate = true;
+  }
+
   // bow wake so hulls don't phase silently through the sea (playtest feedback)
   const wakeV = new THREE.Vector3();
   const wakeF = new THREE.Vector3();
@@ -247,6 +398,7 @@ async function main() {
     emitBowWake(sloop);
     emitBowWake(enemy);
     effects.update(dt);
+    updateAimArc();
     sloopVisual.animate(world.simTime, sailing.rudder, sailing.sailSet);
     enemyVisual.animate(world.simTime, captain.sailing.rudder, captain.sailing.sailSet);
 
@@ -278,33 +430,7 @@ async function main() {
     ocean.update(world.simTime, camera.position);
     renderer.render(scene, camera);
 
-    hudTimer += dt;
-    if (hudTimer > 0.5) {
-      hudTimer = 0;
-      const rot = sloop.body.rotation();
-      const q = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
-      const e = new THREE.Euler().setFromQuaternion(q, "ZYX");
-      const kn = (sailing.speed * 1.944).toFixed(1);
-      const floods = sloop.build.compartments
-        .map((c) => `${Math.round((c.waterVolume / c.volume) * 100)}%`)
-        .join(" ");
-      const reload = Math.max(cannons.reloadAt - world.simTime, 0);
-      const et = enemy.body.translation();
-      const range = Math.hypot(et.x - tr.x, et.z - tr.z);
-      const modeLine = onFoot
-        ? `ON FOOT  HP ${boarding.playerHp}/5  foes ${boarding.enemiesLeft()}` +
-          `${boarding.chestCarried ? "  CARRYING CHEST" : ""}  |  WASD move  Space jump  F slash  C kick  E grab  T helm`
-        : `W/S sails  A/D rudder  F fire  RMB aim  Q spyglass  R plank  P pump  G grapple  T board  X cutaway`;
-      hud.textContent =
-        `${kn} kn   sails ${(sailing.sailSet * 100).toFixed(0)}%   wind ${sailing.angleOffWind.toFixed(0)}° off bow   enemy ${range.toFixed(0)}m   gold ${boarding.gold}\n` +
-        `roll ${THREE.MathUtils.radToDeg(e.x).toFixed(1)}°  pitch ${THREE.MathUtils.radToDeg(e.z).toFixed(1)}°  ` +
-        `flood [${floods}]  planks ${sloop.planks}  pump ${sloop.pumpOn ? "ON" : "off"}` +
-        `${boarding.grappled ? "  GRAPPLED" : ""}\n` +
-        `guns ${reload > 0 ? reload.toFixed(1) + "s" : "READY"} @ ${controls.elevationDeg.toFixed(1)}°` +
-        `${plugChannel > 0 ? `   PLUGGING ${plugChannel.toFixed(1)}s` : ""}` +
-        `${boarding.message ? `   » ${boarding.message}` : ""}\n` +
-        modeLine;
-    }
+    updateHud(dt, tr);
   });
 }
 
