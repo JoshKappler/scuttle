@@ -217,10 +217,10 @@ async function main() {
         new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w),
       );
       const stand = wheelWorld.clone();
-      stand.x -= fwd.x * 0.8;
-      stand.z -= fwd.z * 0.8;
+      stand.x -= fwd.x * 0.45; // close enough to put both hands on the rim
+      stand.z -= fwd.z * 0.45;
       stand.y -= 0.2; // feet on the deck, not levitating at hub height
-      boarding.player.pin(stand, Math.atan2(fwd.z, fwd.x));
+      boarding.player.pin(stand, Math.atan2(fwd.z, fwd.x), sailing.rudder);
     }
 
     // plank repair channel: 4s, blocks firing
@@ -583,9 +583,11 @@ async function main() {
       );
     } else {
       // bird's-eye orbit on the ship's CENTER (the body origin is the grid
-      // corner, 13 m aft — orbiting that made every view sit off-center)
+      // corner, aft — orbiting that made every view sit off-center). The
+      // look-at rides at deck height so close zooms don't dip into the hull.
       const c0 = sloop.body.worldCom();
-      controls.updateCamera(camera, new THREE.Vector3(c0.x, c0.y + 2.5, c0.z));
+      const deckLift = (sloop.build.deckY + 2) * 0.25 + (sloop.body.translation().y - c0.y);
+      controls.updateCamera(camera, new THREE.Vector3(c0.x, c0.y + Math.max(deckLift, 2.5), c0.z));
     }
 
     // spyglass zoom (Q)
