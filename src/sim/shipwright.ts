@@ -91,14 +91,26 @@ export function buildSloop(): ShipBuild {
   }
 
   // iron ballast along the keel: without it the deck makes the ship
-  // top-heavy and she turtles (negative metacentric height). Shifted AFT
-  // (t ≥ 0.15) so the center of mass matches the fuller-aft hull's center
-  // of buoyancy — the old symmetric strip trimmed her down by the bow.
+  // top-heavy and she turtles (negative metacentric height).
+  //
+  // The ballast centroid must sit under the hull's CENTER OF BUOYANCY, not at
+  // mid-length: the egg section is fuller AFT, so the COB lands at t≈0.45 (cell
+  // ~47, x≈11.8 m). The old bands were centered ~t=0.55 — the upper, narrower
+  // tiers especially concentrated their mass a metre and a half FORWARD of the
+  // COB, so the sloop floated bow-down (~−1.7 m·mg static pitch moment; a
+  // steady ~0.8° bow-down under way). This is the exact lean the BRIG was
+  // already cured of (see buildBrig); the sloop never got the same treatment.
+  //
+  // Fix: walk every t-band 0.10 AFT so the iron's centroid lands under the COB.
+  // Verified to drive the COM-to-COB fore-aft gap to ≈0 (−0.014 m) while
+  // leaving the COM height (≈1.65 m) and draft ratio (≈0.37) essentially
+  // unchanged — she stays just as stiff and rides the same, just level.
   // Full sinking of a flooded hull is handled by waterlogging (foundering)
   // in game/ship.ts, not by overloading her with iron.
+  const AFT = 0.1; // station shift toward the stern (under the fuller-aft COB)
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);
-    if (t < 0.15 || t > 0.95) continue;
+    if (t < 0.15 - AFT || t > 0.95 - AFT) continue;
     const by = keelY(t) + 1;
     for (const z of [13, 14, 15, 16, 17, 18]) {
       if (inside(x, by, z) && grid.get(x, by, z) === EMPTY) grid.set(x, by, z, IRON);
@@ -106,15 +118,15 @@ export function buildSloop(): ShipBuild {
     // upper tiers: enough mass low that she floats at the widest belt of
     // the egg section — round-5 references: "much more of the ship should
     // be underwater" — with the COM deep for honest banking
-    if (t < 0.2 || t > 0.9) continue;
+    if (t < 0.2 - AFT || t > 0.9 - AFT) continue;
     for (const z of [13, 14, 15, 16, 17, 18]) {
       if (inside(x, by + 1, z) && grid.get(x, by + 1, z) === EMPTY) grid.set(x, by + 1, z, IRON);
     }
-    if (t < 0.3 || t > 0.8) continue;
+    if (t < 0.3 - AFT || t > 0.8 - AFT) continue;
     for (const z of [14, 15, 16, 17]) {
       if (inside(x, by + 2, z) && grid.get(x, by + 2, z) === EMPTY) grid.set(x, by + 2, z, IRON);
     }
-    if (t < 0.4 || t > 0.7) continue;
+    if (t < 0.4 - AFT || t > 0.7 - AFT) continue;
     for (const z of [15, 16]) {
       if (inside(x, by + 3, z) && grid.get(x, by + 3, z) === EMPTY) grid.set(x, by + 3, z, IRON);
     }
