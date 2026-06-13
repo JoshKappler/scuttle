@@ -401,6 +401,29 @@ export function buildBrig(): ShipBuild {
       }
     }
   }
+  // round 10: float DEEPER. The reference cutaways carry most of the hull below
+  // the waterline, with the line riding up at the widest belt — where the
+  // section is near-vertical, so it reads as ONE clean line instead of stepping
+  // in and out across the rounded turn of the bilge ("too varied in how deep
+  // the waterline is around its side"). Two more low iron courses add the draft
+  // while keeping the COM deep (she stiffens, doesn't tip).
+  // aft-biased: at the deeper draft the fuller AFT hull carries more buoyancy,
+  // so trim-neutral iron sits ~0.1 L abaft midship (centered iron trimmed her
+  // 2° by the bow).
+  for (let x = 0; x < nx; x++) {
+    const t = stationT(x);
+    const by = keelY(t) + 1;
+    if (t >= 0.1 && t <= 0.8) {
+      for (const z of ballastZ(5)) {
+        if (inside(x, by + 8, z) && grid.get(x, by + 8, z) === EMPTY) grid.set(x, by + 8, z, IRON);
+      }
+    }
+    if (t >= 0.18 && t <= 0.72) {
+      for (const z of ballastZ(4)) {
+        if (inside(x, by + 9, z) && grid.get(x, by + 9, z) === EMPTY) grid.set(x, by + 9, z, IRON);
+      }
+    }
+  }
 
   // transverse watertight bulkheads at 1/3 and 2/3
   const bulkheadXs = [x0 + Math.round(L / 3), x0 + Math.round((2 * L) / 3)];
