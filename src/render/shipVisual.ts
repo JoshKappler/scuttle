@@ -1,6 +1,14 @@
 import * as THREE from "three";
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
-import { barrelDirLocal, BORE_UP, TIP_FROM_TRUNNION, TRUNNION_OUT } from "../game/gunnery";
+import {
+  barrelDirLocal,
+  BARREL_PIVOT_UP,
+  BORE_UP_B,
+  GUN_INBOARD_M,
+  GUN_SCALE,
+  TIP_FROM_TRUNNION_B,
+  TRUNNION_OUT_B,
+} from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
 import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
@@ -437,8 +445,8 @@ export class ShipVisual {
         [0.001, -0.62], [0.05, -0.6], [0.085, -0.52], [0.062, -0.45],
         [0.108, -0.43], [0.108, -0.3], [0.095, -0.28],
         [0.09, 0.42], [0.08, 0.46],
-        [0.072, 1.18], [0.088, 1.24], [0.094, 1.28], [0.07, TIP_FROM_TRUNNION - 0.01],
-        [0.045, TIP_FROM_TRUNNION], [0.001, TIP_FROM_TRUNNION],
+        [0.072, 1.18], [0.088, 1.24], [0.094, 1.28], [0.07, TIP_FROM_TRUNNION_B - 0.01],
+        [0.045, TIP_FROM_TRUNNION_B], [0.001, TIP_FROM_TRUNNION_B],
       ].map(([r, y]) => new THREE.Vector2(r, y));
       const barrel = new THREE.LatheGeometry(prof, 14);
       barrel.rotateX(Math.PI / 2); // lathe axis → +z (muzzle outboard)
@@ -454,17 +462,20 @@ export class ShipVisual {
       };
     }
     const gg = ShipVisual.gunGeo;
-    const deckInPivot = -0.62; // the pivot origin floats 0.62 above the deck
+    const deckInPivot = -0.62; // the pivot origin floats 0.62 above the deck (model space)
     for (const port of this.build.cannonPorts) {
       const px = (port.x + 0.5) * VOXEL_SIZE;
       const py = (this.build.deckY + 1) * VOXEL_SIZE;
       const pz = (port.z + 0.5 - port.side * 2.6) * VOXEL_SIZE;
       const pivot = new THREE.Group();
       pivot.rotation.order = "YXZ"; // yaw to the side, then elevate — never rolls
-      pivot.position.set(px, py + 0.62, pz + port.side * 0.2);
+      // pivot height + inboard offset mirror pivotLocal() in gunnery exactly;
+      // the whole gun scales as one group so model-space offsets stay true
+      pivot.position.set(px, py + BARREL_PIVOT_UP, pz - port.side * GUN_INBOARD_M);
+      pivot.scale.setScalar(GUN_SCALE);
       // gun space: +z outboard for both sides (animate()'s yaw flips port)
       const elev = new THREE.Group();
-      elev.position.set(0, BORE_UP, TRUNNION_OUT);
+      elev.position.set(0, BORE_UP_B, TRUNNION_OUT_B);
       const barrelMesh = new THREE.Mesh(gg.barrel, ironMat);
       barrelMesh.castShadow = true;
       const trun = new THREE.Mesh(gg.trun, ironMat);
@@ -473,14 +484,14 @@ export class ShipVisual {
       pivot.add(elev);
       const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, wheel = false) => {
         const m = new THREE.Mesh(geo, mat);
-        m.position.set(x, y, z + TRUNNION_OUT);
+        m.position.set(x, y, z + TRUNNION_OUT_B);
         if (wheel) m.rotation.z = Math.PI / 2;
         m.castShadow = true;
         pivot.add(m);
       };
       for (const s of [-1, 1]) {
-        add(gg.cheekF, woodMat, s * 0.15, BORE_UP - 0.22, -0.02);
-        add(gg.cheekR, woodMat, s * 0.15, BORE_UP - 0.38, -0.45);
+        add(gg.cheekF, woodMat, s * 0.15, BORE_UP_B - 0.22, -0.02);
+        add(gg.cheekR, woodMat, s * 0.15, BORE_UP_B - 0.38, -0.45);
         add(gg.wheelF, woodMat, s * 0.26, deckInPivot + 0.17, 0.18, true);
         add(gg.wheelR, woodMat, s * 0.26, deckInPivot + 0.15, -0.55, true);
       }

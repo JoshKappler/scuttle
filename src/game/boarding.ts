@@ -138,7 +138,15 @@ export class BoardingSystem {
     dt: number,
     simTime: number,
     waves: Wave[],
-    input: { moveX: number; moveZ: number; jump: boolean; slash: boolean; kick: boolean; interact: boolean },
+    input: {
+      moveX: number;
+      moveZ: number;
+      jump: boolean;
+      sprint: boolean;
+      slash: boolean;
+      kick: boolean;
+      interact: boolean;
+    },
     onFoot: boolean,
   ): boolean {
     this.ensureCrew(simTime);
@@ -178,7 +186,7 @@ export class BoardingSystem {
       // ride whichever hull is underfoot
       this.player.ship = this.nearestShip(this.player);
       if (onFoot) {
-        this.player.step(dt, input.moveX, input.moveZ, input.jump, waves, simTime);
+        this.player.step(dt, input.moveX, input.moveZ, input.jump, waves, simTime, input.sprint);
       } else {
         // at the wheel the caller pins the body — keep the animation alive
         this.player.idleTick(dt);

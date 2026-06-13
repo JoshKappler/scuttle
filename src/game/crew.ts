@@ -21,6 +21,14 @@ import type { Ship } from "./ship";
  * character controller). Death = ragdoll-lite: the capsule goes dynamic.
  */
 const WALK_SPEED = 3.4;
+const SPRINT_MULT = 1.62;
+const STAMINA_DRAIN = 0.3; // per second sprinting
+const STAMINA_REGEN = 0.17; // per second, after a short breather
+const REGEN_DELAY = 0.9; // s
+
+/** The character capsule must ignore group-0x0002 colliders (the coarse
+ *  ship-ship hull boxes) — their tops float above the real deck. */
+const KCC_FILTER_GROUPS = 0xfffffffd;
 
 const tmpCarry = new THREE.Vector3();
 const tmpAnchor = new THREE.Vector3();
@@ -38,6 +46,9 @@ export class Pirate {
   slashCd = 0;
   kickCd = 0;
   facing = 0; // world yaw
+  /** Sprint wind 0..1 (round 7: shift to sprint, with a stamina bar). */
+  stamina = 1;
+  private regenCd = 0;
   private vy = 0;
   private ragdollAge = 0;
   swimming = false;
@@ -199,29 +210,57 @@ export class Pirate {
   private atHelm = false;
   private helmRudder = 0;
   private armBones: Record<string, THREE.Object3D> | null = null;
+  /** Arm rotations as the MIXER last wrote them — the helm pose offsets are
+   *  applied against this snapshot, so applying the pose twice between mixer
+   *  updates is idempotent. The old relative `-=` version stacked offsets
+   *  whenever pose ran more often than the mixer: "the captain's arm is
+   *  absolutely spasming and going crazy" (round 7). */
+  private armBase: Record<string, number> | null = null;
 
-  /** Helmsman pose, applied AFTER the mixer so it wins the frame: both arms
-   *  reach forward to the wheel rim and lean with the set rudder (round 6:
-   *  "actually went up to the wheel and was touching it and articulating
-   *  his arms to steer it"). */
-  private helmPose(): void {
-    if (!this.rig) return;
+  private findArmBones(): Record<string, THREE.Object3D> {
     if (!this.armBones) {
       this.armBones = {};
-      this.rig.root.traverse((o) => {
+      this.rig!.root.traverse((o) => {
         if (/^(Upper|Lower)Arm[LR]$/.test(o.name)) this.armBones![o.name] = o;
       });
     }
-    const b = this.armBones;
+    return this.armBones;
+  }
+
+  /** Snapshot the mixer's arm pose. Call right after every mixer update
+   *  while at the helm. */
+  private captureArmBase(): void {
+    if (!this.rig) return;
+    const bones = this.findArmBones();
+    this.armBase ??= {};
+    for (const name of Object.keys(bones)) this.armBase[name] = bones[name].rotation.x;
+  }
+
+  /** Helmsman pose: both arms reach forward to the wheel rim and lean with
+   *  the set rudder (round 6). Applied ONCE per render frame, after all
+   *  fixed steps, ABSOLUTELY against the captured mixer pose — never
+   *  relative to whatever happens to be in the bones. */
+  postPose(): void {
+    if (!this.atHelm || !this.rig || !this.armBase) return;
+    const b = this.findArmBones();
+    const base = this.armBase;
     const r = this.helmRudder;
-    if (b.UpperArmL) b.UpperArmL.rotation.x -= 1.05 - r * 0.3;
-    if (b.UpperArmR) b.UpperArmR.rotation.x -= 1.05 + r * 0.3;
-    if (b.LowerArmL) b.LowerArmL.rotation.x -= 0.38;
-    if (b.LowerArmR) b.LowerArmR.rotation.x -= 0.38;
+    if (b.UpperArmL) b.UpperArmL.rotation.x = base.UpperArmL - (1.05 - r * 0.3);
+    if (b.UpperArmR) b.UpperArmR.rotation.x = base.UpperArmR - (1.05 + r * 0.3);
+    if (b.LowerArmL) b.LowerArmL.rotation.x = base.LowerArmL - 0.38;
+    if (b.LowerArmR) b.LowerArmR.rotation.x = base.LowerArmR - 0.38;
   }
 
   /** Move one fixed step. moveX/moveZ are a world-space direction (≤1). */
-  step(dt: number, moveX: number, moveZ: number, jump: boolean, waves: Wave[], simTime: number): void {
+  step(
+    dt: number,
+    moveX: number,
+    moveZ: number,
+    jump: boolean,
+    waves: Wave[],
+    simTime: number,
+    sprint = false,
+  ): void {
     this.atHelm = false;
     this.attackTimer = Math.max(this.attackTimer - dt, 0);
     this.kickTimer = Math.max(this.kickTimer - dt, 0);
@@ -239,6 +278,7 @@ export class Pirate {
     // (playtest: bow dipped, walking/jumping died because swim engaged early)
     this.swimming = tr.y < surf - 0.45;
     if (this.swimming) {
+      this.tickStamina(dt, false);
       this.attachShip = null; // the sea owns you now
       // damped spring to the surface — undamped buoyancy made swimmers
       // oscillate into 50-foot breaches (playtest bug)
@@ -274,7 +314,9 @@ export class Pirate {
 
     const grounded = this.controller!.computedGrounded();
     if (grounded) {
-      this.vy = jump ? 5.6 : Math.max(this.vy, -0.5);
+      // 4.6 m/s ≈ a 1.1 m hop — boots and a cutlass, not a moon launch
+      // (round 7: "the character jumps much too high")
+      this.vy = jump ? 4.6 : Math.max(this.vy, -0.5);
       this.airTime = 0;
     } else {
       this.vy = Math.max(this.vy - G * dt, -18);
@@ -289,19 +331,26 @@ export class Pirate {
     const wantsMove = moveX * moveX + moveZ * moveZ > 0.01 || jump;
     const shoved = this.pendingShove.lengthSq() > 0.05;
     if (grounded && !wantsMove && !shoved && this.attachShip === this.ship) {
+      this.tickStamina(dt, false);
       this.body.setNextKinematicTranslation({ x: tr.x + carryX, y: tr.y + carryY, z: tr.z + carryZ });
       this.setAnim(this.attackTimer > 0 ? "attack" : this.kickTimer > 0 ? "punch" : "idle");
       this.syncMesh();
       return;
     }
 
+    // sprint: shift pours stamina into a longer stride
+    const moving = moveX * moveX + moveZ * moveZ > 0.01;
+    const sprinting = sprint && moving && this.stamina > 0.02;
+    this.tickStamina(dt, sprinting && grounded);
+    const speed = WALK_SPEED * (sprinting ? SPRINT_MULT : 1);
+
     const desired = {
-      x: carryX + (moveX * WALK_SPEED + this.pendingShove.x) * dt,
+      x: carryX + (moveX * speed + this.pendingShove.x) * dt,
       y: carryY + this.vy * dt,
-      z: carryZ + (moveZ * WALK_SPEED + this.pendingShove.z) * dt,
+      z: carryZ + (moveZ * speed + this.pendingShove.z) * dt,
     };
     this.decayShove(dt);
-    this.controller!.computeColliderMovement(this.collider, desired);
+    this.controller!.computeColliderMovement(this.collider, desired, undefined, KCC_FILTER_GROUPS);
     const m = this.controller!.computedMovement();
     const nx = tr.x + m.x;
     const ny = tr.y + m.y;
@@ -341,10 +390,21 @@ export class Pirate {
   idleTick(dt: number): void {
     this.attackTimer = Math.max(this.attackTimer - dt, 0);
     this.kickTimer = Math.max(this.kickTimer - dt, 0);
+    this.tickStamina(dt, false);
     this.setAnim("idle");
     this.rig?.update(dt);
-    if (this.atHelm) this.helmPose();
+    if (this.atHelm) this.captureArmBase();
     if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
+  }
+
+  private tickStamina(dt: number, draining: boolean): void {
+    if (draining) {
+      this.stamina = Math.max(this.stamina - STAMINA_DRAIN * dt, 0);
+      this.regenCd = REGEN_DELAY;
+    } else {
+      this.regenCd = Math.max(this.regenCd - dt, 0);
+      if (this.regenCd <= 0) this.stamina = Math.min(this.stamina + STAMINA_REGEN * dt, 1);
+    }
   }
 
   private decayShove(dt: number): void {

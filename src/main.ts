@@ -13,7 +13,7 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
-import { muzzleWorld, velocityAtPoint } from "./game/gunnery";
+import { muzzleWorld } from "./game/gunnery";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -24,7 +24,9 @@ async function main() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.85;
+  // 1.0 + the stronger hemisphere fill: shade reads as shade, not a void
+  // (round 7: "anything that's not in direct sunlight is completely pitch black")
+  renderer.toneMappingExposure = 1.0;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.localClippingEnabled = true;
@@ -191,7 +193,7 @@ async function main() {
     // one action button (round 6): LMB fires the broadside while RMB-aiming
     // — from the wheel, the deck, first or third person, all identically —
     // and swings the sword on foot otherwise
-    const mv = onFoot ? controls.footMove() : { x: 0, z: 0, jump: false };
+    const mv = onFoot ? controls.footMove() : { x: 0, z: 0, jump: false, sprint: false };
     let slash = false;
     if (controls.lmbPressed) {
       controls.lmbPressed = false;
@@ -208,7 +210,13 @@ async function main() {
       controls.kickPressed = false;
       kick = onFoot;
     }
-    boarding.update(dt, t, waves, { moveX: mv.x, moveZ: mv.z, jump: mv.jump, slash, kick, interact }, onFoot);
+    boarding.update(
+      dt,
+      t,
+      waves,
+      { moveX: mv.x, moveZ: mv.z, jump: mv.jump, sprint: mv.sprint, slash, kick, interact },
+      onFoot,
+    );
 
     // pin the captain to the wheel while steering
     if (atWheel && boarding.player) {
@@ -487,7 +495,6 @@ async function main() {
   }
 
   const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
-  const arcVel = new THREE.Vector3();
   function updateAimArc(): void {
     // the WHOLE broadside, wherever you stand — looking across a side while
     // holding RMB lays every gun on it (playtest round 6: "regardless of
@@ -508,11 +515,12 @@ async function main() {
         continue;
       }
       arc.line.visible = true;
-      // arc starts at the barrel TIP and follows the true firing solution —
-      // including the ship's own velocity at the muzzle, like the real shot
+      // arc starts at the barrel TIP and runs barrel-true. Inherited ship
+      // velocity is OUT of both the prediction and the ball (round 7, third
+      // strike: the physically-honest lead read as "veers much further right
+      // than the gun actually shoots" — the line now shows exactly the bore)
       muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
-      velocityAtPoint(sloop, arcMuzzle.pos, arcVel);
-      const v = arcMuzzle.dir.clone().multiplyScalar(55).add(arcVel);
+      const v = arcMuzzle.dir.clone().multiplyScalar(55);
       const p = arcMuzzle.pos.clone();
       const step = 0.06;
       for (let i = 0; i < ARC_PTS; i++) {
@@ -571,6 +579,10 @@ async function main() {
     feedWake(0, sloop);
     feedWake(1, enemy);
     effects.update(dt);
+    // helm pose rides on top of the final mixer state, once per frame —
+    // re-posing per fixed step stacked offsets ("arm absolutely spasming")
+    boarding.player?.postPose();
+    controls.aimSideSign = aimSide(); // traverse input is screen-relative
     updateAimArc();
     sloopVisual.animate(
       world.simTime,
@@ -606,8 +618,8 @@ async function main() {
       controls.updateCamera(camera, new THREE.Vector3(c0.x, c0.y + Math.max(deckLift, 2.5), c0.z));
     }
 
-    // spyglass zoom (Q)
-    const targetFov = controls.spyglass ? 16 : 60;
+    // spyglass zoom (Q) — wheel works the draw-tube while it's up
+    const targetFov = controls.spyglass ? controls.spyFov : 60;
     if (Math.abs(camera.fov - targetFov) > 0.1) {
       camera.fov += (targetFov - camera.fov) * 0.18;
       camera.updateProjectionMatrix();

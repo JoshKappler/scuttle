@@ -102,11 +102,16 @@ export class Ship {
       );
     this.body = world.createRigidBody(desc);
 
-    // coarse hull collider (cannonballs & ship contact); zero density —
-    // mass comes from the voxel grid above
+    // coarse hull collider for SHIP-SHIP contact only; zero density — mass
+    // comes from the voxel grid above. Collision group 0x0002 keeps it OUT
+    // of the character controller's world: its flat top stood 1.1 m proud
+    // of the brig's waist deck, and a jump landed you ON it — "able to
+    // levitate a meter or two off the ground and walk on air" (round 7).
+    // Characters walk the deck trimesh; ships and debris still hit this box.
     const collider = R.ColliderDesc.cuboid(l / 2, (h * 0.7) / 2, w / 2)
       .setTranslation(l / 2, (h * 0.7) / 2, w / 2)
-      .setDensity(0);
+      .setDensity(0)
+      .setCollisionGroups(0x0002ffff);
     world.createCollider(collider, this.body);
 
     // the mast is solid — you should not be able to walk through it

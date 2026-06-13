@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { G, VOXEL_SIZE } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
-import { muzzleWorld, velocityAtPoint, type MuzzleOut } from "./gunnery";
+import { muzzleWorld, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
 
 /**
@@ -78,7 +78,6 @@ export class Cannons {
 
   private tmpV = new THREE.Vector3();
   private tmpDir = new THREE.Vector3();
-  private tmpVel = new THREE.Vector3();
   private tmpMuzzle: MuzzleOut = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
 
   constructor(
@@ -132,10 +131,11 @@ export class Cannons {
       if (shot.delay > 0) continue;
       this.pendingShots.splice(s, 1);
       // the ball leaves the actual barrel tip, along the actual barrel axis,
-      // CARRYING the ship's velocity at the muzzle (linear + rotational)
+      // BARREL-TRUE: no inherited ship velocity. Physically honest carry
+      // tilted every shot off the visible bore at speed, and three playtests
+      // running read it as broken aim (round 7). Arcade beats Newton here.
       const m = muzzleWorld(shot.owner, shot.portIndex, shot.elevation, shot.traverse, this.tmpMuzzle);
-      velocityAtPoint(shot.owner, m.pos, this.tmpVel);
-      this.launch(m.pos, m.dir, this.tmpVel);
+      this.launch(m.pos, m.dir);
       this.effects.muzzleSmoke(m.pos, m.dir);
     }
 
@@ -185,14 +185,14 @@ export class Cannons {
     }
   }
 
-  private launch(pos: THREE.Vector3, dir: THREE.Vector3, baseVel: THREE.Vector3): void {
+  private launch(pos: THREE.Vector3, dir: THREE.Vector3): void {
     const b = this.balls.find((x) => !x.alive);
     if (!b) return;
     b.alive = true;
     b.age = 0;
     b.pos.copy(pos);
     b.prev.copy(pos);
-    b.vel.copy(dir).multiplyScalar(MUZZLE_SPEED).add(baseVel);
+    b.vel.copy(dir).multiplyScalar(MUZZLE_SPEED);
     b.mesh.visible = true;
     b.mesh.position.copy(pos);
   }

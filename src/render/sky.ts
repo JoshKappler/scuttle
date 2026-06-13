@@ -44,7 +44,9 @@ export function createSky(): SkySetup {
   sunLight.shadow.camera.bottom = -ext;
   sunLight.shadow.bias = -0.0005;
 
-  const fillLight = new THREE.HemisphereLight(0xbfd8e2, 0x0a3340, 0.55);
+  // sky bounce carries the shade: at 0.55 anything out of the sun read as
+  // pitch black (round 7) — real overcast-side light is a big soft source
+  const fillLight = new THREE.HemisphereLight(0xbfd8e2, 0x1c3a44, 0.95);
 
   return {
     sky,

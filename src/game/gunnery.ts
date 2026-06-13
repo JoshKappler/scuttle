@@ -9,17 +9,32 @@ import type { Ship } from "./ship";
  * genuinely leaves it (playtest round 4: "the trajectory line is originating
  * from the base of the cannon instead of from the end of the barrel").
  */
-export const BARREL_PIVOT_UP = 0.62; // pivot origin above the deck surface
-export const BARREL_INBOARD = 2.6; // voxels the carriage sits inboard of the port cell
+// Whole-gun scale: round 7 sized the battery up ("a bit smaller than I think
+// they would be in real life") — the visual scales its gun group by this and
+// the firing solution scales the same offsets, so they can never drift apart.
+export const GUN_SCALE = 1.25;
 
-// The gun's true geometry — gunnery owns these numbers and the procedural
-// gun model in shipVisual is BUILT from them, so the visible bore is the
+export const BARREL_INBOARD = 2.6; // voxels the carriage sits inboard of the port cell
+/** Extra meters inboard of that: round 7 had the carriage so far outboard
+ *  "their front wheels are actually off of the ship". */
+export const GUN_INBOARD_M = 0.2;
+
+// The gun's true geometry IN ITS OWN MODEL SPACE — gunnery owns these
+// numbers and the procedural gun model in shipVisual is BUILT from them
+// (then scaled by GUN_SCALE as one group), so the visible bore is the
 // firing solution by construction (playtest round 6: the CC0 prop was one
 // merged mesh with ~37° of elevation baked in; its preview line "isn't
 // facing with where the cannon itself appears to be pointing").
-export const BORE_UP = -0.1; // bore height above the pivot origin (0.52 above deck)
-export const TRUNNION_OUT = 0.45; // pivot origin → trunnion, along the level bore
-export const TIP_FROM_TRUNNION = 1.32; // trunnion → muzzle face
+export const BORE_UP_B = -0.1; // bore height above the pivot origin
+export const TRUNNION_OUT_B = 0.45; // pivot origin → trunnion, along the level bore
+export const TIP_FROM_TRUNNION_B = 1.32; // trunnion → muzzle face
+export const BARREL_PIVOT_UP_B = 0.62; // pivot origin above the deck surface
+
+// …and the same offsets in SHIP space (scaled) — the muzzle math uses these
+export const BORE_UP = BORE_UP_B * GUN_SCALE;
+export const TRUNNION_OUT = TRUNNION_OUT_B * GUN_SCALE;
+export const TIP_FROM_TRUNNION = TIP_FROM_TRUNNION_B * GUN_SCALE;
+export const BARREL_PIVOT_UP = BARREL_PIVOT_UP_B * GUN_SCALE;
 
 export interface MuzzleOut {
   pos: THREE.Vector3;
@@ -51,7 +66,7 @@ export function pivotLocal(ship: Ship, portIndex: number, out: THREE.Vector3): T
   return out.set(
     (port.x + 0.5) * VOXEL_SIZE,
     (ship.build.deckY + 1) * VOXEL_SIZE + BARREL_PIVOT_UP,
-    (port.z + 0.5 - port.side * BARREL_INBOARD) * VOXEL_SIZE + port.side * 0.2,
+    (port.z + 0.5 - port.side * BARREL_INBOARD) * VOXEL_SIZE - port.side * GUN_INBOARD_M,
   );
 }
 

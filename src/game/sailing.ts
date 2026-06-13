@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { turnHeelTorque } from "../sim/heel";
 import type { Ship } from "./ship";
 
 /**
@@ -98,10 +99,24 @@ export class SailingController {
       }
     }
 
+    // turn heel: lateral G (v·ω) reacts on the mass above the keel's grip
+    // and rolls her OUTWARD, like a car body on springs — speed and rudder
+    // together now produce the lean, not the wind alone (round 7: "the
+    // leaning feels pretty random and not based in anything the ship is
+    // actually doing")
+    if (ship.submergedFrac > 0.02) {
+      const om = body.angvel();
+      const heelT = turnHeelTorque(this.speed, om.y, mass, SailingController.TURN_HEEL_ARM);
+      body.addTorque({ x: fwd.x * heelT, y: 0, z: fwd.z * heelT }, true);
+    }
+
     // rudder: yaw torque scales with water flow over it, with a generous
     // low-speed floor so you can always work the bow off the wind
     const flow = Math.sign(this.speed || 1) * (1.5 + Math.abs(this.speed));
     const yaw = this.rudder * flow * mass * 0.5;
     body.addTorque({ x: 0, y: yaw, z: 0 }, true);
   }
+
+  /** COM height above the keel's lateral-force center (m) — heel tuning. */
+  static TURN_HEEL_ARM = 3.0;
 }
