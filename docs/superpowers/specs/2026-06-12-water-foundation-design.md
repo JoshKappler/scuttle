@@ -35,10 +35,13 @@ an **additive modification on top of the existing engine**, not a rewrite.
 
 ## 2. Constraints (non-negotiable)
 
-1. **Physics is untouched.** Buoyancy, flooding, trim, handling, and AI keep
-   reading the existing CPU analytic wave field (`surfaceHeight`,
-   `physicsWaves`, λ≥14 m swell). No physics rework, no rebalance, no re-tune as
-   a consequence of this work.
+1. **The physics engine is untouched.** Buoyancy, flooding, trim, handling, and
+   AI keep reading the existing CPU analytic wave field (`surfaceHeight`,
+   `physicsWaves`, λ≥14 m swell) — no rewrite of the force/buoyancy code. The
+   only deliberate *content* tunes are the one-time draft re-ballast and the
+   added crossing-swell directions; both are re-verified against the existing
+   stability/float tests, and the FFT chop (band-limited <14 m) cannot affect
+   physics at all.
 2. **Portable WebGL2 → WebGPU later** with no engine rework. The FFT lives behind
    a narrow interface; swapping backends replaces one module.
 3. **The ship stays welded to the waves it visibly floats on.** Guaranteed by
@@ -209,8 +212,12 @@ When we package for Steam and want compute-driven extras:
 ## 11. Testing & success criteria
 
 **Tests:** keep 105 unit tests green; `tsc` clean. Add CPU-side unit tests for
-any new pure math (spectrum generation, dispersion, band-limit cutoff). Assert
-`physicsWaves` output is byte-for-byte unchanged. Visual verification via the
+any new pure math (FFT, spectrum generation, dispersion, band-limit cutoff). The
+physics invariant is **the physics code is untouched and `physicsWaves` still
+returns the ≥14 m swell subset carrying ≥80% of the sea's height** — not that the
+wave values are byte-for-byte identical (the crossing-swell change deliberately
+alters wave content, which buoyancy transparently follows). Re-verify
+float/stability tests stay green after that change. Visual verification via the
 existing Playwright screenshot harness.
 
 **Success = the user's complaints, resolved:**
