@@ -99,7 +99,29 @@ so the right behavior emerges). Research real-world specs (yacht weight distn, h
 - Camera for judging (via DEBUG.controls): orbitYaw/orbitPitch/dist are settable; sailSet via
   DEBUG.sailing.sailSet, rudder DEBUG.sailing.rudder. Broadside = orbitYaw = heading ± π/2.
 
+## PROGRESS (checkboxes)
+- [x] WATER: camo foam removed + chop slowed (commit f99fc9b, PUSHED). Verified: camo gone from
+      all angles, water clean like ref. Chop amp 110→140, cutoff 6→8.5m, choppiness 2.7→2.2,
+      foam=Jacobian-fold-only + high-freq detail erosion. Motion ("vibrating") to be judged live.
+- [x] BUOYANCY: ride higher, ref-like freeboard (commit a9110ab). Dropped by+8 ballast course →
+      draft 0.54→0.45, mass 689→574t, COM 2.30→2.14 (stiffer). Stable, no flood/capsize. draft.test
+      band updated 0.4-0.5.
+- [ ] GAMEPLAY (b) remove enemy crew (clearest — do first)
+- [ ] GAMEPLAY (a) sink ≠ permanent game-over → swim/board (CharacterSpike + boarding exist)
+- [ ] GAMEPLAY (c) first-person arms always in frame holding selected tool
+- [ ] VOXEL roadmap (collision, masts/sails, in-hull fluid, ramming) — brainstorm/spec/plan, careful
+
+## HARNESS LESSON (important)
+- DO NOT zero a ship's linvel/angvel each tick to "stop" it for a screenshot — it destabilizes the
+  buoyancy integrator and SINKS her (false alarm). To judge resting state: set DEBUG.sailing.sailSet=0
+  ONCE and let her coast, or just observe passively. submergedFrac is a NOISY per-frame read (swings
+  0.3-0.8); trust expectedSubmergedFrac() (= equilibrium = avg density) for the real draft.
+- Screenshots save to projects/<name>.png (project ROOT), Read from there. Camera via DEBUG.controls
+  .orbitYaw/orbitPitch/dist; broadside = heading ± π/2; heading from body quat applied to +X.
+
 ## LOG (newest first)
+- 2026-06-13 — WATER + BUOYANCY both shipped & verified in-browser (commits f99fc9b pushed, a9110ab).
+  Two loudest complaints addressed. Moving to gameplay patches (crew removal first).
 - 2026-06-13 — Diagnosed buoyancy in-browser (above). Resting freeboard is actually healthy; the
   under-way burying is visual pile-up + slightly-deep 0.54 draft. Moving to WATER fixes first
   (foam camo + vibrating chop = louder complaint), then buoyancy mass + collar. Both research

@@ -162,6 +162,10 @@ async function main() {
 
   let gameOver = false;
   let manOverboard = false;
+  let abandonShip = false; // player's ship is lost — swim-for-it grace, not instant death
+  let abandonAt = 0; // sim time the player's ship went under
+  let enemyScuttled = false; // enemy went down — non-terminal, salvage and sail on
+  const ABANDON_GRACE = 35; // s adrift before "lost at sea"
   let plugChannel = 0; // seconds remaining on the current plank repair
 
   const isSunk = (s: Ship) =>
@@ -314,11 +318,27 @@ async function main() {
     if (!gameOver) {
       if (boarding.chestBanked && boarding.enemiesLeft() === 0) {
         endGame("PRIZE TAKEN", `gold banked: ${boarding.gold} — a proper pirate's day`);
-      } else if (isSunk(enemy)) {
+      } else if (isSunk(enemy) && !enemyScuttled) {
+        // the enemy going down is NOT the end any more ("it's not supposed to be
+        // that night and day … once the opponent's ship sinks" — playtest). Salvage
+        // what floats and sail on; the run continues instead of slamming to a banner.
+        enemyScuttled = true;
         boarding.gold += 150; // flotsam — most of it went down with her
-        endGame("PRIZE SUNK", `the sea takes most of her gold — salvaged ${boarding.gold}`);
+        boarding.message = `SHE'S SCUTTLED — salvaged ${boarding.gold}g from the flotsam. Sail on.`;
       } else if (isSunk(sloop)) {
-        endGame("SHE'S GONE", "your gold sinks with her");
+        // your ship going down is NOT an instant game-over either ("I'm supposed to
+        // be able to attempt to climb into the other ship or swim to shore"). You go
+        // over the side and swim for it; only truly lost after drifting too long.
+        if (!abandonShip) {
+          abandonShip = true;
+          abandonAt = t;
+        }
+        const left = Math.ceil(ABANDON_GRACE - (t - abandonAt));
+        if (left > 0) {
+          boarding.message = `ABANDON SHIP — swim clear and make for safety! (${left}s)`;
+        } else {
+          endGame("LOST AT SEA", "no ship, no rescue — the deep takes you");
+        }
       }
     }
   };

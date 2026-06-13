@@ -85,12 +85,13 @@ export class BoardingSystem {
     if (this.crewSpawned || simTime < 1.5) return;
     this.crewSpawned = true;
     const dt = this.deckTop(this.enemyShip);
-    const posts: [number, number, number][] = [
-      [10, dt, 4],
-      [14, dt, 3.2],
-      [17, dt, 4.8],
-      [12, dt, 5.2],
-    ];
+    // Enemy crew REMOVED for now (overnight): at close range their AI bailed over
+    // the side into the sea, where you'd simply outrun them ("that's broken … we
+    // can do away with even having crew on these other ships for now" — playtest).
+    // Empty post list = no boarders spawn; the prize chest still waits on the enemy
+    // quarterdeck so boarding is an unopposed grab. Restore these four posts when
+    // crew return as part of the voxel/boarding overhaul.
+    const posts: [number, number, number][] = [];
     const looks = ["henry", "mako", "sharky", "anne"] as const;
     posts.forEach((p, i) => {
       const pirate = new Pirate(this.phys, this.scene, this.enemyShip, "enemy", p, 0x4a2330, 0x802020, looks[i % looks.length]);
