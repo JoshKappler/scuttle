@@ -17,9 +17,6 @@ const COOLDOWN = 1.2; // s between bites for a grinding pair
 const SAMPLES = 20; // perimeter points tested per hull
 
 export class Ramming {
-  /** Called on impact with the closing speed (m/s) — for toasts/sounds. */
-  onRam?: (speed: number) => void;
-
   private cooldown = 0;
   private tmpW = new THREE.Vector3();
   private tmpL = new THREE.Vector3();
@@ -74,7 +71,6 @@ export class Ramming {
     this.effects.splinters(contact, n);
     this.effects.splinters(contact, n.negate());
     this.effects.splash(contact.x, contact.y - 1, contact.z, 1.5);
-    this.onRam?.(closing);
     return true;
   }
 

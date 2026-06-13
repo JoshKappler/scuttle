@@ -114,11 +114,11 @@ async function main() {
     boarding.message = hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!";
   };
 
-  // hull-on-hull: meeting with way on carves BOTH ships (round 7)
+  // hull-on-hull: meeting with way on carves voxels out of BOTH ships at the
+  // contact point (round 7). No toast, no scripted "ramming event" — it's just
+  // timber coming off where two hulls grind together (round 9: "voxel based
+  // and dynamic … we don't really need any mechanical logic or an alert").
   const ramming = new Ramming(effects);
-  ramming.onRam = (speed) => {
-    boarding.message = speed > 7 ? "TIMBERS SHATTER — RAMMED!" : "hulls grind and crack!";
-  };
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
   // Steering only happens at the wheel (E to take/leave it); V toggles
   // first person. Third person keeps a bird's-eye orbit on the ship.
@@ -682,8 +682,12 @@ async function main() {
     st.imm = imm;
     const v = ship.body.linvel();
     const spd = Math.hypot(v.x, v.z);
-    if (imm > 0 && rate > 0.9 && spd > 2.5 && st.cd <= 0 && ship.submergedFrac < 0.5) {
-      st.cd = 0.24;
+    // fire when the cutwater drives into the sea — from forward way OR from the
+    // hull crashing back down off a crest (round 9: "the boat crashing down
+    // over a wave to cause a real splash"). `rate` folds in both: the surface
+    // rising and the stem dropping, so a hard slam triggers even at rest.
+    if (imm > 0 && rate > 1.2 && (spd > 2.0 || rate > 2.4) && st.cd <= 0 && ship.submergedFrac < 0.5) {
+      st.cd = 0.2;
       const rot = ship.body.rotation();
       sprayQ.set(rot.x, rot.y, rot.z, rot.w);
       sprayF.set(1, 0, 0).applyQuaternion(sprayQ);
@@ -693,7 +697,7 @@ async function main() {
         sprayP.z,
         sprayF.x,
         sprayF.z,
-        Math.min(0.6 + rate * 0.35 + spd * 0.06, 2.2),
+        Math.min(0.7 + rate * 0.5 + spd * 0.06, 3.0),
       );
     }
   };

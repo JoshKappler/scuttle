@@ -478,9 +478,18 @@ export class Ship {
       const vL = v.x * lat.x + v.z * lat.z;
       const vY = v.y;
 
+      // "in the water at all" — a healthy hull only sinks ~20% of its ENVELOPE,
+      // so gating drag on raw `sub` throttles it to nothing. The angular terms
+      // were fixed to use `wet` back in round 4; HEAVE was missed, leaving the
+      // buoyancy spring ~6× under-damped — she resonated and bobbed clean out
+      // of the sea on a modest swell (round 9). `wet` saturates the instant
+      // she's afloat, so heave is now near-critically damped: she rides the
+      // swell and settles instead of porpoising.
+      const wet = Math.min(sub * 5, 1);
+
       const fF = -mass * 0.04 * (1 + 0.08 * Math.abs(vF)) * vF * sub;
       const fL = -mass * 1.7 * vL * sub;
-      const fY = -mass * 2.0 * vY * sub;
+      const fY = -mass * 4.5 * vY * wet;
 
       // forward + heave drag at the COM. LATERAL resistance belongs to the
       // keel, and the keel is DEEP — applying it all below the COM is what
@@ -497,10 +506,8 @@ export class Ship {
 
       // angular damping decomposed in the SHIP frame: pitch is damped
       // hardest — a real hull's waterplane kills porpoising almost dead.
-      // Gated on "is she in the water at all" (wet), NOT submergedFrac:
-      // a healthy ship draws ~0.2 of her envelope, which silently throttled
-      // the damping to nothing (playtest round 4).
-      const wet = Math.min(sub * 5, 1);
+      // (`wet` computed above — gated on "is she in the water at all", not
+      // submergedFrac, which a healthy hull keeps near 0.2.)
       const om = body.angvel();
       const [ix, iy, iz] = this.inertia;
       const fx = fwd.x;

@@ -50,10 +50,16 @@ export function makeWaves(rng: Rng, count = 16): Wave[] {
     // long swell marches with the wind; chop scatters across it
     const spreadHalf = 0.16 + 0.85 * f * f;
     const angle = primary + rng.range(-spreadHalf, spreadHalf);
+    // chop: lift the SHORT components (λ < the physics cutoff, which the hull
+    // never feels) so the sea reads as wind chop riding the swell rather than
+    // long rolling waves (round 9: "I wanted … chop instead of just long,
+    // rolling waves"). Tapers to 0 at the swell cutoff, so physicsWaves and
+    // the ship's motion are completely untouched.
+    const chop = 0.06 * Math.max(0, (PHYSICS_MIN_WAVELENGTH - wavelength) / PHYSICS_MIN_WAVELENGTH);
     waves.push({
       dirX: Math.cos(angle),
       dirZ: Math.sin(angle),
-      amplitude: SWELL_AMP * Math.pow(wavelength / L_MAX, AMP_FALLOFF),
+      amplitude: SWELL_AMP * Math.pow(wavelength / L_MAX, AMP_FALLOFF) + chop,
       wavelength,
       steepness: 0, // filled below under the sharpness budget
       phaseSpeed: 0, // filled below from dispersion

@@ -108,9 +108,10 @@ export class ShipVisual {
             } else {
               tex = texture2D(uHullTex, vShipLocal.zy * 0.22).rgb; // bow/stern
             }
-            // modulate AROUND 1 so the photo adds plank detail without
-            // crushing the base tint to black (first attempt did exactly that)
-            diffuseColor.rgb *= 0.55 + tex * 1.5;
+            // modulate AROUND the tint so the photo adds plank GRAIN without
+            // lifting the overall tone — round 8's 0.55+tex*1.5 read as light
+            // birch (round 9: "darker wood of a real pirate ship")
+            diffuseColor.rgb *= 0.4 + tex * 1.05;
           }`,
         );
     };
@@ -346,7 +347,9 @@ export class ShipVisual {
     const rigTex = wood.hull.clone();
     rigTex.repeat.set(1, 4);
     rigTex.needsUpdate = true;
-    const woodMat = new THREE.MeshStandardMaterial({ map: rigTex, color: 0xb89878, roughness: 0.85 });
+    // dark weathered oak for every spar, carriage, rudder, ladder and wheel —
+    // 0xb89878 was a pale tan that read birch next to the hull (round 9)
+    const woodMat = new THREE.MeshStandardMaterial({ map: rigTex, color: 0x5a4128, roughness: 0.85 });
     const sailTex = new THREE.TextureLoader().load("/assets/textures/sail.jpg", (t) => {
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.colorSpace = THREE.SRGBColorSpace;
@@ -376,8 +379,15 @@ export class ShipVisual {
             // Geometry is pre-rotated: +x is FORWARD, away from the mast.
             // aBelly carries each sail's own depth (∝ its width) — a flat
             // 1 m bulge on a 15 m course read as paper (round 6.5)
-            float belly = sin(uv.y * 3.14159) * (0.35 + 0.65 * sin(uv.x * 3.14159)) * aBelly * uFill;
-            float flutter = sin(uTime * 4.6 + uv.x * 8.0 + uv.y * 5.0) * (0.04 + aBelly * 0.03) * uFill;
+            // sin(uv.y·π) is 0 at each yard: BOTH the belly and the flutter
+            // vanish where the cloth is laced to the spar, so the head and
+            // foot stay welded to the wood while the body breathes. Round 8's
+            // flutter had no such envelope — the laced edges floated off the
+            // yards and snapped back ("warbles … parts that are supposed to be
+            // attached to the wood float away and then return", round 9).
+            float yardPin = sin(uv.y * 3.14159);
+            float belly = yardPin * (0.35 + 0.65 * sin(uv.x * 3.14159)) * aBelly * uFill;
+            float flutter = sin(uTime * 4.6 + uv.x * 8.0 + uv.y * 5.0) * (0.04 + aBelly * 0.03) * uFill * yardPin;
             transformed.x += belly + flutter;
           }`,
         );
@@ -501,9 +511,38 @@ export class ShipVisual {
     const bladeW = 0.9 + this.build.lengthM * 0.022; // chord grows with the ship
     this.rudderPivot = new THREE.Group();
     this.rudderPivot.position.set(sternX + 0.1, 1.8, (this.build.grid.dims[2] / 2) * VOXEL_SIZE);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(bladeW, bladeH, 0.17), woodMat);
+    // a real blade, not a plank: rounded-rectangle profile extruded across the
+    // thickness, corners arced and edges beveled (round 9: "the rudder should
+    // have slightly curved corners and edges, not just a big plank of wood")
+    const makeBlade = (w: number, h: number, thick: number): THREE.BufferGeometry => {
+      const r = Math.min(w, h) * 0.24; // corner radius
+      const x = -w / 2;
+      const y = -h / 2;
+      const sh = new THREE.Shape();
+      sh.moveTo(x + r, y);
+      sh.lineTo(x + w - r, y);
+      sh.quadraticCurveTo(x + w, y, x + w, y + r);
+      sh.lineTo(x + w, y + h - r);
+      sh.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      sh.lineTo(x + r, y + h);
+      sh.quadraticCurveTo(x, y + h, x, y + h - r);
+      sh.lineTo(x, y + r);
+      sh.quadraticCurveTo(x, y, x + r, y);
+      const g = new THREE.ExtrudeGeometry(sh, {
+        depth: thick,
+        bevelEnabled: true,
+        bevelThickness: 0.04,
+        bevelSize: 0.04,
+        bevelSegments: 2,
+        steps: 1,
+        curveSegments: 8,
+      });
+      g.translate(0, 0, -thick / 2); // center the slab on z
+      return g;
+    };
+    const blade = new THREE.Mesh(makeBlade(bladeW, bladeH, 0.17), woodMat);
     blade.position.set(-bladeW / 2 - 0.05, bladeH / 2 - 2.4, 0);
-    const heel = new THREE.Mesh(new THREE.BoxGeometry(bladeW + 0.6, 1.25, 0.17), woodMat);
+    const heel = new THREE.Mesh(makeBlade(bladeW + 0.6, 1.25, 0.17), woodMat);
     heel.position.set(-bladeW / 2 - 0.28, -1.7, 0);
     this.rudderPivot.add(blade, heel);
     this.rudderBlade = blade;
@@ -570,7 +609,10 @@ export class ShipVisual {
     for (const port of this.build.cannonPorts) {
       const px = (port.x + 0.5) * VOXEL_SIZE;
       const py = (this.build.deckY + 1) * VOXEL_SIZE;
-      const pz = (port.z + 0.5 - port.side * 2.6) * VOXEL_SIZE;
+      // seat the carriage inboard of the embrasure cell — 2.6 left the trucks
+      // overhanging the tumblehome edge (round 9: "still too far … hanging off
+      // the edge"); 3.4 plants all four wheels on deck planking
+      const pz = (port.z + 0.5 - port.side * 3.4) * VOXEL_SIZE;
       const pivot = new THREE.Group();
       pivot.rotation.order = "YXZ"; // yaw to the side, then elevate — never rolls
       // pivot height + inboard offset mirror pivotLocal() in gunnery exactly;
@@ -612,7 +654,10 @@ export class ShipVisual {
     const ladder = new THREE.Group();
     const ladderTop = (this.build.deckYAt(4) + 5) * VOXEL_SIZE; // stern cap-rail height
     const ladderBot = 1.0; // dips under the waterline
-    const lz = (this.build.grid.dims[2] / 2) * VOXEL_SIZE;
+    // OFFSET to port of the centerline: dead astern the rungs ran straight
+    // through the rudder blade (round 9: "the ladder goes right through the
+    // rudder, and should be moved to the left"). 1.1 m clears it cleanly.
+    const lz = (this.build.grid.dims[2] / 2 - 4.4) * VOXEL_SIZE;
     const railGeo = new THREE.CylinderGeometry(0.035, 0.035, ladderTop - ladderBot, 6);
     for (const s of [-1, 1]) {
       const rail = new THREE.Mesh(railGeo, woodMat);

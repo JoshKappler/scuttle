@@ -149,26 +149,37 @@ void main() {
     crest += (s * 0.5 + 0.5) * amp;
   }
 
-  // bow wave: the stem physically shoulders water aside — a mound right at
-  // the cutting point that spills into a raised ridge running down the
-  // forward flanks, which the fragment stage froths and rolls into the wake
-  // (round 6.5, beefed up in round 8 now the mesh actually resolves it:
-  // "I would love to see the front of the ship actually pushing up and
-  // bulging the water")
+  // the hull's effect on the sea: a STANDING displacement collar at all times
+  // (round 9: "real boats have an effect on the water … make it bulge as it
+  // displaces it"), plus the speed-driven bow wave on top.
   for (int s2 = 0; s2 < 2; s2++) {
+    float hL = uShipB[s2].y;
+    if (hL < 0.5) continue; // unused/uninitialised slot
+    float hB = uShipB[s2].z;
     float spd = uShipB[s2].x;
-    if (spd < 1.0) continue;
     vec2 bow = uShipA[s2].xy;
     vec2 f2 = uShipA[s2].zw;
-    float hL = uShipB[s2].y;
-    float hB = uShipB[s2].z;
     vec2 rel = p.xz - (bow - f2 * hL); // from hull center
     float along = dot(rel, f2);
     float across = dot(rel, vec2(-f2.y, f2.x));
+
+    // displacement collar: rr = 1 at the waterline-ellipse edge; the sea
+    // mounds in a ridge just OUTSIDE it (inside is discarded as the dry hull)
+    // and falls away both directions — the water the hull shoves aside has to
+    // pile up somewhere, moving or not.
+    float rr = sqrt((along / hL) * (along / hL) + (across / hB) * (across / hB));
+    float collar = exp(-pow((rr - 1.08) / 0.17, 2.0));
+    p.y += collar * 0.22;
+    crest += collar * 0.18;
+
+    // bow wave: the stem physically shoulders water aside — a mound at the
+    // cutting point spilling into a ridge down the forward flanks, which the
+    // fragment stage froths into the wake (round 6.5, beefed up round 8:
+    // "the front of the ship actually pushing up and bulging the water")
+    if (spd < 1.0) continue;
     float sF = clamp(spd / 8.0, 0.0, 1.2);
     float bd2 = dot(p.xz - bow, p.xz - bow);
     p.y += sF * 1.05 * exp(-bd2 / 5.5);
-    // flank ridge: strongest just abaft the stem, fading toward midship
     float ridge = exp(-pow((abs(across) - (hB + 0.4)) / 1.5, 2.0));
     float span = smoothstep(-hL * 0.35, hL * 0.55, along) * (1.0 - smoothstep(hL * 0.8, hL * 1.1, along));
     p.y += sF * 0.5 * ridge * span;
@@ -235,8 +246,13 @@ void main() {
     vec2 f0 = uShipA[s0].zw;
     vec2 ctr = uShipA[s0].xy - f0 * uShipB[s0].y;
     vec2 rel0 = vWorldPos.xz - ctr;
-    float al0 = dot(rel0, f0) / max(uShipB[s0].y * 0.88, 0.1);
-    float ac0 = dot(rel0, vec2(-f0.y, f0.x)) / max(uShipB[s0].z * 0.62 * dry, 0.1);
+    // hug the true hull plan: 0.62·beam left the sea drawn over the outer
+    // third of the hull and 0.88·length left it over the bow/stern tips, so a
+    // pitching bow got "consumed" by the flat sheet (round 9). The ellipse now
+    // tracks the waterline outline — and, being purely in xz, it removes the
+    // sea over the hull no matter how she pitches or heaves.
+    float al0 = dot(rel0, f0) / max(uShipB[s0].y * 0.97, 0.1);
+    float ac0 = dot(rel0, vec2(-f0.y, f0.x)) / max(uShipB[s0].z * 0.92 * dry, 0.1);
     if (al0 * al0 + ac0 * ac0 < 1.0) discard;
   }
 
@@ -266,12 +282,18 @@ void main() {
   // sun glints scatter into sparkle instead of a solid stripe
   vec2 p1 = vWorldPos.xz * 1.6 + vec2(uTime * 0.35, uTime * 0.21);
   vec2 p2 = vWorldPos.xz * 4.7 - vec2(uTime * 0.27, uTime * 0.44);
+  vec2 p3 = vWorldPos.xz * 9.3 + vec2(uTime * -0.5, uTime * 0.33);
   float e = 0.35;
   float g1x = noise(p1 + vec2(e, 0.0)) - noise(p1 - vec2(e, 0.0));
   float g1z = noise(p1 + vec2(0.0, e)) - noise(p1 - vec2(0.0, e));
   float g2x = noise(p2 + vec2(e, 0.0)) - noise(p2 - vec2(e, 0.0));
   float g2z = noise(p2 + vec2(0.0, e)) - noise(p2 - vec2(0.0, e));
-  vec3 Nd = normalize(N + vec3(g1x * 0.45 + g2x * 0.25, 0.0, g1z * 0.45 + g2z * 0.25));
+  float g3x = noise(p3 + vec2(e, 0.0)) - noise(p3 - vec2(e, 0.0));
+  float g3z = noise(p3 + vec2(0.0, e)) - noise(p3 - vec2(0.0, e));
+  // round 9: more bite in the fine relief so the chop reads in the glints, not
+  // just a glassy swell
+  vec3 Nd = normalize(N + vec3(g1x * 0.6 + g2x * 0.4 + g3x * 0.22, 0.0,
+                               g1z * 0.6 + g2z * 0.4 + g3z * 0.22));
 
   // base water color: deeper where we look straight down, lighter at grazing
   float facing = max(dot(N, V), 0.0);

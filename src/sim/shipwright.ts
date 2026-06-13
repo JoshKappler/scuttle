@@ -211,8 +211,13 @@ export function buildSloop(): ShipBuild {
   for (const px of portXs) {
     const t = stationT(px);
     const hb = Math.round(sectionHalfBeam(t, deckY));
-    cannonPorts.push({ x: px, y: deckY + 1, z: Math.round(cz + hb), side: 1 });
-    cannonPorts.push({ x: px, y: deckY + 1, z: Math.round(cz - hb), side: -1 });
+    // floor/ceil split keeps the two ports SYMMETRIC about the true centerline:
+    // cz is a half-cell on an even beam, and round(cz±hb) biased BOTH batteries
+    // a half-cell to starboard — so the right guns hung a full cell further over
+    // the edge than the left ("right … hanging off the edge, the left … only
+    // slightly off", round 9). Now they mirror exactly.
+    cannonPorts.push({ x: px, y: deckY + 1, z: Math.floor(cz) + hb, side: 1 });
+    cannonPorts.push({ x: px, y: deckY + 1, z: Math.ceil(cz) - hb, side: -1 });
   }
 
   // single mast slightly forward of midship
@@ -467,8 +472,13 @@ export function buildBrig(): ShipBuild {
   for (const px of portXs) {
     const t = stationT(px);
     const hb = Math.round(sectionHalfBeam(t, deckY));
-    cannonPorts.push({ x: px, y: deckY + 1, z: Math.round(cz + hb), side: 1 });
-    cannonPorts.push({ x: px, y: deckY + 1, z: Math.round(cz - hb), side: -1 });
+    // floor/ceil split keeps the two ports SYMMETRIC about the true centerline:
+    // cz is a half-cell on an even beam, and round(cz±hb) biased BOTH batteries
+    // a half-cell to starboard — so the right guns hung a full cell further over
+    // the edge than the left ("right … hanging off the edge, the left … only
+    // slightly off", round 9). Now they mirror exactly.
+    cannonPorts.push({ x: px, y: deckY + 1, z: Math.floor(cz) + hb, side: 1 });
+    cannonPorts.push({ x: px, y: deckY + 1, z: Math.ceil(cz) - hb, side: -1 });
   }
 
   // brig rig: main mast forward of midship, fore mast toward the bow

@@ -19,8 +19,11 @@ export interface Material {
 // waterline at the widest belt of the egg section — roughly 40% of the
 // envelope volume submerged — so the shell carries real weight now
 // (still comfortably under seawater's 1000, so a dry hull always floats).
+// Round 9: "still a very light color compared to the darker wood of a real
+// pirate ship." Dropped ~35% darker than the round-8 oak — weathered, tarred
+// pirate planking, not honey birch. Still distinct from the near-black iron.
 export const MATERIALS: Record<number, Material> = {
-  [OAK]: { name: "oak", density: 430, color: [0.13, 0.085, 0.052], strength: 3 },
-  [PINE]: { name: "pine", density: 310, color: [0.21, 0.152, 0.095], strength: 2 },
+  [OAK]: { name: "oak", density: 430, color: [0.082, 0.05, 0.028], strength: 3 },
+  [PINE]: { name: "pine", density: 310, color: [0.135, 0.092, 0.052], strength: 2 },
   [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
 };
