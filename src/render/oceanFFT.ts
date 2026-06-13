@@ -318,8 +318,8 @@ export function createOceanFFT(renderer: THREE.WebGLRenderer, opts: OceanFieldOp
   const displacementRT = makeOutputRT(N); // RGB = Dx, height, Dz
   const dispScratchRT = makeOutputRT(N); // read-source while writing displacementRT
   const normalRT = makeOutputRT(N); // RGB = normal*0.5+0.5
-  const foamRT = makeOutputRT(N); // R = foam
-  const foamPrevRT = makeOutputRT(N); // ping-pong source for foam decay
+  const foamRT = makeOutputRT(N); // R = foam (STABLE: mesh samples this every frame)
+  const foamScratchRT = makeOutputRT(N); // read-source while writing foamRT (RMW)
 
   // --- passes ---------------------------------------------------------------
   const define = { NRES: N };
@@ -355,7 +355,7 @@ export function createOceanFFT(renderer: THREE.WebGLRenderer, opts: OceanFieldOp
 
   const foamPass = makePass(FOAM_FRAG, {
     uDisp: { value: displacementRT.texture },
-    uPrevFoam: { value: foamPrevRT.texture },
+    uPrevFoam: { value: foamScratchRT.texture },
     uN: { value: N },
     uL: { value: L },
   });
@@ -399,9 +399,6 @@ export function createOceanFFT(renderer: THREE.WebGLRenderer, opts: OceanFieldOp
     renderTo(dst, copyPass);
   }
 
-  let foamFront = foamRT;
-  let foamBack = foamPrevRT;
-
   function update(t: number): void {
     evoPass.mat.uniforms.uT.value = t;
 
@@ -413,12 +410,13 @@ export function createOceanFFT(renderer: THREE.WebGLRenderer, opts: OceanFieldOp
     // Normal from displacement central differences.
     renderTo(normalRT, normalPass);
 
-    // Foam: read previous (back), write front, then swap.
-    foamPass.mat.uniforms.uPrevFoam.value = foamBack.texture;
-    renderTo(foamFront, foamPass);
-    const swap = foamFront;
-    foamFront = foamBack;
-    foamBack = swap;
+    // Foam read-modify-write into ONE stable RT (mirrors the displacement RMW):
+    // copy current foam → scratch, read scratch, write foamRT. The mesh captured
+    // foamRT.texture once and samples that same stable reference every frame, so
+    // the foam no longer flickers at half rate from an alternating buffer.
+    blit(foamRT.texture, foamScratchRT); // copy current foam → scratch
+    foamPass.mat.uniforms.uPrevFoam.value = foamScratchRT.texture;
+    renderTo(foamRT, foamPass); // read scratch, write stable foamRT
 
     renderer.setRenderTarget(null);
   }
@@ -430,7 +428,7 @@ export function createOceanFFT(renderer: THREE.WebGLRenderer, opts: OceanFieldOp
     dispScratchRT.dispose();
     normalRT.dispose();
     foamRT.dispose();
-    foamPrevRT.dispose();
+    foamScratchRT.dispose();
     h0Tex.dispose();
     for (const p of [evoPass, rowPass, colPass, normalPass, foamPass, copyPass]) {
       p.mat.dispose();
@@ -450,9 +448,9 @@ export function createOceanFFT(renderer: THREE.WebGLRenderer, opts: OceanFieldOp
       return normalRT.texture;
     },
     get foam() {
-      // The accumulated foam lives in whichever RT we last wrote (foamBack
-      // after the swap inside update). Return that one.
-      return foamBack.texture;
+      // Foam lives in ONE stable RT now (read-modify-write via foamScratchRT),
+      // so this reference never alternates — the mesh samples it every frame.
+      return foamRT.texture;
     },
     tileSize: L,
     active: true,

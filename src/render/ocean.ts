@@ -381,6 +381,11 @@ void main() {
     float edge = abs(across) - (hB * taper + 0.2);
     float bandW = mix(0.5, hB * 0.9, devel);
     wash += sF * (0.3 + 0.7 * devel) * inHull * exp(-pow(max(edge, 0.0) / bandW, 2.0));
+
+    // waterline lace: a thin bright ring right at the hull skin (rr ≈ 1)
+    float rr = sqrt((along / hL) * (along / hL) + (across / hB) * (across / hB));
+    float ring = exp(-pow((rr - 1.0) / 0.06, 2.0));
+    wash += 0.5 * ring;
   }
   for (int i = 0; i < 63; i++) {
     if (i == 31) continue; // slot boundary: don't lace ship 0's tail to ship 1's head
