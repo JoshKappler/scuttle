@@ -51,13 +51,15 @@ function phillips(kx: number, kz: number, windSpeed: number, wDirX: number, wDir
   const kHat = [kx / Math.sqrt(k2), kz / Math.sqrt(k2)];
   const wDot = kHat[0] * wDirX + kHat[1] * wDirZ;
   const dir = 0.35 + 0.65 * wDot * wDot;
-  // Suppress the short ripples (< ~8.5 m). Spread over the whole 2–14 m band the
-  // chop read as buzzy "eggshell" that shimmered fast in place — "so small and so
-  // violently fast it makes the whole ocean look like it's vibrating" (playtest).
-  // Concentrating it in the 8.5–14 m sub-band makes the chop spaced-out and
-  // slower-moving (lower frequencies disperse slower per ω=√(gk)), so it reads as
-  // small swell that crashes into sharp peaks rather than sandpaper.
-  const kCut = (2 * Math.PI) / 8.5; // cutoff wavenumber ≈ 8.5 m
+  // Suppress the short ripples. Spread over the whole 2–14 m band the chop read
+  // as buzzy "eggshell" that shimmered fast in place — "so small and so violently
+  // fast it makes the whole ocean look like it's vibrating" (playtest). The 8.5 m
+  // cutoff still left the playtest seeing "crazy fast tiny chop"; pushing it to
+  // 11 m concentrates the energy in the 11–14 m sub-band — the LONGEST, slowest
+  // waves the chop band can hold (period T=√(2πλ/g) rises with λ, so they
+  // oscillate in place much slower) and the TALLEST per unit energy. The chop now
+  // reads as spaced, slow-heaving crests instead of fast sandpaper.
+  const kCut = (2 * Math.PI) / 11; // cutoff wavenumber ≈ 11 m
   const shortDamp = Math.exp(-k2 / (kCut * kCut));
   return (Math.exp(-1 / (k2 * Lw * Lw)) / k2) * dir * shortDamp;
 }

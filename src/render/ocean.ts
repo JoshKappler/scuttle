@@ -319,11 +319,22 @@ void main() {
   vec3 V = normalize(uCameraPos - vWorldPos);
   vec3 L = normalize(uSunDir);
 
-  // fine ripple detail: perturb the normal with scrolling noise gradients so
-  // sun glints scatter into sparkle instead of a solid stripe
-  vec2 p1 = vWorldPos.xz * 1.6 + vec2(uTime * 0.35, uTime * 0.21);
-  vec2 p2 = vWorldPos.xz * 4.7 - vec2(uTime * 0.27, uTime * 0.44);
-  vec2 p3 = vWorldPos.xz * 9.3 + vec2(uTime * -0.5, uTime * 0.33);
+  // fine ripple detail: perturb the normal with scrolling value-noise gradients
+  // so the sun glints scatter into sparkle. CRITICAL: value noise lives on an
+  // axis-aligned integer lattice, so its gradient grids along world X/Z — and
+  // sampled under the specular that lattice IS the "grid" the playtest kept
+  // seeing. (Swapping away the FFT normal map didn't help because the noise that
+  // replaced it gridded the same way.) Fix: sample each octave in a DIFFERENTLY
+  // ROTATED frame so no lattice axis aligns with the world or with another
+  // octave — the regular structure dissolves into organic glitter. Frequencies
+  // are also pulled down a little and the finest octave kept weak, since the finer
+  // the lattice the harder it wants to re-form a grid.
+  mat2 r1 = mat2(0.878, -0.479, 0.479, 0.878);   // ~0.50 rad
+  mat2 r2 = mat2(-0.737, -0.675, 0.675, -0.737); // ~2.40 rad
+  mat2 r3 = mat2(-0.490, 0.872, -0.872, -0.490); // ~4.20 rad
+  vec2 p1 = r1 * vWorldPos.xz * 1.3 + vec2(uTime * 0.35, uTime * 0.21);
+  vec2 p2 = r2 * vWorldPos.xz * 3.1 - vec2(uTime * 0.27, uTime * 0.44);
+  vec2 p3 = r3 * vWorldPos.xz * 6.3 + vec2(uTime * -0.5, uTime * 0.33);
   float e = 0.35;
   float g1x = noise(p1 + vec2(e, 0.0)) - noise(p1 - vec2(e, 0.0));
   float g1z = noise(p1 + vec2(0.0, e)) - noise(p1 - vec2(0.0, e));
@@ -331,28 +342,12 @@ void main() {
   float g2z = noise(p2 + vec2(0.0, e)) - noise(p2 - vec2(0.0, e));
   float g3x = noise(p3 + vec2(e, 0.0)) - noise(p3 - vec2(e, 0.0));
   float g3z = noise(p3 + vec2(0.0, e)) - noise(p3 - vec2(0.0, e));
-  // round 9: more bite in the fine relief so the chop reads in the glints, not
-  // just a glassy swell. With the FFT field live, take the surface normal from
-  // the GPU normal texture instead of the hand-rolled noise gradients.
-  vec3 Nd;
-  if (uFftOn > 0.5) {
-    // Fade the chop normal toward flat with distance. A high-frequency normal
-    // map sampled under a tight specular lobe aliases into a regular lattice of
-    // sparkles — the "grid of dots" under the sun glare. The mesh already fades
-    // the chop GEOMETRY by ~170 m; matching the NORMAL detail rolloff kills the
-    // distant moiré while the crisp chop stays up close where it's resolved.
-    float dCam = length(uCameraPos - vWorldPos);
-    float nFade = 1.0 - smoothstep(55.0, 190.0, dCam);
-    // keep the chop normal GENTLE (×0.4): a strong, high-frequency, animated normal
-    // under a sun specular is exactly what twinkled into the "grid of dots / the
-    // whole ocean vibrating up and down very fast". The chop SHAPE comes from the
-    // vertex displacement; this map only adds fine relief, so it can be soft.
-    vec3 fn = (texture2D(uFftNormal, vWorldPos.xz / uFftTile).xyz * 2.0 - 1.0) * nFade * 0.4;
-    Nd = normalize(N + vec3(fn.x, 0.0, fn.z));
-  } else {
-    Nd = normalize(N + vec3(g1x * 0.6 + g2x * 0.4 + g3x * 0.22, 0.0,
-                            g1z * 0.6 + g2z * 0.4 + g3z * 0.22));
-  }
+  // The SHADING normal (drives the sun specular) leans on the smooth swell normal
+  // N; the rotated noise only laces in fine relief. The chop SHAPE is not lost —
+  // it is baked into the mesh GEOMETRY (the vertex FFT displacement) and into N,
+  // so crests still catch light in silhouette; only the gridding sparkle is gone.
+  vec3 Nd = normalize(N + vec3(g1x * 0.5 + g2x * 0.26 + g3x * 0.12, 0.0,
+                               g1z * 0.5 + g2z * 0.26 + g3z * 0.12));
 
   // base water color: deeper where we look straight down, lighter at grazing
   float facing = max(dot(N, V), 0.0);

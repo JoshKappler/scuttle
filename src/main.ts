@@ -63,12 +63,14 @@ async function main() {
     N: 256,
     L: 250,
     windSpeed: 11,
-    amplitude: 140, // the Phillips spectrum is uncalibrated; scale the chop up so
-    // the 8.5–14 m sub-band reads as real spaced-out crests. Raised 110→140 to put
-    // the height back that the higher 8.5 m short-wave cutoff removed, so the chop
-    // is BIGGER and slower (spaced crashing crests, not fast small "vibrating"
-    // ripples). Visual only — physics ignores the chop (band-limited under the 14 m
-    // hull cutoff), so a tall chop can't flood or surf the hull.
+    amplitude: 320, // the Phillips spectrum is uncalibrated; scale the chop up so
+    // the 11–14 m sub-band reads as real spaced-out crests. Raised 140→320 for the
+    // playtest's "chop needs to be much higher" — with the cutoff now at 11 m the
+    // energy sits in the longest, slowest chop waves, so a bigger amplitude makes
+    // tall, slow-heaving crests (~1.1 m) rather than fast small "vibrating" ripples.
+    // Visual only — physics ignores the chop (band-limited under the 14 m hull
+    // cutoff), so a tall chop can't flood or surf the hull; only the visual sea
+    // rises, and the in-hull discard keeps it off the deck.
     windDirX: waves[0].dirX,
     windDirZ: waves[0].dirZ,
   });
