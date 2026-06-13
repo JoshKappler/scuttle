@@ -4,6 +4,7 @@ import { makeWaves, surfaceHeight, surfaceNormal, physicsWaves } from "./sim/ger
 import { createOcean } from "./render/ocean";
 import { SeamMask } from "./render/seamMask";
 import { createOceanField } from "./render/oceanField";
+import { buildHullProfile } from "./sim/buoyancy";
 import { createSky } from "./render/sky";
 import { buildBrig, buildSloop } from "./sim/shipwright";
 import { ShipVisual } from "./render/shipVisual";
@@ -102,6 +103,26 @@ async function main() {
   world.addShip(sloop);
   // the cutaway hole in the sea matches the player hull's footprint
   ocean.setFootprint(sloopBuild.lengthM / 2 + 1.2, sloopBuild.beamM / 2 + 1.0);
+
+  // P4: bake the player hull's per-column keel/deck profile from the voxel grid
+  // (once) and bind it for the ocean's voxel-accurate, attitude-aware in-hull cut.
+  {
+    const prof = buildHullProfile(sloop.build.grid);
+    const texData = new Float32Array(prof.nx * prof.nz * 4);
+    for (let i = 0; i < prof.nx * prof.nz; i++) {
+      texData[i * 4] = prof.data[i * 2]; // keelYLocal → R
+      texData[i * 4 + 1] = prof.data[i * 2 + 1]; // deckYLocal → G
+      texData[i * 4 + 3] = 1;
+    }
+    const profTex = new THREE.DataTexture(texData, prof.nx, prof.nz, THREE.RGBAFormat, THREE.FloatType);
+    profTex.minFilter = THREE.NearestFilter; // crisp, voxel-accurate cut edges
+    profTex.magFilter = THREE.NearestFilter;
+    profTex.wrapS = THREE.ClampToEdgeWrapping;
+    profTex.wrapT = THREE.ClampToEdgeWrapping;
+    profTex.flipY = false; // texel (x,z) ↔ data idx z*nx+x
+    profTex.needsUpdate = true;
+    ocean.setHullProfile(profTex, prof.sizeX, prof.sizeZ);
+  }
 
   // enemy captain: the old, smaller sloop — kept as the easier opponent
   // (round 6) — spawns upwind, ALREADY POINTED AT YOU, and runs down on you.
@@ -745,6 +766,11 @@ async function main() {
     return { keel: lo * VOXEL_SIZE, deck: (ship.build.deckY + 1) * VOXEL_SIZE };
   };
   const spans = [hullSpan(sloop), hullSpan(enemy)];
+  // P4 pose temporaries (avoid per-frame allocation)
+  const _poseQuat = new THREE.Quaternion();
+  const _poseM4 = new THREE.Matrix4();
+  const _poseInvRot = new THREE.Matrix3();
+  const _poseTrans = new THREE.Vector3();
   const feedWake = (slot: 0 | 1, ship: Ship) => {
     const v = ship.body.linvel();
     const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
@@ -769,6 +795,15 @@ async function main() {
       tr.y + span.keel,
       tr.y + span.deck,
     );
+    // P4: feed the PLAYER hull's live world→local pose so the voxel-accurate cut
+    // tracks heave/pitch/roll (the shader skips slot 0's analytic ellipse).
+    if (slot === 0) {
+      _poseQuat.set(rot.x, rot.y, rot.z, rot.w);
+      _poseM4.makeRotationFromQuaternion(_poseQuat);
+      _poseInvRot.setFromMatrix4(_poseM4).transpose(); // R⁻¹ = Rᵀ for a rotation
+      _poseTrans.set(tr.x, tr.y, tr.z);
+      ocean.updateHullPose(_poseInvRot, _poseTrans);
+    }
   };
 
   // bow spray (round 8: "adding splashes when it's breaking through waves"):

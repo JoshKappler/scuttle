@@ -58,6 +58,12 @@ export interface Ocean {
     keelWorldY: number,
     deckWorldY: number,
   ): void;
+  /** P4: bind the player hull's per-column keel/deck profile texture (built once
+   *  from the voxel grid) and its local span. Activates the voxel-accurate cut. */
+  setHullProfile(tex: THREE.Texture, sizeX: number, sizeZ: number): void;
+  /** P4: feed the player hull's live world→local rotation (inverse of the body
+   *  quaternion) and world translation each frame, so the cut tracks heave/pitch/roll. */
+  updateHullPose(invRot: THREE.Matrix3, trans: THREE.Vector3): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -271,6 +277,15 @@ uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
 uniform vec2 uShipC[2]; // keel world-Y, deck-top world-Y (hull vertical span)
 uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 
+// P4 voxel-accurate, attitude-aware in-hull cut (player hull). The sea fragment
+// is posed into the hull's LOCAL frame and tested against a per-column keel/deck
+// height-field — so the cut follows the true voxel plan AND heave/pitch/roll.
+uniform float uProfileOn; // 1 when the player profile cut is live (else fall back to the ellipse)
+uniform sampler2D uProfileTex; // RG = keelYLocal, deckYLocal (m) per grid column
+uniform mat3 uProfileInvRot; // world→local rotation (inverse of the ship quaternion)
+uniform vec3 uProfileTrans; // ship body world translation (= local origin)
+uniform vec2 uProfileSize; // local span in m (uv = localXZ / size)
+
 void main() {
   #include <clipping_planes_fragment>
 
@@ -278,7 +293,11 @@ void main() {
   // surface is discarded within each ship's waterline ellipse so the hold
   // shows timber, not "the wake and the water flowing by" through the hatch
   // (round 7). uShipB[s].w fades to 0 as she floods — the sea closes back in.
+  // P4: the player hull (slot 0) is cut by the voxel-accurate profile below; the
+  // enemy (slot 1) still uses the analytic ellipse until the profile cut is
+  // extended to both. Skip slot 0 here when the profile is live.
   for (int s0 = 0; s0 < 2; s0++) {
+    if (s0 == 0 && uProfileOn > 0.5) continue;
     float keelY = uShipC[s0].x;
     float deckY = uShipC[s0].y;
     if (deckY <= keelY) continue; // unused slot
@@ -305,6 +324,20 @@ void main() {
     float along2 = al0 * al0;
     float beamProfile = (1.0 - along2) * (0.5 + 0.5 * (1.0 - along2));
     if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) discard;
+  }
+
+  // P4 voxel-accurate cut (player hull): pose this fragment into the hull's LOCAL
+  // frame and discard only sea between the per-column keel and deck (+2 m crest
+  // clearance vs green-water). The full inverse transform folds in heave/pitch/
+  // roll, so no void reveals as she bobs, and the per-column profile follows the
+  // true voxel plan (the pointed bow) instead of a fat ellipse.
+  if (uProfileOn > 0.5) {
+    vec3 lp = uProfileInvRot * (vWorldPos - uProfileTrans);
+    vec2 puv = vec2(lp.x / uProfileSize.x, lp.z / uProfileSize.y);
+    if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
+      vec2 kd = texture2D(uProfileTex, puv).rg; // keelYLocal, deckYLocal (m)
+      if (kd.y > kd.x && lp.y > kd.x && lp.y < kd.y + 2.0) discard;
+    }
   }
 
   // cutaway: the sea over the hull footprint is removed outright (the hold
@@ -571,6 +604,11 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uShipB: { value: [new THREE.Vector4(), new THREE.Vector4()] },
       uShipC: { value: [new THREE.Vector2(0, -1), new THREE.Vector2(0, -1)] },
       uTrail: { value: Array.from({ length: 64 }, () => new THREE.Vector4()) },
+      uProfileOn: { value: 0 },
+      uProfileTex: { value: dummyTex },
+      uProfileInvRot: { value: new THREE.Matrix3() },
+      uProfileTrans: { value: new THREE.Vector3() },
+      uProfileSize: { value: new THREE.Vector2(1, 1) },
       // Cascade field (round 14): displacement is summed in the vertex stage, the
       // normal + foam in the fragment stage, one set of textures per band. uFftOn
       // gates every use so the null fallback (dummy textures) renders the
@@ -623,6 +661,15 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
         if (pt) u[base + i].set(pt.x, pt.z, time - pt.t, pt.w);
         else u[base + i].set(0, 0, 0, 0);
       }
+    },
+    setHullProfile(tex, sizeX, sizeZ) {
+      mat.uniforms.uProfileTex.value = tex;
+      (mat.uniforms.uProfileSize.value as THREE.Vector2).set(sizeX, sizeZ);
+      mat.uniforms.uProfileOn.value = 1;
+    },
+    updateHullPose(invRot, trans) {
+      (mat.uniforms.uProfileInvRot.value as THREE.Matrix3).copy(invRot);
+      (mat.uniforms.uProfileTrans.value as THREE.Vector3).copy(trans);
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

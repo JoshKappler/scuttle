@@ -91,6 +91,52 @@ export function makeProbes(grid: VoxelGrid, compartments: Compartment[]): Probe[
   return probes;
 }
 
+/** A per-column keel/deck height-field baked from the voxel grid, for the ocean's
+ *  VOXEL-ACCURATE, attitude-aware in-hull cut (round 14, P4). For every (x,z) grid
+ *  column it stores the local-Y of the lowest solid cell (keel) and the top of the
+ *  highest solid cell (deck). The ocean shader inverse-transforms each sea fragment
+ *  into this same ship-local frame (the frame `Probe.local` lives in) and discards
+ *  only sea genuinely between the column's keel and deck — so the cut follows the
+ *  true hull plan (the pointed bow included) AND the live pose (no void when she
+ *  bobs/pitches/rolls). Columns with no hull store deck < keel (a "no cut" sentinel). */
+export interface HullProfile {
+  nx: number;
+  nz: number;
+  /** nx*nz*2 floats, row-major idx = (z*nx + x)*2: [keelYLocal, deckYLocal] (m). */
+  data: Float32Array;
+  /** local-space span the grid occupies (uv = localXZ / [sizeX,sizeZ]). */
+  sizeX: number;
+  sizeZ: number;
+}
+
+export function buildHullProfile(grid: VoxelGrid): HullProfile {
+  const [nx, ny, nz] = grid.dims;
+  const data = new Float32Array(nx * nz * 2);
+  for (let z = 0; z < nz; z++) {
+    for (let x = 0; x < nx; x++) {
+      let lo = -1;
+      let hi = -1;
+      for (let y = 0; y < ny; y++) {
+        if (grid.isSolid(x, y, z)) {
+          if (lo === -1) lo = y;
+          hi = y;
+        }
+      }
+      const o = (z * nx + x) * 2;
+      if (lo === -1) {
+        data[o] = 1; // keel above deck → sentinel "no hull here, never cut"
+        data[o + 1] = -1;
+      } else {
+        data[o] = lo * VOXEL_SIZE; // keel: bottom of lowest solid cell
+        data[o + 1] = (hi + 1) * VOXEL_SIZE; // deck: top of highest solid cell
+      }
+    }
+  }
+  // local frame matches Probe.local: column (x,z) center = ((x+0.5)·VS, ·, (z+0.5)·VS),
+  // grid corner at local 0 → uv = localXZ / (n·VS).
+  return { nx, nz, data, sizeX: nx * VOXEL_SIZE, sizeZ: nz * VOXEL_SIZE };
+}
+
 /** 0..1 submerged fraction of the probe's column (bottom at worldY). */
 export function submergedFraction(probe: Probe, worldY: number, surfaceY: number): number {
   const depth = surfaceY - worldY;
