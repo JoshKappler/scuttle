@@ -111,9 +111,10 @@ uniform vec4 uWaveA[NWAVES]; // dirX, dirZ, amplitude, k
 uniform vec2 uWaveB[NWAVES]; // qa, omega
 uniform vec4 uShipA[2]; // bow x, bow z, fwdX, fwdZ
 uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
-uniform sampler2D uFftDisp; // FFT chop displacement (RGB = Dx, height, Dz)
-uniform float uFftTile; // world tile size (m) for the FFT field
-uniform float uFftOn; // 1 when the FFT backend is live, else 0
+uniform sampler2D uCascadeDisp[NCASC]; // per-cascade chop displacement (RGB = Dx, height, Dz)
+uniform float uCascadeTile[NCASC]; // per-cascade world tile size (m)
+uniform float uCascadeChop[NCASC]; // per-cascade horizontal choppiness λ
+uniform float uFftOn; // 1 when the cascade backend is live, else 0
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -155,21 +156,30 @@ void main() {
     crest += (s * 0.5 + 0.5) * amp;
   }
 
-  // FFT chop on top of the analytic swell: band-limited so the ship stays
-  // welded to the swell it floats on. Faded out by mid-distance (60→130 m)
-  // before the ring spacing under-samples the short chop into shimmer.
+  // Round 14: sum the MULTI-CASCADE FFT chop on top of the analytic swell. Each
+  // cascade is its own band-windowed Tessendorf tile at a non-commensurate size
+  // (~40/18/7 m), so the sum never tiles into a grid, and each band moves at its
+  // own physically-correct speed. Per-cascade choppiness λ pinches crests sharp
+  // and crossing — the AC4 / Sea-of-Thieves "crashing waves" look. The cascades
+  // are band-split BELOW the analytic swell, so the hull stays welded to the swell
+  // it floats on (physics samples only the analytic swell, never these).
+  // UNROLLED with CONSTANT sampler indices: ANGLE (Windows) rejects indexing a
+  // sampler array with a loop variable in GLSL ES 1.00 — a for-loop here silently
+  // invalidates the WHOLE ocean program (the sea vanishes). Constant [0]/[1]/[2],
+  // #if-guarded by NCASC. Adding a 4th cascade means adding a block here + below.
   if (uFftOn > 0.5) {
-    float chopFade = 1.0 - smoothstep(80.0, 170.0, rDist);
-    vec3 d = texture2D(uFftDisp, rest.xz / uFftTile).xyz; // Dx, height, Dz
-    // choppiness: a GENTLE horizontal trochoid pinch. The old 2.2x sharpening on
-    // a high-amplitude chop steepened the short waves into fast-flickering cusps
-    // (part of the "vibrating sand" look). With the FFT now a low-amplitude
-    // surface texture under a big analytic swell, 1.3x just gives it a little
-    // life without re-sharpening it into shimmer.
-    p.x += d.x * chopFade * 1.3;
-    p.z += d.z * chopFade * 1.3;
-    p.y += d.y * chopFade;
-    crest += max(d.y, 0.0) * chopFade;
+    float chopFade = 1.0 - smoothstep(120.0, 280.0, rDist);
+    vec3 d;
+    d = texture2D(uCascadeDisp[0], rest.xz / uCascadeTile[0]).xyz;
+    p.x += d.x * chopFade * uCascadeChop[0]; p.z += d.z * chopFade * uCascadeChop[0]; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
+    #if NCASC > 1
+    d = texture2D(uCascadeDisp[1], rest.xz / uCascadeTile[1]).xyz;
+    p.x += d.x * chopFade * uCascadeChop[1]; p.z += d.z * chopFade * uCascadeChop[1]; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
+    #endif
+    #if NCASC > 2
+    d = texture2D(uCascadeDisp[2], rest.xz / uCascadeTile[2]).xyz;
+    p.x += d.x * chopFade * uCascadeChop[2]; p.z += d.z * chopFade * uCascadeChop[2]; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
+    #endif
   }
 
   // the hull's effect on the sea: a STANDING displacement collar at all times
@@ -232,10 +242,10 @@ uniform float uFogDensity;
 uniform float uAmpTotal;
 uniform vec3 uCameraPos;
 uniform float uTime;
-uniform sampler2D uFftNormal; // FFT surface normal (RGB = normal*0.5+0.5)
-uniform sampler2D uFftFoam; // FFT foam coverage (R)
-uniform float uFftTile; // world tile size (m) for the FFT field
-uniform float uFftOn; // 1 when the FFT backend is live, else 0
+uniform sampler2D uCascadeNormal[NCASC]; // per-cascade surface normal (RGB = normal*0.5+0.5)
+uniform sampler2D uCascadeFoam[NCASC]; // per-cascade Jacobian foam (R)
+uniform float uCascadeTile[NCASC]; // per-cascade world tile size (m)
+uniform float uFftOn; // 1 when the cascade backend is live, else 0
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -319,35 +329,40 @@ void main() {
   vec3 V = normalize(uCameraPos - vWorldPos);
   vec3 L = normalize(uSunDir);
 
-  // fine ripple detail: perturb the normal with scrolling value-noise gradients
-  // so the sun glints scatter into sparkle. CRITICAL: value noise lives on an
-  // axis-aligned integer lattice, so its gradient grids along world X/Z — and
-  // sampled under the specular that lattice IS the "grid" the playtest kept
-  // seeing. (Swapping away the FFT normal map didn't help because the noise that
-  // replaced it gridded the same way.) Fix: sample each octave in a DIFFERENTLY
-  // ROTATED frame so no lattice axis aligns with the world or with another
-  // octave — the regular structure dissolves into organic glitter. Frequencies
-  // are also pulled down a little and the finest octave kept weak, since the finer
-  // the lattice the harder it wants to re-form a grid.
+  // Round 14: the shading normal (drives the sun specular) = the smooth analytic
+  // swell normal N + the summed slopes of the FFT CASCADES — the REAL surface
+  // normal now, not the value-noise hack. Three non-commensurate cascade tiles
+  // never align their texel lattices, so the glints scatter organically and the
+  // grid that plagued a single 1 m/texel normal map is gone by construction. The
+  // detail fades out by distance so the far field doesn't moiré. r1/r2 are kept
+  // for the foam-detail breakup below.
   mat2 r1 = mat2(0.878, -0.479, 0.479, 0.878);   // ~0.50 rad
   mat2 r2 = mat2(-0.737, -0.675, 0.675, -0.737); // ~2.40 rad
-  mat2 r3 = mat2(-0.490, 0.872, -0.872, -0.490); // ~4.20 rad
-  vec2 p1 = r1 * vWorldPos.xz * 1.3 + vec2(uTime * 0.35, uTime * 0.21);
-  vec2 p2 = r2 * vWorldPos.xz * 3.1 - vec2(uTime * 0.27, uTime * 0.44);
-  vec2 p3 = r3 * vWorldPos.xz * 6.3 + vec2(uTime * -0.5, uTime * 0.33);
-  float e = 0.35;
-  float g1x = noise(p1 + vec2(e, 0.0)) - noise(p1 - vec2(e, 0.0));
-  float g1z = noise(p1 + vec2(0.0, e)) - noise(p1 - vec2(0.0, e));
-  float g2x = noise(p2 + vec2(e, 0.0)) - noise(p2 - vec2(e, 0.0));
-  float g2z = noise(p2 + vec2(0.0, e)) - noise(p2 - vec2(0.0, e));
-  float g3x = noise(p3 + vec2(e, 0.0)) - noise(p3 - vec2(e, 0.0));
-  float g3z = noise(p3 + vec2(0.0, e)) - noise(p3 - vec2(0.0, e));
-  // The SHADING normal (drives the sun specular) leans on the smooth swell normal
-  // N; the rotated noise only laces in fine relief. The chop SHAPE is not lost —
-  // it is baked into the mesh GEOMETRY (the vertex FFT displacement) and into N,
-  // so crests still catch light in silhouette; only the gridding sparkle is gone.
-  vec3 Nd = normalize(N + vec3(g1x * 0.5 + g2x * 0.26 + g3x * 0.12, 0.0,
-                               g1z * 0.5 + g2z * 0.26 + g3z * 0.12));
+  vec3 nSum = vec3(0.0);
+  if (uFftOn > 0.5) {
+    float dCam = length(uCameraPos - vWorldPos);
+    float nFade = 1.0 - smoothstep(70.0, 240.0, dCam);
+    // grazing fade: a tiled normal under a sharp specular ALWAYS shows its texel
+    // lattice at grazing incidence (the near-field crosshatch). Fade the normal
+    // detail to 0 as the view grazes — there the water is a near-mirror of the sky
+    // anyway, so it reads correct, and the grid foreground is gone.
+    float graze = smoothstep(0.04, 0.32, max(dot(N, V), 0.0));
+    nFade *= graze;
+    // per-cascade weights: the COARSE tile's normal is safe (0.31 m/texel), but the
+    // FINER tiles (0.14 / 0.055 m/texel) catch the grazing specular as a crosshatch
+    // lattice — the grid nemesis. Downweight the fine cascades hard for SHADING;
+    // their chop SHAPE is already in the geometry, so the sea still reads sharp.
+    vec3 cn;
+    cn = texture2D(uCascadeNormal[0], vWorldPos.xz / uCascadeTile[0]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 1.0;
+    #if NCASC > 1
+    cn = texture2D(uCascadeNormal[1], vWorldPos.xz / uCascadeTile[1]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.55;
+    #endif
+    #if NCASC > 2
+    cn = texture2D(uCascadeNormal[2], vWorldPos.xz / uCascadeTile[2]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.28;
+    #endif
+    nSum *= nFade * 0.7;
+  }
+  vec3 Nd = normalize(N + nSum);
 
   // base water color: deeper where we look straight down, lighter at grazing
   float facing = max(dot(N, V), 0.0);
@@ -433,12 +448,28 @@ void main() {
   // break the wash up so it reads as churned water, not paint
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
 
-  // FFT foam REMOVED (playtest: "the shitty low-resolution camo texture … I just
-  // want that removed"). The Jacobian whitecap mask is ~1 m/texel and, magnified,
-  // always read as low-res camo blobs no matter how it was thresholded or eroded.
-  // Whitewater now comes only from the analytic crest foam + caps + ship wash here;
-  // open-sea breaking SPRAY is the particle system's job (and is being beefed up).
-  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.55, 0.0, 0.93));
+  // Round 14: open-sea whitewater from the cascade Jacobian foam — back, but NOT
+  // as camo. The old failure drew a ~1 m/texel coverage mask DIRECTLY, so blobs.
+  // Fix (Crest's recipe): decouple foam AMOUNT (the low-res cascade coverage) from
+  // foam SHAPE (high-frequency rotated detail) with a black-point fade —
+  // smoothstep(1-cov, 1-cov+feather, detail) — so the same coverage paints
+  // crisp bubbly whitewater that lives only on the genuinely-breaking crest cores.
+  float foamCov = 0.0;
+  if (uFftOn > 0.5) {
+    foamCov = max(foamCov, texture2D(uCascadeFoam[0], vWorldPos.xz / uCascadeTile[0]).r);
+    #if NCASC > 1
+    foamCov = max(foamCov, texture2D(uCascadeFoam[1], vWorldPos.xz / uCascadeTile[1]).r);
+    #endif
+    #if NCASC > 2
+    foamCov = max(foamCov, texture2D(uCascadeFoam[2], vWorldPos.xz / uCascadeTile[2]).r);
+    #endif
+  }
+  float fDetail = noise(r1 * vWorldPos.xz * 0.9 + uTime * 0.18) * 0.6
+                + noise(r2 * vWorldPos.xz * 2.7 - uTime * 0.13) * 0.4;
+  float crestFoam = smoothstep(1.0 - foamCov, 1.0 - foamCov + 0.22, fDetail)
+                  * smoothstep(0.05, 0.20, foamCov);
+
+  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.55 + crestFoam * 0.85, 0.0, 0.95));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);
@@ -459,10 +490,51 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
   const { a, b } = waveUniforms(swell);
   const ampTotal = swell.reduce((s, w) => s + w.amplitude, 0);
 
+  // Round 14: gather the cascade layers the shader sums. A live cascade field
+  // exposes `cascades`; a legacy single FFT exposes the singletons (wrapped as one
+  // layer); the null fallback exposes nothing (NCASC stays 1, gated off by uFftOn).
+  const layers =
+    field.cascades ??
+    (field.active && field.displacement && field.normal && field.foam
+      ? [
+          {
+            displacement: field.displacement,
+            normal: field.normal,
+            foam: field.foam,
+            tileSize: field.tileSize,
+            choppiness: 1.3,
+          },
+        ]
+      : []);
+  const NCASC = Math.max(1, layers.length);
+  const dummyTex: THREE.Texture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  dummyTex.needsUpdate = true;
+  function padTex(arr: THREE.Texture[]): THREE.Texture[] {
+    const out = arr.slice();
+    while (out.length < NCASC) out.push(dummyTex);
+    return out;
+  }
+  function padNum(arr: number[], fill: number): number[] {
+    const out = arr.slice();
+    while (out.length < NCASC) out.push(fill);
+    return out;
+  }
+  const cascDisp = padTex(layers.map((l) => l.displacement));
+  const cascNormal = padTex(layers.map((l) => l.normal));
+  const cascFoam = padTex(layers.map((l) => l.foam));
+  const cascTile = padNum(
+    layers.map((l) => l.tileSize),
+    1,
+  );
+  const cascChop = padNum(
+    layers.map((l) => l.choppiness),
+    0,
+  );
+
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT,
     fragmentShader: FRAG,
-    defines: { NWAVES: swell.length },
+    defines: { NWAVES: swell.length, NCASC },
     clipping: true,
     transparent: true, // the cutaway wedge fades to glass; alpha 1 elsewhere
     depthWrite: true,
@@ -499,13 +571,15 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uShipB: { value: [new THREE.Vector4(), new THREE.Vector4()] },
       uShipC: { value: [new THREE.Vector2(0, -1), new THREE.Vector2(0, -1)] },
       uTrail: { value: Array.from({ length: 64 }, () => new THREE.Vector4()) },
-      // FFT field: the displacement is sampled in the vertex stage, the normal
-      // + foam in the fragment stage. uFftOn gates every use so a null field
-      // (textures null → three.js binds a default) renders the Gerstner look.
-      uFftDisp: { value: field.displacement },
-      uFftNormal: { value: field.normal },
-      uFftFoam: { value: field.foam },
-      uFftTile: { value: field.tileSize },
+      // Cascade field (round 14): displacement is summed in the vertex stage, the
+      // normal + foam in the fragment stage, one set of textures per band. uFftOn
+      // gates every use so the null fallback (dummy textures) renders the
+      // Gerstner-only look.
+      uCascadeDisp: { value: cascDisp },
+      uCascadeNormal: { value: cascNormal },
+      uCascadeFoam: { value: cascFoam },
+      uCascadeTile: { value: cascTile },
+      uCascadeChop: { value: cascChop },
       uFftOn: { value: field.active ? 1 : 0 },
     },
   });

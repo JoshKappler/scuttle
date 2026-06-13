@@ -51,26 +51,37 @@ async function main() {
   // (round 8: shade must read as shade, not a void)
   skySetup.bakeEnvironment(renderer, scene);
 
-  // FFT chop/normal/foam field, tiled over L meters and added on top of the
-  // analytic swell. N=256 over a 250 m tile = ~1 m/texel, which resolves the
-  // short chop (3.5–14 m band) without aliasing; the GPU cost measured
-  // ~0.4 ms/frame on an RTX 5080 (budget a few ms on a weak GPU). windSpeed
-  // 11 gives an energetic mid-ocean chop
-  // ("chaotic choppy"); the wind blows with the dominant swell train, so the
-  // chop sits on its back.
+  // Round 14: a MULTI-CASCADE Tessendorf ocean surface (the AC4 / Sea of Thieves
+  // recipe) replaces the single band-limited chop tile that could only shimmer and
+  // tile. Three NON-COMMENSURATE FFT tiles (40 / 18 / 7 m), each windowed to its
+  // own wavelength band and given its own CROSSING wind direction, sum into a sea
+  // with sharp crashing crests and no visible grid. VISUAL ONLY and band-split
+  // BELOW the analytic Gerstner swell, which stays the big slow waves AND the
+  // deterministic physics truth (the hull never samples these). N=128/cascade
+  // keeps 3× the DFT cheaper than the old single 256² tile.
+  const swDx = waves[0].dirX;
+  const swDz = waves[0].dirZ;
+  const rotDir = (ang: number) => ({
+    x: swDx * Math.cos(ang) - swDz * Math.sin(ang),
+    z: swDx * Math.sin(ang) + swDz * Math.cos(ang),
+  });
+  const c0 = rotDir(0.0);
+  const c1 = rotDir(0.85);
+  const c2 = rotDir(-0.6);
   const oceanField = createOceanField(renderer, {
     rng: new Rng(seed + "-fft"),
-    N: 256,
-    L: 250,
+    N: 128,
+    L: 40, // base L is unused when cascades are present (each carries its own)
     windSpeed: 11,
-    amplitude: 60, // the Phillips spectrum is uncalibrated; this scales the chop.
-    // DROPPED 320→60: cranking it up made the fast short-wave content (slope ∝ k·a)
-    // dominate and the whole sea "vibrated like sand on a vibrating sheet". The
-    // band-limited FFT can only ever be short/fast, so it is now a faint surface
-    // texture; the big, slow, wide, tall waves come from the analytic swell
-    // (gerstner L_MAX 150 m, 1.3 m). Visual only — physics never samples the chop.
-    windDirX: waves[0].dirX,
-    windDirZ: waves[0].dirZ,
+    windDirX: swDx,
+    windDirZ: swDz,
+    cascades: [
+      // amplitudes are uncalibrated Phillips scales — tuned in-browser via readback
+      // to ~1.1 / 0.45 / 0.15 m crests (a rough, crashing, but not deck-flooding sea)
+      { L: 40, band: [12, 40], windDirX: c0.x, windDirZ: c0.z, amplitude: 350, choppiness: 1.3 },
+      { L: 18, band: [5, 18], windDirX: c1.x, windDirZ: c1.z, amplitude: 430, choppiness: 1.0 },
+      { L: 7, band: [2, 7], windDirX: c2.x, windDirZ: c2.z, amplitude: 350, choppiness: 0.6 },
+    ],
   });
   const ocean = createOcean(waves, skySetup.sunDir, oceanField);
   scene.add(ocean.mesh);
