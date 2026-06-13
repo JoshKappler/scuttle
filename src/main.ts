@@ -53,8 +53,9 @@ async function main() {
 
   // FFT chop/normal/foam field, tiled over L meters and added on top of the
   // analytic swell. N=256 over a 250 m tile = ~1 m/texel, which resolves the
-  // short chop (3.5–14 m band) without aliasing; the GPU cost measured ~2 ms
-  // on a mid GPU, trivial. windSpeed 11 gives an energetic mid-ocean chop
+  // short chop (3.5–14 m band) without aliasing; the GPU cost measured
+  // ~0.4 ms/frame on an RTX 5080 (budget a few ms on a weak GPU). windSpeed
+  // 11 gives an energetic mid-ocean chop
   // ("chaotic choppy"); the wind blows with the dominant swell train, so the
   // chop sits on its back.
   const oceanField = createOceanField(renderer, {
