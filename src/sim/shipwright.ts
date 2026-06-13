@@ -401,9 +401,11 @@ export function buildBrig(): ShipBuild {
       }
     }
   }
-  // round 11: one restored course keeps her deep-but-dry (ratio 0.5–0.6).
-  // The by+9 course from round 10 is dropped; by+8 alone places the waterline
-  // at the near-vertical belt without shipping the deck.
+  // round 11: a single restored course (round 10's by+9 course is dropped)
+  // brings the resting draft to ratio 0.5–0.6 — deep, waterline at the
+  // near-vertical belt, deck dry. Spread broadly fore-and-aft (t 0.1–0.8,
+  // centered ~midship) so it deepens draft evenly rather than re-biasing trim,
+  // and it sits well below the COM so she stiffens rather than tips.
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);
     const by = keelY(t) + 1;
