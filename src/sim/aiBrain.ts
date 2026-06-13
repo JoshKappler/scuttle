@@ -18,8 +18,8 @@ export interface AIDecision {
   fire: "port" | "starboard" | null;
 }
 
-const GUN_RANGE = 90; // m
-const CLOSE_RANGE = 55; // m — run the target down to here before turning abeam
+const GUN_RANGE = 110; // m — stretched with the round-8 muzzle velocity
+const CLOSE_RANGE = 65; // m — run the target down to here before turning abeam
 const ABEAM_TOLERANCE = 20; // degrees around ±90
 
 /** Rudder sign that moves the current bearing toward the desired bearing. */
@@ -59,7 +59,10 @@ export function decideAI(v: AIView): AIDecision {
     return { sailSet: 1, rudderSign: steerToward(v.bearingDeg, 0), fire };
   }
 
-  // close action: keep way on and dance the nearer broadside onto them
+  // close action: SLOW DOWN and dance the nearer broadside onto them. Full
+  // sail here meant 22 kn turning circles measured in minutes — she spent
+  // most of every pass pointed away, which read as fleeing (round 8: "the
+  // enemy ship also seems to be running away from me")
   const desired = v.bearingDeg >= 0 ? 90 : -90;
-  return { sailSet: 0.85, rudderSign: steerToward(v.bearingDeg, desired), fire };
+  return { sailSet: 0.6, rudderSign: steerToward(v.bearingDeg, desired), fire };
 }

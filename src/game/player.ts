@@ -122,7 +122,10 @@ export class PlayerControls {
         this.fpYaw += e.movementX * k;
         this.fpPitch = Math.min(Math.max(this.fpPitch - e.movementY * k, -1.5), 1.5);
       } else {
-        this.orbitYaw -= e.movementX * k;
+        // same sign convention as first person: mouse right looks right
+        // (round 8: "the left and right mouse movement needs to be inverted
+        // so that the viewing logic is the same as when in first person")
+        this.orbitYaw += e.movementX * k;
         this.orbitPitch = Math.min(Math.max(this.orbitPitch + e.movementY * (k * 0.8), 0.05), 1.25);
       }
     });

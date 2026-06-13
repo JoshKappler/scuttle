@@ -271,3 +271,57 @@ fullscreen on F; bolder antique skin.
 breached + flooding; clean bow amputation → 1096-cell wreck floating at −2.4 m; mast
 fall animates with punctured sails attached; stamina 1→0.62 over ~1.9 s sprint; arm bone
 steady at −2.3 rad ±0.08 idle sway at the wheel; fullscreen toggles via real F press.
+
+---
+
+## m11 — Blue Water & Thunder (playtest round 8)
+
+**Shipped:** 16-wave seeded directional spectrum (long swell tight to the wind, chop
+scattered — no visible tiling) replacing the 4-wave loop; camera-centered polar ocean
+mesh (~0.8 m verts at the hull → 40 m at the horizon, ~25k verts vs the old 160k uniform
+plane) following the camera CONTINUOUSLY (the 10 m position snap was the round-8
+"stutter") with per-wave distance fade so short waves drop out before the ring spacing
+aliases them; physics rides a SWELL-ONLY subset (λ ≥ 14 m) so the hull answers the
+rollers, not the chop — the round-8 "substantial" feel without faking inertia; bow swell
+mound + flank ridge in the vertex shader, wake trail segments that ramp in (no pop), bow
+plunge spray. Ship-velocity ballistics: the ball carries the ship's velocity at the
+muzzle AND the aim arc integrates from the identical initial state, so line ≡ ball
+underway (round-7 had stripped the carry to match a carry-less line; round 8 wanted both
+the carry AND a matching line). Muzzle speed 55→72, blast 1.7→2.1, impulse 6→9. Muzzle
+flash (additive flame + embers + pooled point-light pop) and impact burst (splinters +
+sparks + smoke + flash). Guns 1.25×→1.6× and pulled inboard/aft (wheels were over the
+edge). IBL sky environment (PMREM) so PBR shade reads as dim wood, not void. Frozen-
+quaternion helm grip. 3P yaw sign flipped to match first person. Enemy spawns 160 m
+pre-aimed + longer gun range / slower close-action so she closes instead of fleeing.
+Forward-lean cured by walking the iron ballast ~1.7 m aft under the fuller-aft centre of
+buoyancy. F-key fullscreen now surfaces its rejection reason + re-grabs pointer lock.
+
+**Hard-won:**
+- NEVER round-trip a source file through PowerShell `Get-Content -Raw | Set-Content
+  -Encoding utf8` — it double-encodes existing UTF-8 (every em-dash/⌀/− in the comments
+  became mojibake). Corrupted shipwright.ts mid-session; `git checkout --` saved it.
+  All source edits go through the Edit tool.
+- `Material.clone()` lesson's cousin: a 16-wave Gerstner sum spends most of its time near
+  the MIDDLE of its range, so foam/whitecap crest thresholds tuned for a 4-wave sum
+  boil the whole sea white. Raise thresholds (0.62/0.8) when you raise the wave count.
+- Spreading a FIXED total amplitude across 16 waves starves the long swell — the bob
+  driver dropped to 0.27 m and "the ship barely bobs". Key amplitude to the LONGEST wave
+  (SWELL_AMP) with a falloff toward the chop, don't normalize the sum.
+- IBL environment is strong ambient: env intensity 0.72 + hemisphere 1.3 bleached the
+  dark oak hull to "a light birch". 0.28 env + 0.9 hemi + shadow.intensity 0.85 lifts the
+  shade without washing the tone.
+- A 90 m swell's phase speed (~23 kn) matches the brig's hull speed → she surf-locks on a
+  wave back for minutes. L_MAX 70 m so she overtakes the sea.
+- postPose overriding only rotation.x let the idle clip keep playing the bone's y/z under
+  it — THAT was the "arm spasm all the time". Freeze the whole quaternion once on taking
+  the wheel; apply grip + rudder lean from the frozen pose; the mixer gets no say.
+
+**Verified numbers:** rest trim −1.86° bow-down → +0.34° (level), hard turn +0.93° bow
+never buries (draft ~0.51); drifting heave 1.89 m p2p / pitch 4.35° / roll 2.9° (was
+near-flat); longest wave amp 0.27 m → 0.64 m, total sea 2.66 m; aim line ≡ ball to 0.07 m
+mid-flight at 21 kn with full 10.8 m/s carry; ball world speed 68.7 = √(67.9² + 10.8²)
+(bore + ship); muzzle flash spawns 125 fire-layer particles + flash light to 58 intensity;
+bow plunge crosses the spray threshold 5×/3 s at 25 kn; helm arm 0.032° frame-to-frame at
+fixed rudder, 34° spread port↔starboard; enemy closes 148 m → 58 m from spawn; suite 105
+green. Open: F-fullscreen needs a real browser to confirm (headless lies); sunk ships
+still fall forever.

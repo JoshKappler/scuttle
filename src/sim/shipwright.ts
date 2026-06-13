@@ -132,8 +132,10 @@ export function buildSloop(): ShipBuild {
 
   // cannon ports are decided BEFORE the rail so the fence can leave
   // embrasures for the barrels (playtest: "cannon barrels clipping directly
-  // through the railing … should be slotted in between gaps in the fence")
-  const portXs = [0.3, 0.45, 0.6, 0.75].map((f) => x0 + Math.round(L * f));
+  // through the railing … should be slotted in between gaps in the fence").
+  // Battery sits aft of the old spread: the forward stations were on the bow
+  // taper, where the carriage wheels overhung the narrowing deck (round 8)
+  const portXs = [0.3, 0.43, 0.56, 0.69].map((f) => x0 + Math.round(L * f));
 
   // bulwark as a FENCE, not a solid wall: continuous toe course at the deck,
   // posts every third cell, continuous cap rail at chest height. The 0.5 m
@@ -345,30 +347,34 @@ export function buildBrig(): ShipBuild {
   };
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);
-    if (t < 0.12 || t > 0.95) continue;
+    // every band sits ~0.07·L (≈1.7 m) AFT of the round-7 layout: she floated
+    // a steady ~2° bow-down ("the ship has a tendency to lean forwards",
+    // round 8) because the iron's centroid was forward of the fuller-aft
+    // hull's center of buoyancy. Tuned live to ≈level.
+    if (t < 0.05 || t > 0.88) continue;
     const by = keelY(t) + 1;
     for (const z of ballastZ(4)) {
       if (inside(x, by, z) && grid.get(x, by, z) === EMPTY) grid.set(x, by, z, IRON);
     }
-    if (t < 0.16 || t > 0.92) continue;
+    if (t < 0.09 || t > 0.85) continue;
     for (const z of ballastZ(4)) {
       if (inside(x, by + 1, z) && grid.get(x, by + 1, z) === EMPTY) grid.set(x, by + 1, z, IRON);
     }
-    if (t < 0.24 || t > 0.86) continue;
+    if (t < 0.17 || t > 0.79) continue;
     for (const z of ballastZ(3)) {
       if (inside(x, by + 2, z) && grid.get(x, by + 2, z) === EMPTY) grid.set(x, by + 2, z, IRON);
     }
-    if (t < 0.34 || t > 0.76) continue;
+    if (t < 0.27 || t > 0.69) continue;
     for (const z of ballastZ(2)) {
       if (inside(x, by + 3, z) && grid.get(x, by + 3, z) === EMPTY) grid.set(x, by + 3, z, IRON);
     }
     // tiers 5-6 read as stores/shot lockers: the brig needs ~530 t to float
     // at the belt like the round-5 reference cutaways
-    if (t < 0.3 || t > 0.8) continue;
+    if (t < 0.23 || t > 0.73) continue;
     for (const z of ballastZ(3)) {
       if (inside(x, by + 4, z) && grid.get(x, by + 4, z) === EMPTY) grid.set(x, by + 4, z, IRON);
     }
-    if (t < 0.4 || t > 0.7) continue;
+    if (t < 0.33 || t > 0.63) continue;
     for (const z of ballastZ(2)) {
       if (inside(x, by + 5, z) && grid.get(x, by + 5, z) === EMPTY) grid.set(x, by + 5, z, IRON);
     }
@@ -379,12 +385,12 @@ export function buildBrig(): ShipBuild {
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);
     const by = keelY(t) + 1;
-    if (t >= 0.22 && t <= 0.86) {
+    if (t >= 0.15 && t <= 0.79) {
       for (const z of ballastZ(4)) {
         if (inside(x, by + 6, z) && grid.get(x, by + 6, z) === EMPTY) grid.set(x, by + 6, z, IRON);
       }
     }
-    if (t >= 0.32 && t <= 0.78) {
+    if (t >= 0.25 && t <= 0.71) {
       for (const z of ballastZ(3)) {
         if (inside(x, by + 7, z) && grid.get(x, by + 7, z) === EMPTY) grid.set(x, by + 7, z, IRON);
       }
@@ -401,8 +407,10 @@ export function buildBrig(): ShipBuild {
     }
   }
 
-  // five gun ports a side along the waist, clear of the quarterdeck break
-  const portXs = [0.3, 0.42, 0.54, 0.66, 0.78].map((f) => x0 + Math.round(L * f));
+  // five gun ports a side along the waist, clear of the quarterdeck break.
+  // Spread pulled aft (round 8: the 0.78 station rode the bow taper — "the
+  // cannons are still too far forward … front wheels over the edge")
+  const portXs = [0.3, 0.41, 0.52, 0.63, 0.74].map((f) => x0 + Math.round(L * f));
 
   // bulwark fence at each deck's own edge (waist AND quarterdeck), with
   // embrasures for the guns and gaps where the companion stairs land
