@@ -23,7 +23,7 @@ export interface Material {
 // pirate ship." Dropped ~35% darker than the round-8 oak — weathered, tarred
 // pirate planking, not honey birch. Still distinct from the near-black iron.
 export const MATERIALS: Record<number, Material> = {
-  [OAK]: { name: "oak", density: 430, color: [0.082, 0.05, 0.028], strength: 3 },
-  [PINE]: { name: "pine", density: 310, color: [0.135, 0.092, 0.052], strength: 2 },
+  [OAK]: { name: "oak", density: 430, color: [0.055, 0.032, 0.017], strength: 3 },
+  [PINE]: { name: "pine", density: 310, color: [0.1, 0.066, 0.036], strength: 2 },
   [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
 };

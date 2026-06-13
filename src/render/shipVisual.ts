@@ -109,9 +109,11 @@ export class ShipVisual {
               tex = texture2D(uHullTex, vShipLocal.zy * 0.22).rgb; // bow/stern
             }
             // modulate AROUND the tint so the photo adds plank GRAIN without
-            // lifting the overall tone — round 8's 0.55+tex*1.5 read as light
-            // birch (round 9: "darker wood of a real pirate ship")
-            diffuseColor.rgb *= 0.4 + tex * 1.05;
+            // lifting the overall tone. The bright plank photo × strong sun
+            // kept reading as honey-tan even on a dark base, so the lift is now
+            // small (round 9 v2: "still a very light color … darker wood of a
+            // real pirate ship").
+            diffuseColor.rgb *= 0.26 + tex * 0.62;
           }`,
         );
     };
