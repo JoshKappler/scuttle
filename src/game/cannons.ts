@@ -163,6 +163,27 @@ export class Cannons {
         continue;
       }
 
+      // rig first (round 7): cloth tears and the ball flies on; a mast trunk
+      // or the rudder blade stops it cold
+      let stopped = false;
+      for (const ship of targets) {
+        const rig = ship.rigImpacts(b.prev, b.pos);
+        for (const s of rig.sails) {
+          ship.visual.puncture(s.rec, s.y, s.z);
+          ship.hitSail(s.rec.mastIdx);
+          this.effects.muzzleSmoke(b.pos, this.tmpDir.copy(b.vel).normalize());
+        }
+        if (rig.stop) {
+          if (rig.stop.kind === "mast") ship.hitMast(rig.stop.mi);
+          else ship.hitRudder();
+          this.effects.splinters(b.pos, this.tmpDir.copy(b.vel).normalize().negate());
+          this.kill(b);
+          stopped = true;
+          break;
+        }
+      }
+      if (stopped) continue;
+
       // voxel impact: march the segment prev→pos through each target grid
       for (const ship of targets) {
         const hit = this.marchGrid(ship, b.prev, b.pos);

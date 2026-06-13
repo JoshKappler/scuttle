@@ -7,9 +7,10 @@ import { sphereCells } from "../sim/ballistics";
 import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
 import { IRON } from "../sim/materials";
+import { segmentBoxHit, segmentMastHit, segmentSailHit } from "../sim/rigDamage";
 import { meshChunk } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
-import type { ShipVisual } from "../render/shipVisual";
+import type { ShipVisual, SailRecord } from "../render/shipVisual";
 import type { Physics } from "./physics";
 
 /**
@@ -28,6 +29,23 @@ export class Ship {
 
   /** Fired when damage severs hull sections; receiver spawns debris bodies. */
   onSevered?: (islands: Island[]) => void;
+  /** Fired when a mast goes by the board (foot shot out or trunk smashed). */
+  onMastFelled?: (mi: number) => void;
+  /** Fired when the rudder takes a ball. */
+  onRudderHit?: (hpLeft: number) => void;
+
+  // ---- rig damage state (round 7) ----
+  /** Per mast: still standing? */
+  mastAlive: boolean[];
+  /** Per mast: trunk hits it can still take. */
+  mastHp: number[];
+  /** Per mast: 1 = whole canvas → 0.15 floor as shot full of holes. */
+  sailIntegrity: number[];
+  rudderHp = 3;
+  /** Steering authority 0.15..1 — yaw torque multiplier. */
+  rudderEff = 1;
+  private mastFootInit: number[];
+  private mastColliders: RAPIER.Collider[] = [];
 
   /** Ship-local center of mass (meters), cached for force application points. */
   comLocal: [number, number, number];
@@ -121,10 +139,117 @@ export class Ship {
       const mastCol = R.ColliderDesc.cylinder(m.h / 2, 0.18)
         .setTranslation((m.x + 0.5) * VOXEL_SIZE, deckTop + m.h / 2 - 0.5, (m.z + 0.5) * VOXEL_SIZE)
         .setDensity(0);
-      world.createCollider(mastCol, this.body);
+      this.mastColliders.push(world.createCollider(mastCol, this.body));
     }
 
+    this.mastAlive = build.masts.map(() => true);
+    this.mastHp = build.masts.map(() => 2);
+    this.sailIntegrity = build.masts.map(() => 1);
+    this.mastFootInit = build.masts.map((m) => this.mastFootCount(m));
+
     this.rebuildDeckCollider();
+  }
+
+  /** Solid planking left in the disk the mast steps on (deck + the support
+   *  course under it). When most of it is blown away, the mast goes. */
+  private mastFootCount(m: { x: number; z: number }): number {
+    const grid = this.build.grid;
+    const yd = this.build.deckYAt(m.x);
+    let n = 0;
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        if (dx * dx + dz * dz > 5) continue;
+        if (grid.isSolid(m.x + dx, yd, m.z + dz)) n++;
+        if (grid.isSolid(m.x + dx, yd - 1, m.z + dz)) n++;
+      }
+    }
+    return n;
+  }
+
+  /** The mast goes by the board: rig falls, drive dies, trunk stops blocking. */
+  fellMast(mi: number): void {
+    if (!this.mastAlive[mi]) return;
+    this.mastAlive[mi] = false;
+    this.sailIntegrity[mi] = 0;
+    const col = this.mastColliders[mi];
+    if (col) this.phys.world.removeCollider(col, false);
+    this.visual.fellMast(mi);
+    this.onMastFelled?.(mi);
+  }
+
+  /** A ball into the trunk. Two stop the mast cold. */
+  hitMast(mi: number): void {
+    if (!this.mastAlive[mi]) return;
+    this.mastHp[mi] -= 1;
+    if (this.mastHp[mi] <= 0) this.fellMast(mi);
+  }
+
+  /** A ball through the canvas: that mast pulls a little less. */
+  hitSail(mi: number): void {
+    this.sailIntegrity[mi] = Math.max(this.sailIntegrity[mi] - 0.07, 0.15);
+  }
+
+  /** A ball into the rudder: the helm answers ever more sluggishly. */
+  hitRudder(): void {
+    this.rudderHp = Math.max(this.rudderHp - 1, 0);
+    this.rudderEff = Math.max(this.rudderHp / 3, 0.15);
+    this.onRudderHit?.(this.rudderHp);
+  }
+
+  private tmpHitA = new THREE.Vector3();
+  private tmpHitB = new THREE.Vector3();
+
+  /**
+   * Everything a ball's swept segment hits in the RIG this step: every sail
+   * crossed (cloth never stops a ball) plus the first hard stop (mast trunk
+   * or rudder blade), if any. World-space in, ship-local tests inside.
+   */
+  rigImpacts(
+    fromW: THREE.Vector3,
+    toW: THREE.Vector3,
+  ): {
+    sails: { rec: SailRecord; y: number; z: number }[];
+    stop: { kind: "mast"; mi: number } | { kind: "rudder" } | null;
+  } {
+    const p0 = this.worldToLocal(this.tmpHitA.copy(fromW), this.tmpHitA);
+    const p1 = this.worldToLocal(this.tmpHitB.copy(toW), this.tmpHitB);
+
+    const sails: { rec: SailRecord; y: number; z: number }[] = [];
+    for (const rec of this.visual.sails) {
+      if (!this.mastAlive[rec.mastIdx]) continue; // fallen rig: rects are stale
+      const hit = segmentSailHit(p0, p1, rec);
+      if (hit) sails.push({ rec, y: hit.y, z: hit.z });
+    }
+
+    let stop: { kind: "mast"; mi: number } | { kind: "rudder" } | null = null;
+    this.build.masts.forEach((m, mi) => {
+      if (stop || !this.mastAlive[mi]) return;
+      const deckTop = (this.build.deckYAt(m.x) + 1) * VOXEL_SIZE;
+      const cyl = {
+        x: (m.x + 0.5) * VOXEL_SIZE,
+        z: (m.z + 0.5) * VOXEL_SIZE,
+        yBase: deckTop,
+        yTop: deckTop + m.h - 0.5,
+        r: 0.32,
+      };
+      if (segmentMastHit(p0, p1, cyl)) stop = { kind: "mast", mi };
+    });
+
+    if (!stop && this.rudderHp > 0) {
+      // the rudder hangs off the stern post (low-x end), reaching from the
+      // heel up the transom — mirror of shipVisual's blade construction
+      const sternX = 4 * VOXEL_SIZE;
+      const bladeW = 0.9 + this.build.lengthM * 0.022;
+      const bladeH = this.build.deckY * VOXEL_SIZE * 0.95;
+      const zC = (this.build.grid.dims[2] / 2) * VOXEL_SIZE;
+      const box = {
+        min: { x: sternX - bladeW - 0.4, y: 0.1, z: zC - 0.45 },
+        max: { x: sternX + 0.3, y: 1.8 + bladeH * 0.55, z: zC + 0.45 },
+      };
+      if (segmentBoxHit(p0, p1, box)) stop = { kind: "rudder" };
+    }
+
+    return { sails, stop };
   }
 
   /**
@@ -465,6 +590,13 @@ export class Ship {
       }
       this.onSevered?.(islands);
     }
+
+    // a mast whose step has been blown out goes by the board (round 7)
+    this.build.masts.forEach((m, mi) => {
+      if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) {
+        this.fellMast(mi);
+      }
+    });
 
     this.recomputeMassProperties();
     this.rebuildDeckCollider();

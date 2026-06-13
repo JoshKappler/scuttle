@@ -40,6 +40,10 @@ export interface Ocean {
     halfL: number,
     halfB: number,
     time: number,
+    /** 1 = intact hull (the sea is discarded inside the waterline ellipse —
+     *  a dry hold, round 7); fades to 0 as she floods/founders and the sea
+     *  closes back over her. */
+    dry: number,
   ): void;
 }
 
@@ -168,6 +172,21 @@ uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 
 void main() {
   #include <clipping_planes_fragment>
+
+  // dry bilges, ALWAYS: the sea does not exist inside an intact hull. The
+  // surface is discarded within each ship's waterline ellipse so the hold
+  // shows timber, not "the wake and the water flowing by" through the hatch
+  // (round 7). uShipB[s].w fades to 0 as she floods — the sea closes back in.
+  for (int s0 = 0; s0 < 2; s0++) {
+    float dry = uShipB[s0].w;
+    if (dry < 0.01) continue;
+    vec2 f0 = uShipA[s0].zw;
+    vec2 ctr = uShipA[s0].xy - f0 * uShipB[s0].y;
+    vec2 rel0 = vWorldPos.xz - ctr;
+    float al0 = dot(rel0, f0) / max(uShipB[s0].y * 0.95, 0.1);
+    float ac0 = dot(rel0, vec2(-f0.y, f0.x)) / max(uShipB[s0].z * 0.78 * dry, 0.1);
+    if (al0 * al0 + ac0 * ac0 < 1.0) discard;
+  }
 
   // cutaway: the sea over the hull footprint is removed outright (the hold
   // is air, not water); the bounded wedge on the camera side of the cut
@@ -340,11 +359,11 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
     setFootprint(halfL, halfB) {
       (mat.uniforms.uHalf.value as THREE.Vector2).set(halfL, halfB);
     },
-    updateShipWake(slot, centerX, centerZ, fwdX, fwdZ, speed, halfL, halfB, time) {
+    updateShipWake(slot, centerX, centerZ, fwdX, fwdZ, speed, halfL, halfB, time, dry) {
       const a = (mat.uniforms.uShipA.value as THREE.Vector4[])[slot];
       const b = (mat.uniforms.uShipB.value as THREE.Vector4[])[slot];
       a.set(centerX + fwdX * halfL, centerZ + fwdZ * halfL, fwdX, fwdZ);
-      b.set(speed, halfL, halfB, 0);
+      b.set(speed, halfL, halfB, dry);
 
       const trail = trails[slot];
       const sx = centerX - fwdX * (halfL + 0.8);

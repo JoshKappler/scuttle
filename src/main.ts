@@ -87,6 +87,18 @@ async function main() {
 
   const captain = new AICaptain(enemy, scene, effects);
   const boarding = new BoardingSystem(physics, scene, effects, sloop, enemy);
+
+  // rig damage feedback (round 7): masts fall, rudders splinter
+  sloop.onMastFelled = () => (boarding.message = "YOUR MAST GOES BY THE BOARD!");
+  enemy.onMastFelled = () => (boarding.message = "her mast goes by the board!");
+  sloop.onRudderHit = (hp) => {
+    sloopVisual.chipRudder(hp / 3);
+    boarding.message = hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!";
+  };
+  enemy.onRudderHit = (hp) => {
+    enemyVisual.chipRudder(hp / 3);
+    boarding.message = hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!";
+  };
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
   // Steering only happens at the wheel (E to take/leave it); V toggles
   // first person. Third person keeps a bird's-eye orbit on the ship.
@@ -560,6 +572,18 @@ async function main() {
     wakeF.normalize();
     const fp = ship.build.footprint;
     ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
+    // dry hold: the ocean surface is discarded inside the hull while she's
+    // sound; as compartments fill (or she founders) the sea closes back in
+    let totV = 0;
+    let totW = 0;
+    for (const c of ship.build.compartments) {
+      totV += c.volume;
+      totW += c.waterVolume;
+    }
+    const flood = totV > 0 ? totW / totV : 0;
+    const dry =
+      Math.min(Math.max(1 - flood * 1.4, 0), 1) *
+      Math.min(Math.max((0.55 - ship.submergedFrac) / 0.2, 0), 1);
     ocean.updateShipWake(
       slot,
       wakeV.x,
@@ -570,6 +594,7 @@ async function main() {
       ship.build.lengthM / 2,
       ship.build.beamM / 2,
       world.simTime,
+      dry,
     );
   };
 

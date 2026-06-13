@@ -18,6 +18,19 @@ import type { ShipBuild } from "../sim/shipwright";
  * the non-voxel dressing: mast, boom, gaff sail, bowsprit (spec: sails and
  * spars are smooth geometry, not voxels). Group origin = grid (0,0,0) corner.
  */
+/** One sail's hit rectangle (ship-local meters) + its puncture canvas. */
+export interface SailRecord {
+  mesh: THREE.Mesh;
+  mastIdx: number;
+  planeX: number;
+  yMin: number;
+  yMax: number;
+  zMin: number;
+  zMax: number;
+  canvas: HTMLCanvasElement;
+  tex: THREE.CanvasTexture;
+}
+
 export class ShipVisual {
   readonly group = new THREE.Group();
   private chunkMeshes = new Map<string, THREE.Mesh>();
@@ -25,6 +38,9 @@ export class ShipVisual {
   private build: ShipBuild;
 
   private waterMeshes = new Map<number, THREE.Mesh>();
+  /** Sails by mast, for ball-vs-cloth tests and hole decals. */
+  readonly sails: SailRecord[] = [];
+  private mastRigs: { group: THREE.Group; fallT: number; fallAxis: THREE.Vector3 }[] = [];
 
   /** Real CC0 plank photos (ambientCG), shared by every ship. */
   private static deckTex: THREE.Texture | null = null;
@@ -154,6 +170,16 @@ export class ShipVisual {
     if (this.rudderPivot) this.rudderPivot.rotation.y = -this.dispRudder * 0.55;
     if (this.wheelSpin) this.wheelSpin.rotation.z = -this.dispRudder * 2.6;
 
+    // felled masts topple over their foot, hang, then slip into the sea
+    for (const rig of this.mastRigs) {
+      if (rig.fallT < 0) continue;
+      rig.fallT += dt;
+      const ang = Math.min(rig.fallT * rig.fallT * 1.1, 1.62);
+      rig.group.quaternion.setFromAxisAngle(rig.fallAxis, ang);
+      if (rig.fallT > 3) rig.group.position.y -= dt * 0.55;
+      if (rig.fallT > 14) rig.group.visible = false;
+    }
+
     // barrels share the gunnery module's direction math, so what you see is
     // exactly where the ball will go. Yaw-then-pitch keeps carriages upright
     // (a quaternion shortest-arc flip turned port cannons upside down).
@@ -180,25 +206,23 @@ export class ShipVisual {
 
   private static tmpDir = new THREE.Vector3();
 
-  private cutawayActive = false;
-
-  /** Cutaway: clip the hull against a world-space plane (null disables).
-   *  Water boxes render ONLY during cutaway — always-on, they could bleed
-   *  through the hull from outside ("blue cubic rectangle on the bottom of
-   *  the ship", playtest round 5). */
+  /** Cutaway: clip the hull against a world-space plane (null disables). */
   setCutaway(plane: THREE.Plane | null): void {
-    this.cutawayActive = plane !== null;
     this.hullMaterial.clippingPlanes = plane ? [plane] : null;
     this.hullMaterial.needsUpdate = true;
   }
 
-  /** Reflect current flooding levels. Call once per frame. */
+  /** Reflect current flooding levels. Call once per frame. Water boxes show
+   *  whenever a compartment holds water — through hatches and shot holes,
+   *  not only in cutaway (round 7: "the only time there should be water in
+   *  the boat is when it is flooding … proportionate to how far along in
+   *  the sinking process it is"). */
   updateWater(compartments: Compartment[]): void {
     for (const c of compartments) {
       const mesh = this.waterMeshes.get(c.id);
       if (!mesh) continue;
       const fill = c.waterVolume / c.volume;
-      if (fill < 0.01 || !this.cutawayActive) {
+      if (fill < 0.01) {
         mesh.visible = false;
         continue;
       }
@@ -213,6 +237,36 @@ export class ShipVisual {
       );
       mesh.scale.set(w * 0.98, Math.max(h * fill, 0.02), d * 0.98);
     }
+  }
+
+  /** Tear a ragged shot hole in a sail at the ship-local crossing point. */
+  puncture(rec: SailRecord, yLocal: number, zLocal: number): void {
+    const ctx = rec.canvas.getContext("2d")!;
+    const u = (rec.zMax - zLocal) / (rec.zMax - rec.zMin); // geometry is Y-rotated: +z maps to u=0
+    const v = (yLocal - rec.yMin) / (rec.yMax - rec.yMin);
+    const px = u * rec.canvas.width;
+    const py = (1 - v) * rec.canvas.height;
+    const rPx = ((0.4 + Math.random() * 0.35) / (rec.zMax - rec.zMin)) * rec.canvas.width;
+    ctx.fillStyle = "#000";
+    for (let i = 0; i < 5; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.random() * rPx * 0.5;
+      ctx.beginPath();
+      ctx.arc(px + Math.cos(a) * d, py + Math.sin(a) * d, Math.max(rPx * (0.55 + Math.random() * 0.45), 1.5), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    rec.tex.needsUpdate = true;
+  }
+
+  /** Start the fall of a mast's whole rig (idempotent). */
+  fellMast(mi: number): void {
+    const rig = this.mastRigs[mi];
+    if (rig && rig.fallT < 0) rig.fallT = 0;
+  }
+
+  /** Shrink the rudder blade as it's shot away (1 = whole, 0 = stump). */
+  chipRudder(hpFrac: number): void {
+    if (this.rudderBlade) this.rudderBlade.scale.y = 0.3 + 0.7 * hpFrac;
   }
 
   /** Rebuild every chunk that the grid has marked dirty. */
@@ -259,6 +313,7 @@ export class ShipVisual {
 
   private sailUniforms: { uTime: { value: number }; uFill: { value: number } } | null = null;
   private rudderPivot: THREE.Group | null = null;
+  private rudderBlade: THREE.Mesh | null = null;
   private wheelSpin: THREE.Group | null = null;
   /** Per gun: the yaw pivot, plus (once the GLB is dissected) the trunnion
    *  group that takes elevation and the sculpt's baked tilt to counter. */
@@ -334,19 +389,34 @@ export class ShipVisual {
         );
     };
 
-    for (const m of this.build.masts) {
+    this.build.masts.forEach((m, mi) => {
       const mastH = m.h;
       const deckTop = (this.build.deckYAt(m.x) + 1) * VOXEL_SIZE;
       const mx = (m.x + 0.5) * VOXEL_SIZE;
       const mz = (m.z + 0.5) * VOXEL_SIZE;
 
+      // every spar and sail of one mast lives under ONE group pivoted at its
+      // FOOT, so shooting the foot out drops the whole rig as a unit
+      // (round 7: "taking out a ship's mast at the bottom will cause the
+      // entire thing to fall down")
+      const mastGroup = new THREE.Group();
+      mastGroup.position.set(mx, deckTop, mz);
+      this.group.add(mastGroup);
+      // tip abeam (alternating side per mast) and a touch aft
+      const df = new THREE.Vector3(-0.4, 0, mi % 2 === 0 ? 1 : -1).normalize();
+      this.mastRigs.push({
+        group: mastGroup,
+        fallT: -1,
+        fallAxis: new THREE.Vector3(df.z, 0, -df.x), // up × df
+      });
+
       const mast = new THREE.Mesh(
         new THREE.CylinderGeometry(mastH * 0.006, mastH * 0.012, mastH, 8),
         woodMat,
       );
-      mast.position.set(mx, deckTop + mastH / 2 - 0.5, mz);
+      mast.position.set(0, mastH / 2 - 0.5, 0);
       mast.castShadow = true;
-      this.group.add(mast);
+      mastGroup.add(mast);
 
       // square rig, canvas up to the masthead (playtest round 4): three
       // yards crossing the FORE side of the mast, two tapered sails laced
@@ -356,17 +426,17 @@ export class ShipVisual {
       // Everything scales with the mast's own height — the brig flies two.
       const yardOff = 0.3; // fore of the mast centerline
       const levels = [
-        { y: deckTop + mastH * 0.17, w: mastH * 0.71 }, // course yard
-        { y: deckTop + mastH * 0.56, w: mastH * 0.57 }, // topsail yard
-        { y: deckTop + mastH * 0.88, w: mastH * 0.43 }, // topgallant yard
+        { y: mastH * 0.17, w: mastH * 0.71 }, // course yard
+        { y: mastH * 0.56, w: mastH * 0.57 }, // topsail yard
+        { y: mastH * 0.88, w: mastH * 0.43 }, // topgallant yard
       ];
       for (const lv of levels) {
         const yardGeo = new THREE.CylinderGeometry(0.07, 0.07, lv.w + 0.3, 6);
         yardGeo.rotateX(Math.PI / 2); // axis beam-wise
         const yard = new THREE.Mesh(yardGeo, woodMat);
-        yard.position.set(mx + yardOff, lv.y, mz);
+        yard.position.set(yardOff, lv.y, 0);
         yard.castShadow = true;
-        this.group.add(yard);
+        mastGroup.add(yard);
       }
       for (let i = 0; i < levels.length - 1; i++) {
         const foot = levels[i];
@@ -382,12 +452,38 @@ export class ShipVisual {
         geo.rotateY(Math.PI / 2); // width spans the beam; normal points forward
         const bellyArr = new Float32Array(pos.count).fill(foot.w * 0.17);
         geo.setAttribute("aBelly", new THREE.BufferAttribute(bellyArr, 1));
-        const sail = new THREE.Mesh(geo, sailMat);
-        sail.position.set(mx + yardOff + 0.16, (foot.y + head.y) / 2, mz);
+
+        // every sail carries its own puncture canvas (white = cloth, black =
+        // shot holes) wired as an alphaMap from birth so the shader program
+        // never changes — balls tear it instead of passing through (round 7)
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 128;
+        const cctx = canvas.getContext("2d")!;
+        cctx.fillStyle = "#fff";
+        cctx.fillRect(0, 0, 128, 128);
+        const tex = new THREE.CanvasTexture(canvas);
+        const mat = sailMat.clone(); // same onBeforeCompile + shared uniforms
+        mat.alphaMap = tex;
+        mat.alphaTest = 0.45;
+
+        const sail = new THREE.Mesh(geo, mat);
+        sail.position.set(yardOff + 0.16, (foot.y + head.y) / 2, 0);
         sail.castShadow = true;
-        this.group.add(sail);
+        mastGroup.add(sail);
+
+        this.sails.push({
+          mesh: sail,
+          mastIdx: mi,
+          planeX: mx + yardOff + 0.16,
+          yMin: deckTop + foot.y,
+          yMax: deckTop + head.y,
+          zMin: mz - foot.w / 2,
+          zMax: mz + foot.w / 2,
+          canvas,
+          tex,
+        });
       }
-    }
+    });
 
     // stern rudder: hinged blade reaching below the keel for clear flow, and
     // UP the transom toward the deck so you can actually watch it answer the
@@ -403,6 +499,7 @@ export class ShipVisual {
     const heel = new THREE.Mesh(new THREE.BoxGeometry(bladeW + 0.6, 1.25, 0.17), woodMat);
     heel.position.set(-bladeW / 2 - 0.28, -1.7, 0);
     this.rudderPivot.add(blade, heel);
+    this.rudderBlade = blade;
     this.group.add(this.rudderPivot);
 
     // the wheel: classic spoked helm where the build says the helm stands
