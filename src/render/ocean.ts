@@ -337,7 +337,11 @@ void main() {
     // distant moiré while the crisp chop stays up close where it's resolved.
     float dCam = length(uCameraPos - vWorldPos);
     float nFade = 1.0 - smoothstep(55.0, 190.0, dCam);
-    vec3 fn = (texture2D(uFftNormal, vWorldPos.xz / uFftTile).xyz * 2.0 - 1.0) * nFade;
+    // keep the chop normal GENTLE (×0.4): a strong, high-frequency, animated normal
+    // under a sun specular is exactly what twinkled into the "grid of dots / the
+    // whole ocean vibrating up and down very fast". The chop SHAPE comes from the
+    // vertex displacement; this map only adds fine relief, so it can be soft.
+    vec3 fn = (texture2D(uFftNormal, vWorldPos.xz / uFftTile).xyz * 2.0 - 1.0) * nFade * 0.4;
     Nd = normalize(N + vec3(fn.x, 0.0, fn.z));
   } else {
     Nd = normalize(N + vec3(g1x * 0.6 + g2x * 0.4 + g3x * 0.22, 0.0,
@@ -352,14 +356,14 @@ void main() {
   float fresnel = pow(1.0 - facing, 5.0);
   vec3 col = mix(water, uSkyColor, clamp(fresnel * 0.85 + 0.05, 0.0, 1.0));
 
-  // sun glints (detailed normal → sparkle)
+  // sun glints — a BROAD glitter path, never a pinpoint. A tight pow-220 highlight
+  // on the animated chop normal lit one texel and not its neighbour and flipped
+  // every frame: that is the "checkerboard" lattice that read as the whole ocean
+  // vibrating. Wide lobes (pow 38/11) spread the energy across many texels so it
+  // reads as a smooth sun-on-water path that holds still in motion.
   vec3 H = normalize(L + V);
-  // broader lobes than the old pow-420 pinpoint: a too-tight highlight on a
-  // bumpy normal is the single worst aliaser (one texel flips white, its
-  // neighbour stays dark → shimmer). Wider glints spread the energy and read as
-  // sun-on-water rather than a sparkle lattice.
-  float spec = pow(max(dot(Nd, H), 0.0), 220.0) * 1.5;
-  spec += pow(max(dot(Nd, H), 0.0), 55.0) * 0.3;
+  float ndh = max(dot(Nd, H), 0.0);
+  float spec = pow(ndh, 38.0) * 0.38 + pow(ndh, 11.0) * 0.12;
   col += uSunColor * spec;
 
   // subsurface light through wave crests facing the sun
@@ -432,26 +436,13 @@ void main() {
   // break the wash up so it reads as churned water, not paint
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
 
-  // FFT foam: the Jacobian-fold whitecaps from the chop field (the FFT pass now
-  // injects foam only on genuine breaking-crest cores). The mask is ~1 m/texel,
-  // so used raw it magnifies into the low-res "camo" blobs the playtest hated.
-  // Fix per Sea-of-Thieves/Crest: the mask is only a WHERE; the LOOK comes from
-  // high-frequency detail. Two octaves of value-noise MULTIPLIED erode the mask
-  // edge into fine lacy whitewater, then a crisp threshold removes the soft blob.
-  // Detail contrast fades with distance so the far field doesn't sparkle.
-  float fftFoam = 0.0;
-  if (uFftOn > 0.5) {
-    float foamMask = texture2D(uFftFoam, vWorldPos.xz / uFftTile).r;
-    float dCamF = length(uCameraPos - vWorldPos);
-    float detFade = 1.0 - smoothstep(35.0, 150.0, dCamF);
-    float d1 = noise(vWorldPos.xz * 1.7 + uTime * 0.06);
-    float d2 = noise(vWorldPos.xz * 4.3 - uTime * 0.09);
-    float detail = mix(1.0, d1 * d2 * 2.6, detFade);
-    fftFoam = smoothstep(0.5, 0.74, foamMask * detail);
-  }
-
+  // FFT foam REMOVED (playtest: "the shitty low-resolution camo texture … I just
+  // want that removed"). The Jacobian whitecap mask is ~1 m/texel and, magnified,
+  // always read as low-res camo blobs no matter how it was thresholded or eroded.
+  // Whitewater now comes only from the analytic crest foam + caps + ship wash here;
+  // open-sea breaking SPRAY is the particle system's job (and is being beefed up).
   col = mix(col, vec3(0.92, 0.96, 0.95),
-            clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.55 + fftFoam * 0.7, 0.0, 0.93));
+            clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.55, 0.0, 0.93));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);
