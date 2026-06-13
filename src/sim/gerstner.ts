@@ -36,37 +36,43 @@ export interface Wave {
  */
 export function makeWaves(rng: Rng, count = 16): Wave[] {
   const primary = rng.range(0, Math.PI * 2);
-  // 70 m, not 90: the 90 m swell's phase speed (~23 kn) matched the brig's
-  // full-sail speed and she'd LOCK ONTO a wave back, parked bow-up for
-  // minutes (real surfing, bad game feel). At 70 m she overtakes the sea.
-  // Round 12: L_MAX 80 (was 70) gives a longer, more majestic rolling swell —
-  // gentler slopes for the same height, open-ocean roll rather than a tight wall
-  // of water. At ~21.7 kn phase speed the sea still overtakes an 18 kn ship, so
-  // she can't surf-lock onto a wave back the way the old 90 m swell did.
-  const L_MAX = 80; // m — long ocean swell
+  // Round 13: the playtest wants the sea "10x slower, 10x wider, 10x taller" — it
+  // read as fast tiny vibrating chop. The band-limited FFT chop (≤14 m) is
+  // PHYSICALLY incapable of slow/wide: short waves oscillate fast (ω=√(gk)) and
+  // their slope shimmers. The big, slow, WIDE waves must come from this analytic
+  // swell, which can be any wavelength and moves at a realistic, slow speed. So
+  // the swell goes long and tall: L_MAX 80→150 m. A 150 m swell's phase speed is
+  // ~30 kn (was ~21.7 at 80 m) — still well above an 18 kn ship, so no surf-lock,
+  // and a crest now takes ~10 s to roll past: the slow majestic heave asked for.
+  const L_MAX = 150; // m — long ocean swell (wide + slow)
   const L_MIN = 3.5; // m — wind chop
-  // The happy medium between the too-mellow 0.62 m (read as a flat wave pool) and
-  // the 1.05 m that looked great but sat the low gun ports awash and FLOODED the
-  // hull. 0.80 m on a longer, gentler swell heaves her realistically without
-  // shipping water; the FFT chop adds the sharp surface relief on top.
-  const SWELL_AMP = 0.8; // m — amplitude of the longest wave (the bob driver)
+  // Taller, but on a MUCH longer wave so the SLOPE stays gentle: steepness is
+  // amp/λ ≈ 1.3/150 = 0.0087, below the old 0.8/80 = 0.010 that floated dry — so
+  // a 1.3 m swell here pitches the hull LESS than the old 0.8 m did, and won't sit
+  // the gun ports awash. The visual surface relief comes from the (now calmed)
+  // FFT chop on top; this swell is the big slow roll under it.
+  const SWELL_AMP = 1.5; // m — amplitude of the longest wave (the bob driver)
   const AMP_FALLOFF = 1.3; // higher → more height concentrated in the swell
   const waves: Wave[] = [];
   for (let i = 0; i < count; i++) {
     const f = count === 1 ? 0 : i / (count - 1);
     const wavelength = Math.max(L_MAX * Math.pow(L_MIN / L_MAX, f) * (1 + rng.range(-0.12, 0.12)), 2.2);
     // long swell now crosses too (round 11: "ripples all going the exact same
-    // direction"): the longest waves fan ~±0.45 rad around two swell trains
-    // ~0.7 rad apart, short chop scatters wider. Physics rides the result.
-    const train = i % 2 === 0 ? 0 : 0.7; // two interleaved swell systems
-    const spreadHalf = 0.45 + 0.7 * f * f;
+    // direction"; round 13: "still just 2 sets of waves rolling from 2
+    // directions … a less uniform pattern should be our target"): the longest
+    // waves fan around THREE interleaved swell trains spanning ~1.9 rad (~110°)
+    // instead of two ~0.7 rad apart, and each wave jitters wider. Three crossing
+    // systems never line up into a readable "two-train" pattern — the sea reads
+    // as confused open ocean. Physics rides the result (still band-limited to the
+    // swell, just from more directions, which is more realistic, not less stable).
+    const train = [0.0, 0.85, 1.9][i % 3]; // three interleaved swell systems
+    const spreadHalf = 0.6 + 0.8 * f * f;
     const angle = primary + train + rng.range(-spreadHalf, spreadHalf);
-    // chop: lift the SHORT components (λ < the physics cutoff, which the hull
-    // never feels) so the sea reads as wind chop riding the swell rather than
-    // long rolling waves (round 9: "I wanted … chop instead of just long,
-    // rolling waves"). Tapers to 0 at the swell cutoff, so physicsWaves and
-    // the ship's motion are completely untouched.
-    const chop = 0.06 * Math.max(0, (PHYSICS_MIN_WAVELENGTH - wavelength) / PHYSICS_MIN_WAVELENGTH);
+    // No short-wave lift any more: the old chop-lift fed the fast small analytic
+    // ripples that (with the FFT chop) made the sea "vibrate like sand". The short
+    // analytic components now stay near-flat under the AMP_FALLOFF, so the analytic
+    // field is a clean big slow swell; surface relief is the FFT's job alone.
+    const chop = 0;
     waves.push({
       dirX: Math.cos(angle),
       dirZ: Math.sin(angle),

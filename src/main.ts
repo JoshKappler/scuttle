@@ -63,14 +63,12 @@ async function main() {
     N: 256,
     L: 250,
     windSpeed: 11,
-    amplitude: 320, // the Phillips spectrum is uncalibrated; scale the chop up so
-    // the 11–14 m sub-band reads as real spaced-out crests. Raised 140→320 for the
-    // playtest's "chop needs to be much higher" — with the cutoff now at 11 m the
-    // energy sits in the longest, slowest chop waves, so a bigger amplitude makes
-    // tall, slow-heaving crests (~1.1 m) rather than fast small "vibrating" ripples.
-    // Visual only — physics ignores the chop (band-limited under the 14 m hull
-    // cutoff), so a tall chop can't flood or surf the hull; only the visual sea
-    // rises, and the in-hull discard keeps it off the deck.
+    amplitude: 60, // the Phillips spectrum is uncalibrated; this scales the chop.
+    // DROPPED 320→60: cranking it up made the fast short-wave content (slope ∝ k·a)
+    // dominate and the whole sea "vibrated like sand on a vibrating sheet". The
+    // band-limited FFT can only ever be short/fast, so it is now a faint surface
+    // texture; the big, slow, wide, tall waves come from the analytic swell
+    // (gerstner L_MAX 150 m, 1.3 m). Visual only — physics never samples the chop.
     windDirX: waves[0].dirX,
     windDirZ: waves[0].dirZ,
   });

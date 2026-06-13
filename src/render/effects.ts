@@ -219,9 +219,10 @@ export class Effects {
    *  `removed` is the voxel count from ship.applyDamage; 0 emits nothing. */
   impactDebris(p: THREE.Vector3, normal: THREE.Vector3, removed: number): void {
     if (removed <= 0) return;
-    // one chunk per removed voxel, capped so a deep multi-voxel bite can't
-    // spray hundreds of motes; tiny hits still throw their handful.
-    const chunks = Math.min(removed, 24);
+    // one chunk per removed voxel (playtest round 13: "should not be capped at
+    // 24, much higher"). Only a high safety cap remains so a single colossal bite
+    // can't drain the whole particle pool; a normal strike throws its real count.
+    const chunks = Math.min(removed, 250);
     for (let i = 0; i < chunks; i++) {
       // weathered hull-timber browns (oak ↔ pine), a touch brighter than the
       // unlit material colors so the chunks read against the sea.

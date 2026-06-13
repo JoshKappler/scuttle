@@ -161,13 +161,13 @@ void main() {
   if (uFftOn > 0.5) {
     float chopFade = 1.0 - smoothstep(80.0, 170.0, rDist);
     vec3 d = texture2D(uFftDisp, rest.xz / uFftTile).xyz; // Dx, height, Dz
-    // choppiness: exaggerate the horizontal trochoid pinch so crests sharpen
-    // into peaks and the troughs broaden — the difference between round swell
-    // and genuine wind-torn open-sea chop. With the chop now concentrated in the
-    // 8.5–14 m sub-band, a 2.2x pinch crashes crossing crests into sharp peaks
-    // without the frantic jitter the old 2.7x put on the (then shorter) ripples.
-    p.x += d.x * chopFade * 2.2;
-    p.z += d.z * chopFade * 2.2;
+    // choppiness: a GENTLE horizontal trochoid pinch. The old 2.2x sharpening on
+    // a high-amplitude chop steepened the short waves into fast-flickering cusps
+    // (part of the "vibrating sand" look). With the FFT now a low-amplitude
+    // surface texture under a big analytic swell, 1.3x just gives it a little
+    // life without re-sharpening it into shimmer.
+    p.x += d.x * chopFade * 1.3;
+    p.z += d.z * chopFade * 1.3;
     p.y += d.y * chopFade;
     crest += max(d.y, 0.0) * chopFade;
   }

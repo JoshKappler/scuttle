@@ -13,12 +13,14 @@ describe("wave spectrum (round 8)", () => {
 
   it("the long swell keeps real height — enough to heave the hull", () => {
     const longest = waves.reduce((a, b) => (a.wavelength > b.wavelength ? a : b));
-    // the bob driver must not be starved (round 8 v2: 0.27 m was too small)
-    expect(longest.amplitude).toBeGreaterThan(0.5);
-    // …a medium open-sea swell (round 12), still bounded — not a wall of water
+    // round 13: a BIG slow open-ocean swell (SWELL_AMP 1.5 m on a 150 m wave) —
+    // the playtest asked for much taller/wider/slower seas. The bob driver heaves
+    // the hull ~±1.5 m on a ~8 s period (verified in-browser, flood-free).
+    expect(longest.amplitude).toBeGreaterThan(1.0);
+    // still bounded — a tall swell, not an infinite wall of water.
     const sum = waves.reduce((s, w) => s + w.amplitude, 0);
-    expect(sum).toBeGreaterThan(1.5);
-    expect(sum).toBeLessThan(4.5);
+    expect(sum).toBeGreaterThan(2.5);
+    expect(sum).toBeLessThan(7.5);
   });
 
   it("stays under the global sharpness budget — no self-intersecting crests", () => {
