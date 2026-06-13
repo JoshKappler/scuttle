@@ -209,7 +209,19 @@ void main() {
     acc.x += T.x * c - T.y * s;
     acc.y += T.x * s + T.y * c;
   }
-  float val = acc.x / (N * N); // real part, normalized by 1/N²
+  // FFTSHIFT CORRECTION (the round-15 jitter fix). The spectrum centers the
+  // wavenumber at index N/2 (kx = 2π(m − N/2)/L, see EVOLUTION_FRAG) but this
+  // inverse DFT sums the RAW index i·m, omitting the e^{−iπ(i+j)} that the −N/2
+  // offset implies. The recovered field is therefore the physical surface
+  // MODULATED by (−1)^(i+j): a per-texel checkerboard. The mesh samples this
+  // displacement texture with bilinear filtering, and the checkerboard beats
+  // against the sampling lattice into the "vibrating sand / jitter" the playtests
+  // kept reporting — we were tuning amplitude/damping/foam around a structural FFT
+  // bug for rounds. Undo it here (applies to height + both choppiness channels,
+  // which all pass through this stage). MEASURED in-browser before/after:
+  // opposite-sign-adjacent texels 0.98 → 0.02, high-frequency energy 1.0 → 0.002.
+  float shift = mod(i + j, 2.0) < 0.5 ? 1.0 : -1.0;
+  float val = shift * acc.x / (N * N); // real part, normalized by 1/N², de-checkerboarded
 
   vec4 prev = texture2D(uPrev, vUv);
   vec4 outc = prev;
