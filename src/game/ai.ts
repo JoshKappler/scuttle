@@ -30,7 +30,9 @@ export class AICaptain {
     // helm, leaner sail trim, wider shot spread — aggressive but beatable
     // (round 6: "both of the ships are so equally matched … nerf the enemy")
     this.cannons = new Cannons(scene, effects, 9.5);
-    this.sailing.efficiency = 0.82;
+    // a touch quicker than round 6's 0.82 so she can actually keep station and
+    // hunt rather than fall astern and drift off (round 10)
+    this.sailing.efficiency = 0.9;
     this.accuracyJitter = jitterDeg;
   }
 

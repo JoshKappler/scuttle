@@ -8,9 +8,30 @@ import * as THREE from "three";
  * pre-added at intensity 0 — adding a light at runtime recompiles every
  * shader in the scene, which is a guaranteed hitch mid-broadside.
  */
-const MAX = 1200;
-const MAX_FIRE = 480;
-const FLASH_POOL = 5;
+const MAX = 1600;
+const MAX_FIRE = 700;
+const FLASH_POOL = 6;
+
+/** Soft round particle sprite (radial gradient → transparent). Without it
+ *  THREE.Points draws hard SQUARES — "the particles … are basically just a
+ *  scatter of white squares" (round 10). Built once, shared by both layers. */
+let _softSprite: THREE.Texture | null = null;
+function softSprite(): THREE.Texture {
+  if (_softSprite) return _softSprite;
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d")!;
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(0.45, "rgba(255,255,255,0.6)");
+  grad.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grad;
+  g.beginPath();
+  g.arc(32, 32, 32, 0, Math.PI * 2);
+  g.fill();
+  _softSprite = new THREE.CanvasTexture(c);
+  return _softSprite;
+}
 
 interface Particle {
   life: number; // remaining s
@@ -40,9 +61,10 @@ function makeLayer(max: number, size: number, additive: boolean): { layer: Layer
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   const mat = new THREE.PointsMaterial({
     size,
+    map: softSprite(), // soft round dots, not hard squares
     vertexColors: true,
     transparent: true,
-    opacity: additive ? 1 : 0.85,
+    opacity: additive ? 1 : 0.9,
     depthWrite: false,
     sizeAttenuation: true,
     blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
@@ -127,48 +149,64 @@ export class Effects {
     best.light.intensity = peak;
   }
 
-  /** Fire and brimstone out the bore (round 8: "a flash of flame and fire
-   *  out the front when they fire"). Pair with muzzleSmoke. */
+  /** A real gun going off (round 10: "much more intense … feel like a real
+   *  loud explosion is coming, with smoke"). A hot bloom at the bore, a long
+   *  flame tongue, a shower of embers, a fat brilliant flash. Pair with
+   *  muzzleSmoke for the powder cloud. */
   muzzleFlash(p: THREE.Vector3, dir: THREE.Vector3): void {
-    // flame tongue: fast, hot, dies in a tenth of a second
-    for (let i = 0; i < 18; i++) {
-      const s = 13 + Math.random() * 14;
+    // hot bloom: a dense ball of white-hot flame right at the muzzle
+    for (let i = 0; i < 16; i++) {
       this.spawnInto(
         this.fire,
-        p.x,
-        p.y,
-        p.z,
-        [
-          dir.x * s + (Math.random() - 0.5) * 3.4,
-          dir.y * s + (Math.random() - 0.5) * 3.4,
-          dir.z * s + (Math.random() - 0.5) * 3.4,
-        ],
-        0.07 + Math.random() * 0.12,
-        [1.0, 0.62 + Math.random() * 0.25, 0.22],
+        p.x + dir.x * 0.3,
+        p.y + dir.y * 0.3,
+        p.z + dir.z * 0.3,
+        [dir.x * 4 + (Math.random() - 0.5) * 4.5, dir.y * 4 + (Math.random() - 0.5) * 4.5, dir.z * 4 + (Math.random() - 0.5) * 4.5],
+        0.1 + Math.random() * 0.14,
+        [1.0, 0.85, 0.5],
         0,
-        4.5,
+        5.5,
       );
     }
-    // embers that tumble into the sea
-    for (let i = 0; i < 7; i++) {
-      const s = 5 + Math.random() * 7;
+    // flame tongue: a long jet of fire blasting out the bore
+    for (let i = 0; i < 44; i++) {
+      const s = 17 + Math.random() * 24;
       this.spawnInto(
         this.fire,
         p.x,
         p.y,
         p.z,
         [
-          dir.x * s + (Math.random() - 0.5) * 2.4,
-          dir.y * s + Math.random() * 1.6,
-          dir.z * s + (Math.random() - 0.5) * 2.4,
+          dir.x * s + (Math.random() - 0.5) * 5.5,
+          dir.y * s + (Math.random() - 0.5) * 5.5,
+          dir.z * s + (Math.random() - 0.5) * 5.5,
         ],
-        0.3 + Math.random() * 0.35,
-        [1.0, 0.45, 0.12],
-        -6,
-        1.2,
+        0.08 + Math.random() * 0.16,
+        [1.0, 0.55 + Math.random() * 0.3, 0.18],
+        0,
+        4.2,
       );
     }
-    this.flash(p, 85, 0.12);
+    // embers/sparks tumbling out and falling to the sea
+    for (let i = 0; i < 18; i++) {
+      const s = 6 + Math.random() * 11;
+      this.spawnInto(
+        this.fire,
+        p.x,
+        p.y,
+        p.z,
+        [
+          dir.x * s + (Math.random() - 0.5) * 5,
+          dir.y * s + Math.random() * 2.6,
+          dir.z * s + (Math.random() - 0.5) * 5,
+        ],
+        0.35 + Math.random() * 0.55,
+        [1.0, 0.42, 0.1],
+        -7,
+        1.0,
+      );
+    }
+    this.flash(p, 145, 0.17);
   }
 
   /** The full carnage package where a ball strikes timber (round 8: "a more
@@ -214,21 +252,22 @@ export class Effects {
   }
 
   muzzleSmoke(p: THREE.Vector3, dir: THREE.Vector3): void {
-    for (let i = 0; i < 14; i++) {
-      const s = 6 + Math.random() * 5;
+    // a fat billowing powder cloud that rolls out the bore and lingers
+    for (let i = 0; i < 30; i++) {
+      const s = 3.5 + Math.random() * 8;
       this.spawn(
         p.x,
         p.y,
         p.z,
         [
-          dir.x * s + (Math.random() - 0.5) * 2.4,
-          dir.y * s + Math.random() * 1.8 + 0.6,
-          dir.z * s + (Math.random() - 0.5) * 2.4,
+          dir.x * s + (Math.random() - 0.5) * 4,
+          dir.y * s + Math.random() * 2.4 + 0.5,
+          dir.z * s + (Math.random() - 0.5) * 4,
         ],
-        0.9 + Math.random() * 0.7,
-        [0.82, 0.8, 0.76],
-        0.6,
-        3.2,
+        1.3 + Math.random() * 1.6,
+        [0.86 - Math.random() * 0.18, 0.84 - Math.random() * 0.18, 0.8 - Math.random() * 0.18],
+        0.4,
+        2.2,
       );
     }
   }
@@ -248,6 +287,35 @@ export class Effects {
         -9.81,
         0.4,
       );
+    }
+  }
+
+  /** Bow wave: two sheets of spray peeling off the stem to PORT and STARBOARD
+   *  (round 10: "spraying out in either direction like the real front of a ship
+   *  cutting through water"). Particles leave at the waterline and arc OUTWARD,
+   *  away from the hull — they never climb onto the deck. */
+  bowWave(x: number, y: number, z: number, fwdX: number, fwdZ: number, strength = 1): void {
+    const rx = -fwdZ; // starboard (right) unit, horizontal
+    const rz = fwdX;
+    const n = Math.round(8 * strength);
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < n; i++) {
+        const lat = 0.75 + Math.random() * 0.7; // mostly sideways
+        const fwd = 0.15 + Math.random() * 0.45; // a little forward
+        const vmag = 2.6 + Math.random() * 3.6 * strength;
+        const ox = rx * side;
+        const oz = rz * side;
+        this.spawn(
+          x + ox * (0.3 + Math.random() * 0.9),
+          y + Math.random() * 0.25,
+          z + oz * (0.3 + Math.random() * 0.9),
+          [(ox * lat + fwdX * fwd) * vmag, 1.3 + Math.random() * 2.1 * strength, (oz * lat + fwdZ * fwd) * vmag],
+          0.5 + Math.random() * 0.5,
+          [0.92, 0.96, 0.97],
+          -9.81,
+          0.6,
+        );
+      }
     }
   }
 

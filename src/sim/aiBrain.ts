@@ -59,10 +59,11 @@ export function decideAI(v: AIView): AIDecision {
     return { sailSet: 1, rudderSign: steerToward(v.bearingDeg, 0), fire };
   }
 
-  // close action: SLOW DOWN and dance the nearer broadside onto them. Full
-  // sail here meant 22 kn turning circles measured in minutes — she spent
-  // most of every pass pointed away, which read as fleeing (round 8: "the
-  // enemy ship also seems to be running away from me")
-  const desired = v.bearingDeg >= 0 ? 90 : -90;
-  return { sailSet: 0.6, rudderSign: steerToward(v.bearingDeg, desired), fire };
+  // close action: ease off and dance the nearer broadside onto them. The
+  // desired bearing is just FORWARD of abeam (±85, not ±90) so she spirals
+  // gently INWARD and keeps station instead of orbiting out to the horizon
+  // (round 10: "just floating off way into the distance"). Full sail here meant
+  // minutes-long turning circles spent pointed away (round 8).
+  const desired = v.bearingDeg >= 0 ? 85 : -85;
+  return { sailSet: 0.72, rudderSign: steerToward(v.bearingDeg, desired), fire };
 }

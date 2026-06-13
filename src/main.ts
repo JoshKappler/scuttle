@@ -70,15 +70,16 @@ async function main() {
   ocean.setFootprint(sloopBuild.lengthM / 2 + 1.2, sloopBuild.beamM / 2 + 1.0);
 
   // enemy captain: the old, smaller sloop — kept as the easier opponent
-  // (round 6) — spawns upwind, ALREADY POINTED AT YOU, and runs down on you
-  // (round 8: 250 m + a random heading meant a minute of "running away"
-  // before first contact)
+  // (round 6) — spawns upwind, ALREADY POINTED AT YOU, and runs down on you.
+  // 85 m, not 160 (round 10: "very hard to actually line up with the enemy …
+  // just floating off way into the distance") — close enough to engage inside
+  // a minute, and the brain now hunts instead of jockeying off to leeward.
   const enemyBuild = buildSloop();
   const enemyVisual = new ShipVisual(enemyBuild);
   const enemy = new Ship(physics, enemyBuild, enemyVisual, {
-    x: -9 - waves[0].dirX * 160,
+    x: -9 - waves[0].dirX * 85,
     y: 0.2,
-    z: -3 - waves[0].dirZ * 160,
+    z: -3 - waves[0].dirZ * 85,
   });
   {
     const etr = enemy.body.translation();
@@ -695,9 +696,9 @@ async function main() {
       const rot = ship.body.rotation();
       sprayQ.set(rot.x, rot.y, rot.z, rot.w);
       sprayF.set(1, 0, 0).applyQuaternion(sprayQ);
-      effects.spray(
+      effects.bowWave(
         sprayP.x,
-        surf + 0.25,
+        surf + 0.1,
         sprayP.z,
         sprayF.x,
         sprayF.z,

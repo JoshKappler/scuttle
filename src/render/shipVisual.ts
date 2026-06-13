@@ -439,18 +439,22 @@ export class ShipVisual {
 
       // square rig, canvas up to the masthead (playtest round 4): three
       // yards crossing the FORE side of the mast, two tapered sails laced
-      // tight between consecutive yards. The whole cloth hangs forward of
-      // the mast so the mast never cuts through it, and each yard's span
-      // matches its sail edge (tiny symmetric yardarm overhang only).
-      // Everything scales with the mast's own height — the brig flies two.
-      const yardOff = 0.3; // fore of the mast centerline
+      // tight between consecutive yards. Round 10: the yards and the sail used
+      // to float just in front of the mast (and each other) — now the yard is
+      // slung ONTO the mast (its after side buried in the trunk) and the sail
+      // is laced to the yard's fore face, so mast↔yard↔sail all intersect as if
+      // really attached. Yards thickened so they read as real spars.
+      const mastR = mastH * 0.009; // ~trunk radius at the yards
+      const yardR = 0.12; // thicker than the old 0.07
+      const yardOff = mastR + yardR * 0.4; // yard buried into the mast front
+      const sailOff = yardOff + yardR; // sail laced to the yard's fore face
       const levels = [
         { y: mastH * 0.17, w: mastH * 0.71 }, // course yard
         { y: mastH * 0.56, w: mastH * 0.57 }, // topsail yard
         { y: mastH * 0.88, w: mastH * 0.43 }, // topgallant yard
       ];
       for (const lv of levels) {
-        const yardGeo = new THREE.CylinderGeometry(0.07, 0.07, lv.w + 0.3, 6);
+        const yardGeo = new THREE.CylinderGeometry(yardR, yardR, lv.w + 0.3, 8);
         yardGeo.rotateX(Math.PI / 2); // axis beam-wise
         const yard = new THREE.Mesh(yardGeo, woodMat);
         yard.position.set(yardOff, lv.y, 0);
@@ -486,14 +490,14 @@ export class ShipVisual {
         mat.alphaTest = 0.45;
 
         const sail = new THREE.Mesh(geo, mat);
-        sail.position.set(yardOff + 0.16, (foot.y + head.y) / 2, 0);
+        sail.position.set(sailOff, (foot.y + head.y) / 2, 0);
         sail.castShadow = true;
         mastGroup.add(sail);
 
         this.sails.push({
           mesh: sail,
           mastIdx: mi,
-          planeX: mx + yardOff + 0.16,
+          planeX: mx + sailOff,
           yMin: deckTop + foot.y,
           yMax: deckTop + head.y,
           zMin: mz - foot.w / 2,
