@@ -111,9 +111,19 @@ so the right behavior emerges). Research real-world specs (yacht weight distn, h
       sail on). Player sink = 35s "ABANDON SHIP swim for it" grace then LOST AT SEA. Verified.
       NOTE: full swim-to-enemy-board CONTINUATION not wired (respawn assumes own ship); left for
       boarding/voxel overhaul. The grace removes the instant binary death the user hated.
-- [ ] GAMEPLAY (c) first-person arms always in frame holding selected tool (viewmodel) — IN PROGRESS
-- [ ] VOXEL roadmap — PLAN: too big/risky to implement unattended. Produce a design/spec/plan doc
-      for the user to review+direct in the morning (don't gamble the codebase overnight).
+- [x] GAMEPLAY (c) first-person arm + cutlass viewmodel (commit 1a575ab). Procedural, camera-
+      parented, swings on slash. Cutlass only (no tool-selection system yet). Verified in-browser.
+- [x] VOXEL roadmap — DESIGN DOC written (not implemented; user parked it). See
+      docs/superpowers/specs/2026-06-13-voxel-overhaul-design.md. KEY: ramming ALREADY carves
+      voxels; gap = bow-vs-side asymmetry + visible holes. Recommended next = Phase V1 (low-risk).
+- [x] SMOKE TEST: fresh load 21s, 0 console errors, both ships afloat (player draft 0.45 wl0),
+      0 crew, no spurious game-over. All 5 changes integrate cleanly.
+
+## SESSION COMPLETE (2026-06-13 overnight)
+Shipped + pushed to main: f99fc9b (ocean foam/chop), a9110ab (buoyancy freeboard), 627b022
+(crew + game-over), 1a575ab (FP arm viewmodel). All tsc-clean, 115 tests green, verified in-browser.
+Voxel = design doc only (parked by user). AWAITING USER LIVE JUDGMENT on chop motion + foam density.
+Memory updated: [[scuttle-round13-overnight]].
 
 ## HARNESS LESSON (important)
 - DO NOT zero a ship's linvel/angvel each tick to "stop" it for a screenshot — it destabilizes the
