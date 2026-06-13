@@ -136,8 +136,10 @@ void main() {
   // Cross-check vs CPU: re = (aRe·c - aIm·s) + (bRe·c + bIm·s) with bIm = -h0Im[j].
   // With our b = (br, bi) = h0(-k): CPU bIm := -bi, so bRe·c + bIm·s = br·c - bi·s. ✓
   // imag: CPU = (aRe·s + aIm·c) + (-bRe·s + bIm·c) = (a.r·s + a.i·c) + (-br·s - bi·c). ✓
-  float hRe = (a.r * c - a.i * s) + (b.r * c - b.i * s);
-  float hIm = (a.r * s + a.i * c) + (-b.r * s - b.i * c);
+  // NOTE: a,b are vec2 (RG = Re,Im). The imaginary part is .g — NOT ".i",
+  // which is an illegal swizzle that silently failed to compile on ANGLE.
+  float hRe = (a.r * c - a.g * s) + (b.r * c - b.g * s);
+  float hIm = (a.r * s + a.g * c) + (-b.r * s - b.g * c);
 
   vec2 spec = vec2(hRe, hIm);
 
