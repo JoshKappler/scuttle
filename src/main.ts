@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Rng } from "./core/rng";
-import { makeWaves, surfaceHeight, surfaceNormal, physicsWaves } from "./sim/gerstner";
+import { makeWaves, surfaceHeight } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
 import { SeamMask } from "./render/seamMask";
 import { createOceanField } from "./render/oceanField";
@@ -936,41 +936,11 @@ async function main() {
     }
   };
 
-  // ambient crest spray (round 12: "waves crash together forming sharp peaks and
-  // shoot water up" — Black Flag dynamism). Each frame probe a ring of points in
-  // the mid-distance around the camera; where the swell rears into a tall crest —
-  // especially where the two crossing trains pile up — throw a lick of white
-  // water off the top. Pure CPU gerstner sampling (cheap) → GPU particle pool.
-  const sprayWaves = physicsWaves(waves); // the visible swell subset (matches the mesh base)
-  const windX = waves[0].dirX;
-  const windZ = waves[0].dirZ;
-  const CREST_MIN = 0.82; // m — only the TALLER crests throw spray (fewer, denser
-  // plumes where the crossing trains pile up); the average sea stays dry
-  let crestProbeAccum = 0;
-  const ambientSpray = (dt: number) => {
-    if (!TUN.spray.enabled || TUN.spray.crest <= 0) return;
-    const cam = camera.position;
-    const t = world.simTime;
-    crestProbeAccum += dt * 150 * TUN.spray.crest; // ~probes/sec, frame-rate independent
-    let probes = Math.min(Math.floor(crestProbeAccum), 14);
-    crestProbeAccum -= probes;
-    while (probes-- > 0) {
-      const ang = Math.random() * Math.PI * 2;
-      const r = 10 + Math.random() * 60; // mid-distance ring around the view
-      const x = cam.x + Math.cos(ang) * r;
-      const z = cam.z + Math.sin(ang) * r;
-      const h = surfaceHeight(sprayWaves, x, z, t);
-      if (h < CREST_MIN) continue; // not a crest
-      const nrm = surfaceNormal(sprayWaves, x, z, t);
-      const steep = 1 - nrm[1]; // 0 flat → larger = steeper, breaking face
-      // a crashing crest is tall AND steep; fold both into a launch strength and
-      // a spawn probability so the sea spits spray here and there, not everywhere
-      const force = (h - CREST_MIN) * 1.8 + steep * 6.0;
-      if (Math.random() > force * 0.55) continue;
-      // launch from just above the visual crest (the FFT chop adds ~0.3 m on top)
-      effects.crestSpray(x, h + 0.35, z, windX, windZ, force);
-    }
-  };
+  // r16: the ambient open-water crest spray was REMOVED. It probed a ring around
+  // the CAMERA every frame and threw plumes at any tall swell crest — those were the
+  // "random white particle bursts a few ship-lengths away, appearing/disappearing at
+  // random". The player wants ONLY bow spray (checkBowSpray) + the wake. crestSpray()
+  // is left in effects.ts/spray.ts, dormant, for a future deliberate re-implementation.
 
   // r15 DEV PANEL: live knobs for the sea + boat feel the player asked to tune
   // themselves. Backtick (`) toggles it; sliders write straight into TUN, which
@@ -1005,7 +975,6 @@ async function main() {
       controls: [
         { type: "toggle", label: "enabled", obj: TUN.spray, key: "enabled" },
         { type: "slider", label: "bow", obj: TUN.spray, key: "bow", min: 0, max: 2, step: 0.05 },
-        { type: "slider", label: "crest", obj: TUN.spray, key: "crest", min: 0, max: 2, step: 0.05 },
       ],
     },
   ]);
@@ -1036,7 +1005,6 @@ async function main() {
     feedWake(1, enemy);
     checkBowSpray(0, sloop, dt);
     checkBowSpray(1, enemy, dt);
-    ambientSpray(dt);
     effects.update(dt, world.simTime);
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")

@@ -528,42 +528,13 @@ void main() {
   // break the wash up so it reads as churned water, not paint
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
 
-  // Round 14: open-sea whitewater from the cascade Jacobian foam — back, but NOT
-  // as camo. The old failure drew a ~1 m/texel coverage mask DIRECTLY, so blobs.
-  // Fix (Crest's recipe): decouple foam AMOUNT (the low-res cascade coverage) from
-  // foam SHAPE (high-frequency rotated detail) with a black-point fade —
-  // smoothstep(1-cov, 1-cov+feather, detail) — so the same coverage paints
-  // crisp bubbly whitewater that lives only on the genuinely-breaking crest cores.
-  float foamCov = 0.0;
-  if (uFftOn > 0.5) {
-    foamCov = max(foamCov, texture2D(uCascadeFoam[0], vWorldPos.xz / uCascadeTile[0]).r);
-    #if NCASC > 1
-    foamCov = max(foamCov, texture2D(uCascadeFoam[1], vWorldPos.xz / uCascadeTile[1]).r);
-    #endif
-    #if NCASC > 2
-    foamCov = max(foamCov, texture2D(uCascadeFoam[2], vWorldPos.xz / uCascadeTile[2]).r);
-    #endif
-  }
-  float fDetail = noise(r1 * vWorldPos.xz * 0.9 + uTime * 0.18) * 0.6
-                + noise(r2 * vWorldPos.xz * 2.7 - uTime * 0.13) * 0.4;
-  float crestFoam = smoothstep(1.0 - foamCov, 1.0 - foamCov + 0.22, fDetail)
-                  * smoothstep(0.05, 0.20, foamCov);
-
-  // P5: dynamic-wave foam — the whitewater the ships churn (bow/side/stern) and the
-  // spray splash-down, broken up by the same high-frequency detail so it reads as
-  // bubbly froth, not a flat decal. Gated + edge-faded inside the field window.
-  float dynFoam = 0.0;
-  if (uDynOn > 0.5) {
-    vec2 dfuv = (vWorldPos.xz - uDynOrigin) / uDynWindow;
-    if (dfuv.x > 0.0 && dfuv.x < 1.0 && dfuv.y > 0.0 && dfuv.y < 1.0) {
-      float cov = texture2D(uDynDisp, dfuv).b;
-      vec2 de = min(dfuv, 1.0 - dfuv);
-      float ef = smoothstep(0.0, 0.04, min(de.x, de.y));
-      dynFoam = smoothstep(0.12, 0.5, cov) * ef;
-    }
-  }
-
-  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.55 + crestFoam * 0.85 + dynFoam * 0.8, 0.0, 0.95));
+  // r16: ALL open-water foam REMOVED — the cascade Jacobian "crestFoam" and the
+  // dynamic-field "dynFoam" both gone (the player: "the foam mechanic is awful, remove
+  // it completely and re-implement later"). Only the ship WASH (wake flanks + waterline
+  // lace + stern trail, built above) whitens the sea now, so the open ocean reads clean
+  // and the wake still reads as white water. The cascade/dyn foam textures still exist
+  // upstream; they are simply no longer sampled into the surface colour.
+  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.6, 0.0, 0.95));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);

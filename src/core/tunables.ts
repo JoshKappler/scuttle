@@ -65,14 +65,13 @@ export const TUN = {
     foam: 0.0,
   },
 
-  /** Ballistic spray emission (read in main.ts spray triggers). */
+  /** Bow spray emission (read in main.ts checkBowSpray). The far-field ambient
+   *  crest spray was removed in r16 — only bow spray + wake remain. */
   spray: {
-    /** master enable for bow + crest spray. */
+    /** master enable for bow spray. */
     enabled: true,
     /** bow-wave spray strength multiplier. */
     bow: 1.0,
-    /** ambient crest-spray density multiplier (1 = the old rate). */
-    crest: 0.5,
   },
 };
 
