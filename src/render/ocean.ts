@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import type { Wave } from "../sim/gerstner";
+import { physicsWaves } from "../sim/gerstner";
+import type { OceanField } from "./oceanField";
 
 /**
  * Ocean surface: a camera-centered POLAR grid whose vertex shader evaluates
@@ -109,6 +111,9 @@ uniform vec4 uWaveA[NWAVES]; // dirX, dirZ, amplitude, k
 uniform vec2 uWaveB[NWAVES]; // qa, omega
 uniform vec4 uShipA[2]; // bow x, bow z, fwdX, fwdZ
 uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
+uniform sampler2D uFftDisp; // FFT chop displacement (RGB = Dx, height, Dz)
+uniform float uFftTile; // world tile size (m) for the FFT field
+uniform float uFftOn; // 1 when the FFT backend is live, else 0
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -148,6 +153,18 @@ void main() {
     nz -= dir.y * k * amp * c;
     ny -= k * qa * s;
     crest += (s * 0.5 + 0.5) * amp;
+  }
+
+  // FFT chop on top of the analytic swell: band-limited so the ship stays
+  // welded to the swell it floats on. Faded out by mid-distance (60→130 m)
+  // before the ring spacing under-samples the short chop into shimmer.
+  if (uFftOn > 0.5) {
+    float chopFade = 1.0 - smoothstep(60.0, 130.0, rDist);
+    vec3 d = texture2D(uFftDisp, rest.xz / uFftTile).xyz; // Dx, height, Dz
+    p.x += d.x * chopFade;
+    p.z += d.z * chopFade;
+    p.y += d.y * chopFade;
+    crest += max(d.y, 0.0) * chopFade;
   }
 
   // the hull's effect on the sea: a STANDING displacement collar at all times
@@ -210,6 +227,10 @@ uniform float uFogDensity;
 uniform float uAmpTotal;
 uniform vec3 uCameraPos;
 uniform float uTime;
+uniform sampler2D uFftNormal; // FFT surface normal (RGB = normal*0.5+0.5)
+uniform sampler2D uFftFoam; // FFT foam coverage (R)
+uniform float uFftTile; // world tile size (m) for the FFT field
+uniform float uFftOn; // 1 when the FFT backend is live, else 0
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -295,9 +316,16 @@ void main() {
   float g3x = noise(p3 + vec2(e, 0.0)) - noise(p3 - vec2(e, 0.0));
   float g3z = noise(p3 + vec2(0.0, e)) - noise(p3 - vec2(0.0, e));
   // round 9: more bite in the fine relief so the chop reads in the glints, not
-  // just a glassy swell
-  vec3 Nd = normalize(N + vec3(g1x * 0.6 + g2x * 0.4 + g3x * 0.22, 0.0,
-                               g1z * 0.6 + g2z * 0.4 + g3z * 0.22));
+  // just a glassy swell. With the FFT field live, take the surface normal from
+  // the GPU normal texture instead of the hand-rolled noise gradients.
+  vec3 Nd;
+  if (uFftOn > 0.5) {
+    vec3 fn = texture2D(uFftNormal, vWorldPos.xz / uFftTile).xyz * 2.0 - 1.0;
+    Nd = normalize(N + vec3(fn.x, 0.0, fn.z));
+  } else {
+    Nd = normalize(N + vec3(g1x * 0.6 + g2x * 0.4 + g3x * 0.22, 0.0,
+                            g1z * 0.6 + g2z * 0.4 + g3z * 0.22));
+  }
 
   // base water color: deeper where we look straight down, lighter at grazing
   float facing = max(dot(N, V), 0.0);
@@ -378,8 +406,12 @@ void main() {
   // break the wash up so it reads as churned water, not paint
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
 
+  // FFT foam: the Jacobian-fold whitecaps from the chop field, folded into the
+  // existing foam composite (analytic crest foam + caps + ship wash).
+  float fftFoam = uFftOn > 0.5 ? texture2D(uFftFoam, vWorldPos.xz / uFftTile).r : 0.0;
+
   col = mix(col, vec3(0.92, 0.96, 0.95),
-            clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.55, 0.0, 0.93));
+            clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.55 + fftFoam * 0.7, 0.0, 0.93));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);
@@ -390,16 +422,20 @@ void main() {
 }
 `;
 
-export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
+export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanField): Ocean {
   const geo = makePolarGrid();
 
-  const { a, b } = waveUniforms(waves);
-  const ampTotal = waves.reduce((s, w) => s + w.amplitude, 0);
+  // The analytic base is the SWELL subset, so the mesh's Gerstner sum equals
+  // the physics field exactly — the ship stays welded to the swell it floats
+  // on, and the FFT chop/normal/foam is added on top (band-limited).
+  const swell = physicsWaves(waves);
+  const { a, b } = waveUniforms(swell);
+  const ampTotal = swell.reduce((s, w) => s + w.amplitude, 0);
 
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT,
     fragmentShader: FRAG,
-    defines: { NWAVES: waves.length },
+    defines: { NWAVES: swell.length },
     clipping: true,
     transparent: true, // the cutaway wedge fades to glass; alpha 1 elsewhere
     depthWrite: true,
@@ -427,6 +463,14 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
       uShipB: { value: [new THREE.Vector4(), new THREE.Vector4()] },
       uShipC: { value: [new THREE.Vector2(0, -1), new THREE.Vector2(0, -1)] },
       uTrail: { value: Array.from({ length: 64 }, () => new THREE.Vector4()) },
+      // FFT field: the displacement is sampled in the vertex stage, the normal
+      // + foam in the fragment stage. uFftOn gates every use so a null field
+      // (textures null → three.js binds a default) renders the Gerstner look.
+      uFftDisp: { value: field.displacement },
+      uFftNormal: { value: field.normal },
+      uFftFoam: { value: field.foam },
+      uFftTile: { value: field.tileSize },
+      uFftOn: { value: field.active ? 1 : 0 },
     },
   });
 

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { Rng } from "./core/rng";
 import { makeWaves, surfaceHeight } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
+import { createOceanField } from "./render/oceanField";
 import { createSky } from "./render/sky";
 import { buildBrig, buildSloop } from "./sim/shipwright";
 import { ShipVisual } from "./render/shipVisual";
@@ -49,7 +50,18 @@ async function main() {
   // (round 8: shade must read as shade, not a void)
   skySetup.bakeEnvironment(renderer, scene);
 
-  const ocean = createOcean(waves, skySetup.sunDir);
+  // FFT chop/normal/foam field, tiled over L meters and added on top of the
+  // analytic swell. N=128 is the backend's tested default (256 is heavy); the
+  // wind blows with the dominant swell train, so the chop sits on its back.
+  const oceanField = createOceanField(renderer, {
+    rng: new Rng(seed + "-fft"),
+    N: 128,
+    L: 250,
+    windSpeed: 9,
+    windDirX: waves[0].dirX,
+    windDirZ: waves[0].dirZ,
+  });
+  const ocean = createOcean(waves, skySetup.sunDir, oceanField);
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
@@ -401,6 +413,7 @@ async function main() {
     sailing,
     ramming,
     debris,
+    oceanField,
     get character() {
       return character;
     },
@@ -786,6 +799,7 @@ async function main() {
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
 
+    oceanField.update(world.simTime);
     ocean.update(world.simTime, camera.position);
     renderer.render(scene, camera);
 
