@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { Rng } from "../core/rng";
 import type { SpectrumOptions } from "../sim/oceanSpectrum";
+import { createOceanFFT } from "./oceanFFT";
 
 /** The portability seam. Route 1 (WebGL2) and a future Route 2 (WebGPU) both
  *  implement THIS — three textures the ocean material samples. Swapping
@@ -46,9 +47,5 @@ export function createOceanField(renderer: THREE.WebGLRenderer, opts: OceanField
   const isWebGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
   const hasFloatRT = isWebGL2 && !!gl.getExtension("EXT_color_buffer_float");
   if (!hasFloatRT) return nullOceanField();
-  // TODO(Task 5): return createOceanFFT(renderer, opts) here when hasFloatRT.
-  // The backend module (./oceanFFT) does not exist until Task 5; returning the
-  // null field for now keeps the build clean and the fallback path exercised.
-  void opts;
-  return nullOceanField();
+  return createOceanFFT(renderer, opts);
 }
