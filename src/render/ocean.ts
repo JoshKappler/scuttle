@@ -70,6 +70,8 @@ export interface Ocean {
    *  world-space window size (m) and its current snapped origin (window min-corner XZ)
    *  each frame. Call with on=false to disable (falls back to the analytic mounds). */
   setDynamicField(tex: THREE.Texture | null, windowSize: number, originX: number, originZ: number, on: boolean, scale?: number): void;
+  /** dev-panel chop controls: overall strength (0 = pure swell) + crest-pinch choppiness. */
+  setChop(strength: number, choppiness: number): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -127,6 +129,8 @@ uniform sampler2D uCascadeDisp[NCASC]; // per-cascade chop displacement (RGB = D
 uniform float uCascadeTile[NCASC]; // per-cascade world tile size (m)
 uniform float uCascadeChop[NCASC]; // per-cascade horizontal choppiness λ
 uniform float uFftOn; // 1 when the cascade backend is live, else 0
+uniform float uChopScale; // dev: overall chop height/strength (0 = pure swell)
+uniform float uChoppiness; // dev: crest-pinch (horizontal choppiness) multiplier
 
 // P5 dynamic-wave interaction field (Crest/Atlas FDTD ping-pong, src/render/
 // dynamicWaves.ts). A camera-centred height/velocity field the ships stamp their
@@ -191,17 +195,21 @@ void main() {
   // invalidates the WHOLE ocean program (the sea vanishes). Constant [0]/[1]/[2],
   // #if-guarded by NCASC. Adding a 4th cascade means adding a block here + below.
   if (uFftOn > 0.5) {
-    float chopFade = 1.0 - smoothstep(120.0, 280.0, rDist);
+    // dev chop knobs: uChopScale scales the whole cascade contribution (0 = pure
+    // swell, the player's "play with the chop" + jitter-bisect tool); uChoppiness
+    // scales only the horizontal crest-pinch (sharpness) without changing height.
+    float chopFade = (1.0 - smoothstep(120.0, 280.0, rDist)) * uChopScale;
+    float cz = uChoppiness;
     vec3 d;
     d = texture2D(uCascadeDisp[0], rest.xz / uCascadeTile[0]).xyz;
-    p.x += d.x * chopFade * uCascadeChop[0]; p.z += d.z * chopFade * uCascadeChop[0]; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
+    p.x += d.x * chopFade * uCascadeChop[0] * cz; p.z += d.z * chopFade * uCascadeChop[0] * cz; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
     #if NCASC > 1
     d = texture2D(uCascadeDisp[1], rest.xz / uCascadeTile[1]).xyz;
-    p.x += d.x * chopFade * uCascadeChop[1]; p.z += d.z * chopFade * uCascadeChop[1]; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
+    p.x += d.x * chopFade * uCascadeChop[1] * cz; p.z += d.z * chopFade * uCascadeChop[1] * cz; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
     #endif
     #if NCASC > 2
     d = texture2D(uCascadeDisp[2], rest.xz / uCascadeTile[2]).xyz;
-    p.x += d.x * chopFade * uCascadeChop[2]; p.z += d.z * chopFade * uCascadeChop[2]; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
+    p.x += d.x * chopFade * uCascadeChop[2] * cz; p.z += d.z * chopFade * uCascadeChop[2] * cz; p.y += d.y * chopFade; crest += max(d.y, 0.0) * chopFade;
     #endif
   }
 
@@ -651,6 +659,8 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uCascadeTile: { value: cascTile },
       uCascadeChop: { value: cascChop },
       uFftOn: { value: field.active ? 1 : 0 },
+      uChopScale: { value: 1 },
+      uChoppiness: { value: 1 },
       // P5 dynamic-wave interaction field (off until setDynamicField binds it).
       uDynDisp: { value: dummyTex },
       uDynOrigin: { value: new THREE.Vector2() },
@@ -715,6 +725,10 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       (mat.uniforms.uDynOrigin.value as THREE.Vector2).set(originX, originZ);
       mat.uniforms.uDynOn.value = on && tex ? 1 : 0;
       mat.uniforms.uDynScale.value = scale;
+    },
+    setChop(strength, choppiness) {
+      mat.uniforms.uChopScale.value = strength;
+      mat.uniforms.uChoppiness.value = choppiness;
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

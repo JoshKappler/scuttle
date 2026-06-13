@@ -468,32 +468,49 @@ async function main() {
   // REFUSED (browser policy, missing user-activation edge cases) — surface
   // the reason as a toast instead of silently doing nothing, and re-grab
   // pointer lock after the transition (Chrome drops it on the way in).
+  // Bulletproofed r16. The Fullscreen API itself works (verified), so "F / the
+  // button do nothing" is almost always (a) already in browser F11 fullscreen, so
+  // the API request makes NO visible change, or (b) a browser that rejects the
+  // options dict / needs the webkit prefix. So: try webkit too, DROP the options
+  // dict (a compatibility risk), wrap in try/catch (a SYNC throw skips .catch and
+  // looks like "nothing happened"), and surface every failure on-screen.
+  const docAny = document as unknown as Record<string, () => Promise<void> | void>;
   const toggleFullscreen = () => {
-    if (document.fullscreenElement) {
-      void document.exitFullscreen();
+    const fsEl = document.fullscreenElement || (document as unknown as { webkitFullscreenElement?: Element }).webkitFullscreenElement;
+    if (fsEl) {
+      (document.exitFullscreen ? document.exitFullscreen() : docAny.webkitExitFullscreen?.call(document)) as unknown;
+      return;
+    }
+    const el = document.documentElement as unknown as {
+      requestFullscreen?: () => Promise<void>;
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+    const reqFn = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!reqFn) {
+      boarding.message = "fullscreen not supported by this browser";
       return;
     }
     const hadLock = document.pointerLockElement !== null;
-    // THE fix for "F does nothing while sailing" (r15): Chrome REFUSES a
-    // fullscreen request issued while a pointer lock is held — the two can't both
-    // transition in one user gesture. While sailing the canvas IS pointer-locked,
-    // so the request rejected silently every time. Release the lock first, enter
-    // fullscreen, then re-grab the helm. Errors now also hit the console.
-    if (hadLock) document.exitPointerLock();
-    const el = document.documentElement;
-    const req = el.requestFullscreen
-      ? el.requestFullscreen({ navigationUI: "hide" })
-      : Promise.reject(new Error("Fullscreen API unavailable"));
-    req
-      .then(() => {
-        if (hadLock) renderer.domElement.requestPointerLock();
-      })
-      .catch((err: Error) => {
-        boarding.message = `fullscreen refused: ${err.message}`;
-        console.warn("[fullscreen]", err);
-      });
+    if (hadLock) document.exitPointerLock(); // Chrome rejects fullscreen while pointer-locked
+    try {
+      const p = reqFn.call(el); // NO options arg — maximal compatibility
+      if (p && typeof (p as Promise<void>).then === "function") {
+        (p as Promise<void>)
+          .then(() => {
+            // pointer lock has a ~1 s cooldown after exit; best-effort re-grab
+            if (hadLock) setTimeout(() => renderer.domElement.requestPointerLock(), 1100);
+          })
+          .catch((err: Error) => {
+            boarding.message = `fullscreen refused: ${err.message} (already in F11?)`;
+            console.warn("[fullscreen]", err);
+          });
+      }
+    } catch (err) {
+      boarding.message = `fullscreen error: ${(err as Error).message}`;
+      console.warn("[fullscreen]", err);
+    }
   };
-  document.getElementById("fs-btn")!.addEventListener("click", toggleFullscreen);
+  document.getElementById("fs-btn")?.addEventListener("click", toggleFullscreen);
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
@@ -961,6 +978,13 @@ async function main() {
       ],
     },
     {
+      title: "Waves / Chop",
+      controls: [
+        { type: "slider", label: "chop", obj: TUN.chop, key: "strength", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "choppiness", obj: TUN.chop, key: "choppiness", min: 0, max: 2, step: 0.05 },
+      ],
+    },
+    {
       title: "Dynamic Waves (wake)",
       controls: [
         { type: "toggle", label: "enabled", obj: TUN.dyn, key: "enabled" },
@@ -1112,6 +1136,7 @@ async function main() {
       dynWaves.active && TUN.dyn.enabled,
       TUN.dyn.heightScale,
     );
+    ocean.setChop(TUN.chop.strength, TUN.chop.choppiness);
     ocean.update(world.simTime, camera.position);
     renderer.autoClear = true;
     renderer.clear(); // clears color + depth + stencil

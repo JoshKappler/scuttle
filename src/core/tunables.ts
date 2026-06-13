@@ -65,6 +65,16 @@ export const TUN = {
     foam: 0.0,
   },
 
+  /** FFT chop (surface detail) controls — pushed to ocean.setChop each frame so the
+   *  player can finally "play with the chop" (and bisect any residual jitter). The
+   *  big swell shapes are NOT touched by these. */
+  chop: {
+    /** overall chop height/strength. 0 = pure swell (no FFT detail), 1 = default. */
+    strength: 1.0,
+    /** crest-pinch (horizontal choppiness): 0 = rounded swell, higher = sharper crests. */
+    choppiness: 1.0,
+  },
+
   /** Bow spray emission (read in main.ts checkBowSpray). The far-field ambient
    *  crest spray was removed in r16 — only bow spray + wake remain. */
   spray: {
