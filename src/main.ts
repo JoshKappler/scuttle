@@ -38,7 +38,9 @@ async function main() {
 
   const seed = new URLSearchParams(location.search).get("seed") ?? "scuttle-dev";
   const rng = new Rng(seed);
-  const waves = makeWaves(rng, 4);
+  // 16-wave directional spectrum (round 8: four waves read as "the same
+  // series of waves repeating over and over"); physics rides the swell subset
+  const waves = makeWaves(rng, 16);
 
   const skySetup = createSky();
   skySetup.addTo(scene);
@@ -642,11 +644,50 @@ async function main() {
     );
   };
 
+  // bow spray (round 8: "adding splashes when it's breaking through waves"):
+  // when the stem plunges into a rising face with way on, throw white water
+  const sprayState = [
+    { imm: 0, cd: 0 },
+    { imm: 0, cd: 0 },
+  ];
+  const sprayP = new THREE.Vector3();
+  const sprayQ = new THREE.Quaternion();
+  const sprayF = new THREE.Vector3();
+  const checkBowSpray = (slot: 0 | 1, ship: Ship, dt: number) => {
+    const st = sprayState[slot];
+    st.cd -= dt;
+    const fp = ship.build.footprint;
+    // stem reference rides just above the static waterline at the cutwater
+    ship.localToWorld([fp.maxX - 1.5, ship.comLocal[1] + 0.4, fp.zC], sprayP);
+    const surf = surfaceHeight(waves, sprayP.x, sprayP.z, world.simTime);
+    const imm = surf - sprayP.y;
+    const rate = dt > 1e-3 ? (imm - st.imm) / dt : 0;
+    st.imm = imm;
+    const v = ship.body.linvel();
+    const spd = Math.hypot(v.x, v.z);
+    if (imm > 0 && rate > 0.9 && spd > 2.5 && st.cd <= 0 && ship.submergedFrac < 0.5) {
+      st.cd = 0.24;
+      const rot = ship.body.rotation();
+      sprayQ.set(rot.x, rot.y, rot.z, rot.w);
+      sprayF.set(1, 0, 0).applyQuaternion(sprayQ);
+      effects.spray(
+        sprayP.x,
+        surf + 0.25,
+        sprayP.z,
+        sprayF.x,
+        sprayF.z,
+        Math.min(0.6 + rate * 0.35 + spd * 0.06, 2.2),
+      );
+    }
+  };
+
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
     world.step(dt);
     feedWake(0, sloop);
     feedWake(1, enemy);
+    checkBowSpray(0, sloop, dt);
+    checkBowSpray(1, enemy, dt);
     effects.update(dt);
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")

@@ -2,15 +2,25 @@ import * as THREE from "three";
 import type { Wave } from "../sim/gerstner";
 
 /**
- * Ocean surface: a displaced plane whose vertex shader evaluates the SAME
- * Gerstner equations as src/sim/gerstner.ts, from the same Wave parameters.
- * Per-wave uniforms are precomputed so GPU and CPU stay in exact agreement:
+ * Ocean surface: a camera-centered POLAR grid whose vertex shader evaluates
+ * the SAME Gerstner equations as src/sim/gerstner.ts, from the same Wave
+ * parameters. Per-wave uniforms are precomputed so GPU and CPU agree:
  *   uWaveA[i] = (dirX, dirZ, amplitude, k)
- *   uWaveB[i] = (qa, omega)  with qa = horizontal coefficient, omega = k·phaseSpeed
+ *   uWaveB[i] = (qa, omega)  with qa = Q·amplitude, omega = k·phaseSpeed
+ *
+ * Round 8 rebuild: the old 1200 m uniform plane had 3 m vertices — too
+ * coarse to show the bow swell at all — and snapped to a 10 m grid as the
+ * camera moved, re-sampling every wave against a shifted lattice (the
+ * "stuttering"). The polar grid puts ~0.8 m vertices beside the hull and
+ * 40 m ones at the horizon, follows the camera CONTINUOUSLY (the surface is
+ * world-anchored, so a sliding lattice samples a smooth field smoothly), and
+ * fades each wave out before the local vertex spacing can alias it.
  */
 
-const OCEAN_SIZE = 1200; // m square
-const SEGMENTS = 400;
+const R_NEAR = 0.8; // m — innermost ring
+const R_FAR = 950; // m — horizon ring (fog owns everything past it)
+const RINGS = 156;
+const SECTORS = 160;
 
 export interface Ocean {
   mesh: THREE.Mesh;
@@ -52,18 +62,50 @@ function waveUniforms(waves: Wave[]) {
   const b: THREE.Vector2[] = [];
   for (const w of waves) {
     const k = (2 * Math.PI) / w.wavelength;
-    const q = Math.min(w.steepness / (k * w.amplitude * waves.length || 1), 1);
+    // steepness IS the per-wave Q — identical to sim/gerstner.ts displace()
+    const q = Math.min(w.steepness, 1);
     a.push(new THREE.Vector4(w.dirX, w.dirZ, w.amplitude, k));
     b.push(new THREE.Vector2(q * w.amplitude, k * w.phaseSpeed));
   }
   return { a, b };
 }
 
+/** Camera-centered polar grid: exponential ring spacing, fine in close. */
+function makePolarGrid(): THREE.BufferGeometry {
+  const positions = new Float32Array((RINGS * SECTORS + 1) * 3);
+  let vi = 1; // index 0 is the center vertex at the origin
+  for (let j = 0; j < RINGS; j++) {
+    const r = R_NEAR * Math.pow(R_FAR / R_NEAR, j / (RINGS - 1));
+    for (let s = 0; s < SECTORS; s++) {
+      const ang = (s / SECTORS) * Math.PI * 2;
+      positions[vi * 3] = Math.cos(ang) * r;
+      positions[vi * 3 + 2] = Math.sin(ang) * r;
+      vi++;
+    }
+  }
+  const idx: number[] = [];
+  for (let s = 0; s < SECTORS; s++) {
+    idx.push(0, 1 + ((s + 1) % SECTORS), 1 + s); // center fan
+  }
+  for (let j = 0; j < RINGS - 1; j++) {
+    const r0 = 1 + j * SECTORS;
+    const r1 = r0 + SECTORS;
+    for (let s = 0; s < SECTORS; s++) {
+      const s1 = (s + 1) % SECTORS;
+      idx.push(r0 + s, r0 + s1, r1 + s1, r0 + s, r1 + s1, r1 + s);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setIndex(idx);
+  return geo;
+}
+
 const VERT = /* glsl */ `
 #include <clipping_planes_pars_vertex>
 uniform float uTime;
-uniform vec4 uWaveA[4]; // dirX, dirZ, amplitude, k
-uniform vec2 uWaveB[4]; // qa, omega
+uniform vec4 uWaveA[NWAVES]; // dirX, dirZ, amplitude, k
+uniform vec2 uWaveB[NWAVES]; // qa, omega
 uniform vec4 uShipA[2]; // bow x, bow z, fwdX, fwdZ
 uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
 
@@ -78,12 +120,19 @@ void main() {
   float nz = 0.0;
   float ny = 1.0;
   float crest = 0.0;
+  // distance from the camera (the mesh is camera-centered, so the LOCAL
+  // radius is exactly it) — used to fade each wave out before the ring
+  // spacing under-samples it into shimmer
+  float rDist = length(position.xz);
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < NWAVES; i++) {
     vec2 dir = vec2(uWaveA[i].x, uWaveA[i].y);
-    float amp = uWaveA[i].z;
     float k = uWaveA[i].w;
-    float qa = uWaveB[i].x;
+    float lam = 6.28318530718 / k;
+    float fade = 1.0 - smoothstep(lam * 6.0, lam * 14.0, rDist);
+    if (fade <= 0.001) continue;
+    float amp = uWaveA[i].z * fade;
+    float qa = uWaveB[i].x * fade;
     float omega = uWaveB[i].y;
 
     float phase = k * dot(dir, rest.xz) - omega * uTime;
@@ -103,8 +152,9 @@ void main() {
   // bow wave: the stem physically shoulders water aside — a mound right at
   // the cutting point that spills into a raised ridge running down the
   // forward flanks, which the fragment stage froths and rolls into the wake
-  // (round 6.5: "the front of the ship pushes water aside and causes it to
-  // bulge, which then gradually becomes the wake")
+  // (round 6.5, beefed up in round 8 now the mesh actually resolves it:
+  // "I would love to see the front of the ship actually pushing up and
+  // bulging the water")
   for (int s2 = 0; s2 < 2; s2++) {
     float spd = uShipB[s2].x;
     if (spd < 1.0) continue;
@@ -117,12 +167,12 @@ void main() {
     float across = dot(rel, vec2(-f2.y, f2.x));
     float sF = clamp(spd / 8.0, 0.0, 1.2);
     float bd2 = dot(p.xz - bow, p.xz - bow);
-    p.y += sF * 0.7 * exp(-bd2 / 3.5);
+    p.y += sF * 1.05 * exp(-bd2 / 5.5);
     // flank ridge: strongest just abaft the stem, fading toward midship
-    float ridge = exp(-pow((abs(across) - (hB + 0.4)) / 1.4, 2.0));
+    float ridge = exp(-pow((abs(across) - (hB + 0.4)) / 1.5, 2.0));
     float span = smoothstep(-hL * 0.35, hL * 0.55, along) * (1.0 - smoothstep(hL * 0.8, hL * 1.1, along));
-    p.y += sF * 0.38 * ridge * span;
-    crest += sF * (0.9 * exp(-bd2 / 3.5) + 0.55 * ridge * span);
+    p.y += sF * 0.5 * ridge * span;
+    crest += sF * (1.1 * exp(-bd2 / 5.5) + 0.65 * ridge * span);
   }
 
   vWorldPos = p;
@@ -285,10 +335,15 @@ void main() {
     float h = clamp(dot(vWorldPos.xz - A.xy, ab) / L2, 0.0, 1.0);
     float dseg = length(vWorldPos.xz - (A.xy + ab * h));
     float ageM = mix(A.z, B.z, h);
-    // the wake leaves the stern at FULL ship beam and spreads as it ages
+    // the wake leaves the stern at FULL ship beam and spreads as it ages;
+    // fresh segments RAMP IN over a third of a second instead of popping
+    // into existence at full strength (round 8: "the wake … is not very
+    // smooth and is also stuttering") — the hull-flank wash band covers the
+    // first meters astern while they fade up
     float hb2 = i < 32 ? uShipB[0].z : uShipB[1].z;
     float width = hb2 + 0.3 + ageM * 0.75;
-    wash += exp(-pow(dseg / width, 2.0)) * exp(-ageM * 0.24) * mix(A.w, B.w, h);
+    wash += exp(-pow(dseg / width, 2.0)) * exp(-ageM * 0.24) * mix(A.w, B.w, h)
+          * smoothstep(0.0, 0.35, ageM);
   }
   // break the wash up so it reads as churned water, not paint
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
@@ -306,8 +361,7 @@ void main() {
 `;
 
 export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
-  const geo = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, SEGMENTS, SEGMENTS);
-  geo.rotateX(-Math.PI / 2);
+  const geo = makePolarGrid();
 
   const { a, b } = waveUniforms(waves);
   const ampTotal = waves.reduce((s, w) => s + w.amplitude, 0);
@@ -315,6 +369,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT,
     fragmentShader: FRAG,
+    defines: { NWAVES: waves.length },
     clipping: true,
     transparent: true, // the cutaway wedge fades to glass; alpha 1 elsewhere
     depthWrite: true,
@@ -395,9 +450,12 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
     update(time, cameraPos) {
       mat.uniforms.uTime.value = time;
       mat.uniforms.uCameraPos.value.copy(cameraPos);
-      // keep the ocean tile centered under the camera (snapped to avoid swimming)
-      mesh.position.x = Math.round(cameraPos.x / 10) * 10;
-      mesh.position.z = Math.round(cameraPos.z / 10) * 10;
+      // follow the camera CONTINUOUSLY: the displacement field is anchored
+      // to world coordinates, so a smoothly sliding lattice samples it
+      // smoothly. The old 10 m snap re-sampled every wave against a jumped
+      // grid — the round-8 "stuttering".
+      mesh.position.x = cameraPos.x;
+      mesh.position.z = cameraPos.z;
     },
   };
 }

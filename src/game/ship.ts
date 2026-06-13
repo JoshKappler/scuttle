@@ -101,11 +101,12 @@ export class Ship {
     const w = nz * VOXEL_SIZE;
 
     // box-approximated principal inertia about the COM. Pitch/yaw carry a
-    // 1.45× added-mass factor: a hull drags entrained water with it when it
+    // 1.6× added-mass factor: a hull drags entrained water with it when it
     // pitches, and the bare box value let the brig hobby-horse in the swell
+    // (raised again round 8 with the rest of the "substantial" pass)
     const ixx = (mass / 12) * (w * w + h * h);
-    const iyy = (mass / 12) * (l * l + w * w) * 1.45;
-    const izz = (mass / 12) * (l * l + h * h) * 1.45;
+    const iyy = (mass / 12) * (l * l + w * w) * 1.6;
+    const izz = (mass / 12) * (l * l + h * h) * 1.6;
     this.inertia = [ixx, iyy, izz];
 
     const desc = R.RigidBodyDesc.dynamic()
@@ -512,7 +513,7 @@ export class Ship {
       // without limit — at full sail she pitched past vertical and looped
       // (playtest round 5: "almost doing a wheelie … flipped upside down")
       const trim = wet * vF * vF * mass * 12 * Math.min(Math.max(-pitch, -0.07), 0.07);
-      const tPitch = -wPitch * wet * 3.0 * iz + trim;
+      const tPitch = -wPitch * wet * 4.2 * iz + trim;
       body.addTorque(
         {
           x: tRoll * fx + tPitch * lat.x,

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { FIXED_DT } from "../core/constants";
-import type { Wave } from "../sim/gerstner";
+import { physicsWaves, type Wave } from "../sim/gerstner";
 import type { Physics } from "./physics";
 import { Ship } from "./ship";
 
@@ -8,6 +8,12 @@ import { Ship } from "./ship";
  * Game orchestration: owns ships, runs the fixed-step physics loop with an
  * accumulator, and keeps a deterministic simulation clock (simTime) that the
  * ocean shader and wave sampling share so render and physics never disagree.
+ *
+ * Hull forces and flooding sample the LONG-WAVELENGTH subset of the sea
+ * (physicsWaves): the ship rides the swell while the visual chop slides
+ * under her — that's the round-8 "substantial" feel. Anything answering
+ * "where is the VISIBLE surface" (swimmers, splashes, the camera) keeps
+ * using the full set.
  */
 export class GameWorld {
   readonly ships: Ship[] = [];
@@ -16,12 +22,15 @@ export class GameWorld {
    *  sailing forces, AI, projectiles hook in here. */
   onFixedStep?: (simTime: number, dt: number) => void;
   private accumulator = 0;
+  private readonly physWaves: Wave[];
 
   constructor(
     private physics: Physics,
     readonly waves: Wave[],
     readonly scene: THREE.Scene,
-  ) {}
+  ) {
+    this.physWaves = physicsWaves(waves);
+  }
 
   addShip(ship: Ship): void {
     this.ships.push(ship);
@@ -35,8 +44,8 @@ export class GameWorld {
       this.accumulator -= FIXED_DT;
       this.simTime += FIXED_DT;
       for (const ship of this.ships) {
-        ship.updateFlooding(FIXED_DT, this.waves, this.simTime);
-        ship.applyForces(this.waves, this.simTime);
+        ship.updateFlooding(FIXED_DT, this.physWaves, this.simTime);
+        ship.applyForces(this.physWaves, this.simTime);
       }
       this.onFixedStep?.(this.simTime, FIXED_DT);
       this.physics.world.step();
