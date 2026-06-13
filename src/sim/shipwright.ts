@@ -401,20 +401,13 @@ export function buildBrig(): ShipBuild {
       }
     }
   }
-  // round 11: a single restored course (round 10's by+9 course is dropped)
-  // brings the resting draft to ratio 0.5–0.6 — deep, waterline at the
-  // near-vertical belt, deck dry. Spread broadly fore-and-aft (t 0.1–0.8,
-  // centered ~midship) so it deepens draft evenly rather than re-biasing trim,
-  // and it sits well below the COM so she stiffens rather than tips.
-  for (let x = 0; x < nx; x++) {
-    const t = stationT(x);
-    const by = keelY(t) + 1;
-    if (t >= 0.1 && t <= 0.8) {
-      for (const z of ballastZ(5)) {
-        if (inside(x, by + 8, z) && grid.get(x, by + 8, z) === EMPTY) grid.set(x, by + 8, z, IRON);
-      }
-    }
-  }
+  // round 13 (overnight): the by+8 ballast course is DROPPED. It was added to
+  // deepen the draft to 0.5–0.6, but in motion that sat the waterline right at
+  // the gunwale ("water basically all the way up to the deck … not realistic" —
+  // playtest, vs the tall dry topsides of real ships). Per the buoyancy research,
+  // average hull density = draft/depth; cutting this top course lightens her so
+  // she rides at ~0.45 (a tall, reference-like freeboard) AND lowers the COM (the
+  // dropped mass was the closest to it), so she stiffens rather than tips.
 
   // transverse watertight bulkheads at 1/3 and 2/3
   const bulkheadXs = [x0 + Math.round(L / 3), x0 + Math.round((2 * L) / 3)];
