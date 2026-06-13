@@ -223,28 +223,16 @@ async function main() {
   const ladderWorld = new THREE.Vector3();
   const climbTarget = new THREE.Vector3();
   let ladderHinted = false;
-  const banner = document.getElementById("banner")!;
-
-  let gameOver = false;
+  // r17: the "LOST AT SEA" / "PRIZE TAKEN" end-game was removed entirely. A sinking ship
+  // — yours or the prize — no longer freezes the game or demands a reload; the voyage
+  // just continues. Only the non-terminal man-overboard + enemy-salvage states remain.
   let manOverboard = false;
-  let abandonShip = false; // player's ship is lost — swim-for-it grace, not instant death
-  let abandonAt = 0; // sim time the player's ship went under
   let enemyScuttled = false; // enemy went down — non-terminal, salvage and sail on
-  const ABANDON_GRACE = 35; // s adrift before "lost at sea"
   let plugChannel = 0; // seconds remaining on the current plank repair
 
   const isSunk = (s: Ship) =>
     s.body.translation().y < -12 ||
     s.build.compartments.every((c) => c.waterVolume / c.volume > 0.95);
-
-  const endGame = (title: string, sub: string) => {
-    gameOver = true;
-    banner.style.display = "flex";
-    banner.innerHTML = `<div>${title}</div><small>${sub} — press Enter for another voyage</small>`;
-  };
-  window.addEventListener("keydown", (e) => {
-    if (e.code === "Enter" && gameOver) location.reload();
-  });
 
   world.onFixedStep = (t, dt) => {
     controls.modePressed = false; // legacy T — the wheel gates the helm now
@@ -318,7 +306,7 @@ async function main() {
       manOverboard = false;
     }
     sailing.apply(sloop, wind);
-    if (!gameOver) captain.update(dt, t, waves, wind, sloop);
+    captain.update(dt, t, waves, wind, sloop);
 
     // one action button (round 6): LMB fires the broadside while RMB-aiming
     // — from the wheel, the deck, first or third person, all identically —
@@ -328,7 +316,7 @@ async function main() {
     if (controls.lmbPressed) {
       controls.lmbPressed = false;
       if (controls.aiming) {
-        if (plugChannel <= 0 && !gameOver) {
+        if (plugChannel <= 0) {
           cannons.fireBroadside(sloop, aimSide(), t, controls.elevationDeg, controls.traverseDeg);
         }
       } else if (onFoot) {
@@ -380,31 +368,13 @@ async function main() {
     debris.update(dt, t, waves);
     character?.update(dt, controls.cameraYaw());
 
-    if (!gameOver) {
-      if (boarding.chestBanked && boarding.enemiesLeft() === 0) {
-        endGame("PRIZE TAKEN", `gold banked: ${boarding.gold} — a proper pirate's day`);
-      } else if (isSunk(enemy) && !enemyScuttled) {
-        // the enemy going down is NOT the end any more ("it's not supposed to be
-        // that night and day … once the opponent's ship sinks" — playtest). Salvage
-        // what floats and sail on; the run continues instead of slamming to a banner.
-        enemyScuttled = true;
-        boarding.gold += 150; // flotsam — most of it went down with her
-        boarding.message = `SHE'S SCUTTLED — salvaged ${boarding.gold}g from the flotsam. Sail on.`;
-      } else if (isSunk(sloop)) {
-        // your ship going down is NOT an instant game-over either ("I'm supposed to
-        // be able to attempt to climb into the other ship or swim to shore"). You go
-        // over the side and swim for it; only truly lost after drifting too long.
-        if (!abandonShip) {
-          abandonShip = true;
-          abandonAt = t;
-        }
-        const left = Math.ceil(ABANDON_GRACE - (t - abandonAt));
-        if (left > 0) {
-          boarding.message = `ABANDON SHIP — swim clear and make for safety! (${left}s)`;
-        } else {
-          endGame("LOST AT SEA", "no ship, no rescue — the deep takes you");
-        }
-      }
+    // r17: NO end-game. The prize sinking just yields salvage and the run continues; your
+    // own ship sinking is survivable too (swim clear, board the enemy, or respawn) — it is
+    // never a banner or a freeze. The game only ends when the player reloads.
+    if (isSunk(enemy) && !enemyScuttled) {
+      enemyScuttled = true;
+      boarding.gold += 150; // flotsam — most of it went down with her
+      boarding.message = `SHE'S SCUTTLED — salvaged ${boarding.gold}g from the flotsam. Sail on.`;
     }
   };
 
@@ -756,7 +726,7 @@ async function main() {
     // where you are standing on the ship, it should enter aiming mode for
     // all cannons and then fire all simultaneously")
     const portIdxs: number[] = [];
-    if (controls.aiming && !gameOver) {
+    if (controls.aiming) {
       const side = aimSide();
       sloop.build.cannonPorts.forEach((p, i) => {
         if (p.side === side) portIdxs.push(i);
