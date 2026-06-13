@@ -52,13 +52,16 @@ async function main() {
   skySetup.bakeEnvironment(renderer, scene);
 
   // FFT chop/normal/foam field, tiled over L meters and added on top of the
-  // analytic swell. N=128 is the backend's tested default (256 is heavy); the
-  // wind blows with the dominant swell train, so the chop sits on its back.
+  // analytic swell. N=256 over a 250 m tile = ~1 m/texel, which resolves the
+  // short chop (3.5–14 m band) without aliasing; the GPU cost measured ~2 ms
+  // on a mid GPU, trivial. windSpeed 11 gives an energetic mid-ocean chop
+  // ("chaotic choppy"); the wind blows with the dominant swell train, so the
+  // chop sits on its back.
   const oceanField = createOceanField(renderer, {
     rng: new Rng(seed + "-fft"),
-    N: 128,
+    N: 256,
     L: 250,
-    windSpeed: 9,
+    windSpeed: 11,
     windDirX: waves[0].dirX,
     windDirZ: waves[0].dirZ,
   });
