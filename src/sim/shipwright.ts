@@ -401,26 +401,15 @@ export function buildBrig(): ShipBuild {
       }
     }
   }
-  // round 10: float DEEPER. The reference cutaways carry most of the hull below
-  // the waterline, with the line riding up at the widest belt — where the
-  // section is near-vertical, so it reads as ONE clean line instead of stepping
-  // in and out across the rounded turn of the bilge ("too varied in how deep
-  // the waterline is around its side"). Two more low iron courses add the draft
-  // while keeping the COM deep (she stiffens, doesn't tip).
-  // aft-biased: at the deeper draft the fuller AFT hull carries more buoyancy,
-  // so trim-neutral iron sits ~0.1 L abaft midship (centered iron trimmed her
-  // 2° by the bow).
+  // round 11: one restored course keeps her deep-but-dry (ratio 0.5–0.6).
+  // The by+9 course from round 10 is dropped; by+8 alone places the waterline
+  // at the near-vertical belt without shipping the deck.
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);
     const by = keelY(t) + 1;
     if (t >= 0.1 && t <= 0.8) {
       for (const z of ballastZ(5)) {
         if (inside(x, by + 8, z) && grid.get(x, by + 8, z) === EMPTY) grid.set(x, by + 8, z, IRON);
-      }
-    }
-    if (t >= 0.18 && t <= 0.72) {
-      for (const z of ballastZ(4)) {
-        if (inside(x, by + 9, z) && grid.get(x, by + 9, z) === EMPTY) grid.set(x, by + 9, z, IRON);
       }
     }
   }
