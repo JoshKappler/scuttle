@@ -209,46 +209,57 @@ export class Effects {
     this.flash(p, 145, 0.17);
   }
 
-  /** The full carnage package where a ball strikes timber (round 8: "a more
-   *  dramatic collection of effects when the cannonballs hit"). */
-  impactBurst(p: THREE.Vector3, normal: THREE.Vector3): void {
-    this.splinters(p, normal);
-    // hot sparks off the strike
-    for (let i = 0; i < 16; i++) {
-      this.spawnInto(
-        this.fire,
-        p.x,
-        p.y,
-        p.z,
-        [
-          normal.x * 6 + (Math.random() - 0.5) * 9,
-          2 + Math.random() * 6,
-          normal.z * 6 + (Math.random() - 0.5) * 9,
-        ],
-        0.3 + Math.random() * 0.3,
-        [1.0, 0.55 + Math.random() * 0.3, 0.16],
-        -5,
-        1.4,
-      );
-    }
-    // lingering dust/smoke rolling off the wound
-    for (let i = 0; i < 12; i++) {
+  /** Hull timber blown off by a cannon strike. The visual now MATCHES the
+   *  damage: roughly one flying chunk per voxel actually removed from the hull
+   *  (round 13: "too much coming off … just the voxels that were actually
+   *  removed"). Brown oak/pine motes thrown OUTWARD along the impact normal,
+   *  under gravity so they arc and fall into the sea — plus a small dust puff
+   *  off the fresh wound. No sparks, no flash, no generic white storm.
+   *
+   *  `removed` is the voxel count from ship.applyDamage; 0 emits nothing. */
+  impactDebris(p: THREE.Vector3, normal: THREE.Vector3, removed: number): void {
+    if (removed <= 0) return;
+    // one chunk per removed voxel, capped so a deep multi-voxel bite can't
+    // spray hundreds of motes; tiny hits still throw their handful.
+    const chunks = Math.min(removed, 24);
+    for (let i = 0; i < chunks; i++) {
+      // weathered hull-timber browns (oak ↔ pine), a touch brighter than the
+      // unlit material colors so the chunks read against the sea.
+      const shade = 0.7 + Math.random() * 0.6;
       this.spawn(
         p.x,
         p.y,
         p.z,
         [
-          normal.x * 2 + (Math.random() - 0.5) * 2.6,
-          0.8 + Math.random() * 1.6,
-          normal.z * 2 + (Math.random() - 0.5) * 2.6,
+          normal.x * 4.5 + (Math.random() - 0.5) * 5,
+          2.5 + Math.random() * 4,
+          normal.z * 4.5 + (Math.random() - 0.5) * 5,
         ],
-        1.3 + Math.random() * 1.1,
-        [0.5, 0.47, 0.43],
-        0.5,
-        2.2,
+        0.7 + Math.random() * 0.8,
+        [0.34 * shade, 0.23 * shade, 0.13 * shade],
+        -9.81,
+        0.6,
       );
     }
-    this.flash(p, 55, 0.11, 0xffa64a);
+    // a small dust/splinter-haze puff off the wound, scaled to the bite —
+    // a glancing 1-voxel hit barely smokes; a 12-voxel gouge breathes dust.
+    const dust = Math.min(2 + removed, 10);
+    for (let i = 0; i < dust; i++) {
+      this.spawn(
+        p.x,
+        p.y,
+        p.z,
+        [
+          normal.x * 1.6 + (Math.random() - 0.5) * 2,
+          0.6 + Math.random() * 1.2,
+          normal.z * 1.6 + (Math.random() - 0.5) * 2,
+        ],
+        0.9 + Math.random() * 0.8,
+        [0.5, 0.47, 0.43],
+        0.4,
+        2.4,
+      );
+    }
   }
 
   muzzleSmoke(p: THREE.Vector3, dir: THREE.Vector3): void {

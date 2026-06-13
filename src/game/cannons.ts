@@ -196,10 +196,11 @@ export class Cannons {
           const removed = ship.applyDamage(hit.cell, BLAST_RADIUS_VOX);
           if (removed > 0) {
             const normal = this.tmpDir.copy(b.vel).normalize().negate();
-            // full drama: splinter storm + sparks + smoke + flash (round 8:
-            // "a more dramatic collection of effects when the cannonballs
-            // hit the other ship")
-            this.effects.impactBurst(hit.world, normal);
+            // debris MATCHES the damage: ~one flying timber chunk per voxel
+            // actually removed, thrown out along the impact normal (round 13:
+            // "too much coming off … just the voxels that were actually
+            // removed"). No more generic sparks-and-flash storm.
+            this.effects.impactDebris(hit.world, normal, removed);
             // momentum transfer (9 kg ball — round 8: "more powerful")
             ship.body.applyImpulseAtPoint(
               { x: b.vel.x * 9, y: b.vel.y * 9, z: b.vel.z * 9 },
