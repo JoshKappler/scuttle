@@ -159,10 +159,15 @@ void main() {
   // welded to the swell it floats on. Faded out by mid-distance (60→130 m)
   // before the ring spacing under-samples the short chop into shimmer.
   if (uFftOn > 0.5) {
-    float chopFade = 1.0 - smoothstep(60.0, 130.0, rDist);
+    float chopFade = 1.0 - smoothstep(80.0, 170.0, rDist);
     vec3 d = texture2D(uFftDisp, rest.xz / uFftTile).xyz; // Dx, height, Dz
-    p.x += d.x * chopFade;
-    p.z += d.z * chopFade;
+    // choppiness: exaggerate the horizontal trochoid pinch so crests sharpen
+    // into peaks and the troughs broaden — the difference between round swell
+    // and genuine wind-torn open-sea chop. With the chop now concentrated in the
+    // 6–14 m sub-band, a stronger 2.7x pinch crashes crossing crests into sharp
+    // peaks instead of round curves.
+    p.x += d.x * chopFade * 2.7;
+    p.z += d.z * chopFade * 2.7;
     p.y += d.y * chopFade;
     crest += max(d.y, 0.0) * chopFade;
   }
@@ -278,7 +283,12 @@ void main() {
     // the hold while sinking; the vertical gate fixes both — below the keel the
     // sea shows under the hull (no void), the hold never shows ocean (flooding
     // is the separate water-box system), and the sea closes over a sunk wreck.
-    if (al0 * al0 + ac0 * ac0 < 1.0 && vWorldPos.y > keelY && vWorldPos.y < deckY) discard;
+    // Upper bound is deckY + freeboard, NOT deckY: a wave crest taller than the
+    // instantaneous deck height used to escape this gate and render right through
+    // the planking (the "ocean clipping through the deck" green-water bug — worse
+    // now the chop is rougher). The +3 m ceiling clears the tallest chop while a
+    // hull that has SUNK well below the sea still lets the water close over it.
+    if (al0 * al0 + ac0 * ac0 < 1.0 && vWorldPos.y > keelY && vWorldPos.y < deckY + 3.0) discard;
   }
 
   // cutaway: the sea over the hull footprint is removed outright (the hold
@@ -320,7 +330,14 @@ void main() {
   // the GPU normal texture instead of the hand-rolled noise gradients.
   vec3 Nd;
   if (uFftOn > 0.5) {
-    vec3 fn = texture2D(uFftNormal, vWorldPos.xz / uFftTile).xyz * 2.0 - 1.0;
+    // Fade the chop normal toward flat with distance. A high-frequency normal
+    // map sampled under a tight specular lobe aliases into a regular lattice of
+    // sparkles — the "grid of dots" under the sun glare. The mesh already fades
+    // the chop GEOMETRY by ~170 m; matching the NORMAL detail rolloff kills the
+    // distant moiré while the crisp chop stays up close where it's resolved.
+    float dCam = length(uCameraPos - vWorldPos);
+    float nFade = 1.0 - smoothstep(55.0, 190.0, dCam);
+    vec3 fn = (texture2D(uFftNormal, vWorldPos.xz / uFftTile).xyz * 2.0 - 1.0) * nFade;
     Nd = normalize(N + vec3(fn.x, 0.0, fn.z));
   } else {
     Nd = normalize(N + vec3(g1x * 0.6 + g2x * 0.4 + g3x * 0.22, 0.0,
@@ -337,8 +354,12 @@ void main() {
 
   // sun glints (detailed normal → sparkle)
   vec3 H = normalize(L + V);
-  float spec = pow(max(dot(Nd, H), 0.0), 420.0) * 1.8;
-  spec += pow(max(dot(Nd, H), 0.0), 90.0) * 0.22;
+  // broader lobes than the old pow-420 pinpoint: a too-tight highlight on a
+  // bumpy normal is the single worst aliaser (one texel flips white, its
+  // neighbour stays dark → shimmer). Wider glints spread the energy and read as
+  // sun-on-water rather than a sparkle lattice.
+  float spec = pow(max(dot(Nd, H), 0.0), 220.0) * 1.5;
+  spec += pow(max(dot(Nd, H), 0.0), 55.0) * 0.3;
   col += uSunColor * spec;
 
   // subsurface light through wave crests facing the sun
@@ -412,8 +433,15 @@ void main() {
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
 
   // FFT foam: the Jacobian-fold whitecaps from the chop field, folded into the
-  // existing foam composite (analytic crest foam + caps + ship wash).
-  float fftFoam = uFftOn > 0.5 ? texture2D(uFftFoam, vWorldPos.xz / uFftTile).r : 0.0;
+  // existing foam composite (analytic crest foam + caps + ship wash). The raw
+  // foam texture is ~1 m/texel — magnified it reads as smooth low-res blobs ("an
+  // ugly mesh laid on the water"). Threshold it down to the genuine fold cores
+  // and dapple the edges with fine value-noise so it breaks up like real
+  // aerated whitewater instead of a flat sheet.
+  float fftFoamRaw = uFftOn > 0.5 ? texture2D(uFftFoam, vWorldPos.xz / uFftTile).r : 0.0;
+  float foamDapple = noise(vWorldPos.xz * 2.3 - uTime * 0.2) * 0.6
+                   + noise(vWorldPos.xz * 6.9 + uTime * 0.3) * 0.4;
+  float fftFoam = smoothstep(0.22, 0.6, fftFoamRaw) * (0.3 + 0.7 * foamDapple);
 
   col = mix(col, vec3(0.92, 0.96, 0.95),
             clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.55 + fftFoam * 0.7, 0.0, 0.93));

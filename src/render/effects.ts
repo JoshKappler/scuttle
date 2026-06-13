@@ -342,6 +342,33 @@ export class Effects {
     }
   }
 
+  /** A lick of white water flung off a breaking / crossing wave crest. A few
+   *  droplets launched mostly UP with a little lateral scatter and a downwind
+   *  lean — the open-sea "waves crash together and shoot water up" that the bow
+   *  wave and wake (both hull-driven) can't provide. Driven by the ambient
+   *  crest probe in the render loop, NOT by any ship. */
+  crestSpray(x: number, y: number, z: number, windX: number, windZ: number, strength = 1): void {
+    const s = Math.min(strength, 2.6);
+    // a DENSE tight cluster launched up together reads as a sheet of thrown water;
+    // a handful of scattered motes just reads as floating dots.
+    const n = 6 + Math.round(s * 5);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const lat = 0.3 + Math.random() * 0.9; // tight base — mostly a vertical plume
+      const up = 3.4 + Math.random() * 4.6 * s; // high launch, varied → a fan of spray
+      this.spawn(
+        x + (Math.random() - 0.5) * 1.0,
+        y + Math.random() * 0.3,
+        z + (Math.random() - 0.5) * 1.0,
+        [Math.cos(a) * lat + windX * 1.8 * s, up, Math.sin(a) * lat + windZ * 1.8 * s],
+        0.6 + Math.random() * 0.8,
+        [0.92, 0.96, 0.98],
+        -9.81,
+        0.45,
+      );
+    }
+  }
+
   splinters(p: THREE.Vector3, normal: THREE.Vector3): void {
     for (let i = 0; i < 26; i++) {
       this.spawn(

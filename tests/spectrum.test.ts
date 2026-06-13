@@ -15,10 +15,10 @@ describe("wave spectrum (round 8)", () => {
     const longest = waves.reduce((a, b) => (a.wavelength > b.wavelength ? a : b));
     // the bob driver must not be starved (round 8 v2: 0.27 m was too small)
     expect(longest.amplitude).toBeGreaterThan(0.5);
-    // …but the whole sea is still a moderate swell, not a wall of water
+    // …a medium open-sea swell (round 12), still bounded — not a wall of water
     const sum = waves.reduce((s, w) => s + w.amplitude, 0);
     expect(sum).toBeGreaterThan(1.5);
-    expect(sum).toBeLessThan(3.5);
+    expect(sum).toBeLessThan(4.5);
   });
 
   it("stays under the global sharpness budget — no self-intersecting crests", () => {

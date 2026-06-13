@@ -35,17 +35,30 @@ export function dispersion(k: number): number {
   return Math.sqrt(G * k);
 }
 
-/** Phillips spectrum with a directional term and a small-wave cutoff. */
+/** Broadband chop spectrum with a directional term and a small-wave cutoff.
+ *  A textbook Phillips falls off as 1/k⁴, which — once the field is band-limited
+ *  to the 2–14 m chop band — buries almost all the energy at the long (14 m)
+ *  edge. The result is a near-single-wavelength surface that reads as a repeating
+ *  GRID, not open-sea chaos. Two changes broaden it:
+ *   • 1/k² rolloff (not 1/k⁴) spreads energy across the whole band, so every
+ *     wavelength from 2 m to 14 m contributes → rough, never-repeating chop.
+ *   • the directional term keeps a 0.35 omni floor, so the chop arrives from
+ *     every angle ("unpredictable"), not collimated along one axis. */
 function phillips(kx: number, kz: number, windSpeed: number, wDirX: number, wDirZ: number): number {
   const k2 = kx * kx + kz * kz;
   if (k2 < 1e-12) return 0;
-  const k4 = k2 * k2;
   const Lw = (windSpeed * windSpeed) / G;
   const kHat = [kx / Math.sqrt(k2), kz / Math.sqrt(k2)];
   const wDot = kHat[0] * wDirX + kHat[1] * wDirZ;
-  const dir = wDot * wDot;
-  const damp = Math.exp(-k2 * (Lw * 0.0015) * (Lw * 0.0015));
-  return (Math.exp(-1 / (k2 * Lw * Lw)) / k4) * dir * damp;
+  const dir = 0.35 + 0.65 * wDot * wDot;
+  // Suppress the very short ripples (< ~6 m). Spread over the WHOLE 2–14 m band
+  // the chop read as buzzy "eggshell" that shimmered fast in place; concentrating
+  // it in the 6–14 m sub-band makes the chop spaced-out and slower-moving (lower
+  // frequencies disperse slower), so it reads as small swell that crashes into
+  // sharp peaks rather than sandpaper.
+  const kCut = (2 * Math.PI) / 6; // cutoff wavenumber ≈ 6 m
+  const shortDamp = Math.exp(-k2 / (kCut * kCut));
+  return (Math.exp(-1 / (k2 * Lw * Lw)) / k2) * dir * shortDamp;
 }
 
 /** Box–Muller standard normal from two uniforms. */
