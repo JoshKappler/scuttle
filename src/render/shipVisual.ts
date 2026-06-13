@@ -8,6 +8,7 @@ import {
   GUN_SCALE,
   TIP_FROM_TRUNNION_B,
   TRUNNION_OUT_B,
+  type GunFacing,
 } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
 import { CompartmentFluid } from "./compartmentFluid";
@@ -140,7 +141,7 @@ export class ShipVisual {
     time: number,
     rudderNorm: number,
     sailSet: number,
-    aim?: { side: 1 | -1; elevationDeg: number; traverseDeg: number } | null,
+    aim?: { bearing: 1 | -1 | GunFacing; elevationDeg: number; traverseDeg: number } | null,
   ): void {
     const dt = Math.min(Math.max(time - this.lastAnimT, 0), 0.1);
     this.lastAnimT = time;
@@ -173,12 +174,15 @@ export class ShipVisual {
     // Dissected guns: TRAVERSE slews the whole carriage, ELEVATION pitches
     // only the barrel about its trunnions (counter-rotated for baked tilt).
     for (const b of this.barrels) {
-      const active = aim && b.side === aim.side;
+      // active when the aimed battery matches this gun: a chaser matches its facing,
+      // a broadside gun matches its side.
+      const active = !!aim && (b.facing ? aim.bearing === b.facing : aim.bearing === b.side);
       const d = barrelDirLocal(
         b.side,
         active ? aim.elevationDeg : 2,
         active ? aim.traverseDeg : 0,
         ShipVisual.tmpDir,
+        b.facing,
       );
       const pitch = Math.asin(Math.min(Math.max(d.y, -1), 1));
       const yaw = Math.atan2(d.x, d.z);
@@ -288,7 +292,7 @@ export class ShipVisual {
   private wheelSpin: THREE.Group | null = null;
   /** Per gun: the yaw pivot, plus (once the GLB is dissected) the trunnion
    *  group that takes elevation and the sculpt's baked tilt to counter. */
-  private barrels: { mesh: THREE.Object3D; side: 1 | -1; elev?: THREE.Object3D; tilt?: number }[] = [];
+  private barrels: { mesh: THREE.Object3D; side: 1 | -1; elev?: THREE.Object3D; tilt?: number; facing?: GunFacing }[] = [];
   private dispRudder = 0;
   private lastAnimT = 0;
   /** Local position of the ship's wheel — gameplay anchors helm control here. */
@@ -579,20 +583,32 @@ export class ShipVisual {
       };
     }
     const gg = ShipVisual.gunGeo;
+    // r17: a dark, framed "gunport" window for the below-deck guns — the barrel pokes
+    // through it; purely decorative, the hull voxels stay intact (built once per ship).
+    const gunportFrameGeo = new THREE.BoxGeometry(0.84, 0.74, 0.1);
+    const gunportHoleGeo = new THREE.BoxGeometry(0.66, 0.56, 0.18);
+    const gunportMat = new THREE.MeshStandardMaterial({ color: 0x07070a, roughness: 1, metalness: 0 });
     const deckInPivot = -0.62; // the pivot origin floats 0.62 above the deck (model space)
     for (const port of this.build.cannonPorts) {
       const px = (port.x + 0.5) * VOXEL_SIZE;
-      const py = (this.build.deckY + 1) * VOXEL_SIZE;
-      // seat the carriage inboard of the embrasure cell — 2.6 left the trucks
-      // overhanging the tumblehome edge (round 9: "still too far … hanging off
-      // the edge"); 3.4 plants all four wheels on deck planking
-      const pz = (port.z + 0.5 - port.side * 3.4) * VOXEL_SIZE;
+      // r17: the gun's own height — deck guns store y = deckY+1 (unchanged), below-deck
+      // chase guns a lower y. Mirrors pivotLocal() in gunnery exactly.
+      const py = port.y * VOXEL_SIZE;
+      const cyP = py + BARREL_PIVOT_UP;
       const pivot = new THREE.Group();
-      pivot.rotation.order = "YXZ"; // yaw to the side, then elevate — never rolls
-      // pivot height + inboard offset mirror pivotLocal() in gunnery exactly;
-      // the whole gun scales as one group so model-space offsets stay true
-      pivot.position.set(px, py + BARREL_PIVOT_UP, pz - port.side * GUN_INBOARD_M);
+      pivot.rotation.order = "YXZ"; // yaw to bear, then elevate — never rolls
       pivot.scale.setScalar(GUN_SCALE);
+      // pivot height + inboard offset mirror pivotLocal() in gunnery. A chaser seats its
+      // carriage inboard along ±x (behind the bow / forward of the stern); a broadside
+      // gun inboard along ±z (3.4 plants all four trucks on deck, round 9).
+      if (port.facing === "fore") {
+        pivot.position.set((port.x + 0.5 - 3.4) * VOXEL_SIZE - GUN_INBOARD_M, cyP, (port.z + 0.5) * VOXEL_SIZE);
+      } else if (port.facing === "aft") {
+        pivot.position.set((port.x + 0.5 + 3.4) * VOXEL_SIZE + GUN_INBOARD_M, cyP, (port.z + 0.5) * VOXEL_SIZE);
+      } else {
+        const pz = (port.z + 0.5 - port.side * 3.4) * VOXEL_SIZE;
+        pivot.position.set(px, cyP, pz - port.side * GUN_INBOARD_M);
+      }
       // gun space: +z outboard for both sides (animate()'s yaw flips port)
       const elev = new THREE.Group();
       elev.position.set(0, BORE_UP_B, TRUNNION_OUT_B);
@@ -619,7 +635,31 @@ export class ShipVisual {
       add(gg.axle, ironMat, 0, deckInPivot + 0.17, 0.18, true);
       add(gg.axle, ironMat, 0, deckInPivot + 0.15, -0.55, true);
       this.group.add(pivot);
-      this.barrels.push({ mesh: pivot, side: port.side, elev, tilt: 0 });
+      this.barrels.push({ mesh: pivot, side: port.side, elev, tilt: 0, facing: port.facing });
+
+      // a framed gunport "window" where the barrel exits the hull skin
+      const wy = cyP - 0.12; // about the bore line
+      if (port.facing === "fore" || port.facing === "aft") {
+        // on the bow / stern face, thin axis along x
+        const dir = port.facing === "fore" ? 1 : -1;
+        const wx = (port.x + 0.5) * VOXEL_SIZE + dir * 1.5;
+        const wz = (port.z + 0.5) * VOXEL_SIZE;
+        const frame = new THREE.Mesh(gunportFrameGeo, woodMat);
+        frame.position.set(wx, wy, wz);
+        frame.rotation.y = Math.PI / 2;
+        const hole = new THREE.Mesh(gunportHoleGeo, gunportMat);
+        hole.position.set(wx + dir * 0.05, wy, wz);
+        hole.rotation.y = Math.PI / 2;
+        this.group.add(frame, hole);
+      } else if (port.y < this.build.deckY) {
+        // a below-deck broadside gunport on the hull side
+        const wz = (port.z + 0.5) * VOXEL_SIZE;
+        const frame = new THREE.Mesh(gunportFrameGeo, woodMat);
+        frame.position.set(px, wy, wz);
+        const hole = new THREE.Mesh(gunportHoleGeo, gunportMat);
+        hole.position.set(px, wy, wz + port.side * 0.05);
+        this.group.add(frame, hole);
+      }
     }
 
     // stern ladder: rungs down the transom to the waterline, so going

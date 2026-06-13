@@ -43,8 +43,10 @@ describe("shipwright sloop", () => {
     expect(ship.interiorLeaks).toEqual([]);
   });
 
-  it("metadata: 8 cannon ports, ≥1 mast, hatches over each hold", () => {
-    expect(ship.cannonPorts.length).toBe(8);
+  it("metadata: 10 cannon ports (8 broadside + 2 chasers), ≥1 mast, hatches over each hold", () => {
+    expect(ship.cannonPorts.length).toBe(10);
+    expect(ship.cannonPorts.filter((p) => !p.facing).length).toBe(8);
+    expect(ship.cannonPorts.filter((p) => p.facing).length).toBe(2);
     expect(ship.masts.length).toBeGreaterThanOrEqual(1);
     expect(ship.hatches.length).toBe(3);
   });

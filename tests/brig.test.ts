@@ -32,13 +32,18 @@ describe("shipwright brig (round 6: the real fighting vessel)", () => {
     expect(ship.beamM).toBeGreaterThanOrEqual(9);
   });
 
-  it("carries five gun ports a side, all on the open waist", () => {
-    const stb = ship.cannonPorts.filter((p) => p.side === 1);
-    const prt = ship.cannonPorts.filter((p) => p.side === -1);
-    expect(stb).toHaveLength(5);
-    expect(prt).toHaveLength(5);
-    for (const p of ship.cannonPorts) {
+  it("carries five broadside ports a side on the open waist, plus bow & stern chasers", () => {
+    const broadside = ship.cannonPorts.filter((p) => !p.facing);
+    expect(broadside.filter((p) => p.side === 1)).toHaveLength(5);
+    expect(broadside.filter((p) => p.side === -1)).toHaveLength(5);
+    for (const p of broadside) {
       expect(ship.deckYAt(p.x)).toBe(ship.deckY); // not under the quarterdeck
+    }
+    // r17: axial chasers — fore and aft — seated below the main deck, fired apart from the sides
+    expect(ship.cannonPorts.filter((p) => p.facing === "fore").length).toBeGreaterThan(0);
+    expect(ship.cannonPorts.filter((p) => p.facing === "aft").length).toBeGreaterThan(0);
+    for (const p of ship.cannonPorts.filter((p) => p.facing)) {
+      expect(p.y).toBeLessThan(ship.deckY);
     }
   });
 
@@ -88,9 +93,10 @@ describe("shipwright brig (round 6: the real fighting vessel)", () => {
     }
   });
 
-  it("leaves embrasures in the fence for every gun", () => {
-    for (const p of ship.cannonPorts) {
-      // the rail cell directly above the port's deck edge must be open
+  it("leaves embrasures in the fence for every broadside gun", () => {
+    // chasers fire axially through a hull gunport, not over the waist rail, so only the
+    // broadside guns need the fence opened above them.
+    for (const p of ship.cannonPorts.filter((p) => !p.facing)) {
       expect(ship.grid.get(p.x, ship.deckY + 4, p.z)).toBe(EMPTY);
     }
   });

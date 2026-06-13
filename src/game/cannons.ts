@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { G, VOXEL_SIZE } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
-import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld, velocityAtPoint, type MuzzleOut } from "./gunnery";
+import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld, velocityAtPoint, type GunFacing, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
 
 /**
@@ -32,12 +32,17 @@ export class Cannons {
   private balls: Ball[] = [];
   private pendingShots: {
     delay: number;
-    side: 1 | -1;
     portIndex: number;
     owner: Ship;
     elevation: number;
     traverse: number;
   }[] = [];
+
+  /** A gun bears for this battery key: a number selects a broadside (by side, chasers
+   *  excluded); "fore"/"aft" selects the chasers. */
+  private bears(port: { side: 1 | -1; facing?: GunFacing }, key: 1 | -1 | GunFacing): boolean {
+    return typeof key === "number" ? !port.facing && port.side === key : port.facing === key;
+  }
   /** Per-port reload clocks (simTime when that gun is loaded again) —
    *  firing one gun from the deck must not lock the whole battery. */
   private portReloadAt = new Map<string, number>();
@@ -63,12 +68,12 @@ export class Cannons {
     return Math.max((this.portReloadAt.get(this.portKey(ship, portIndex)) ?? 0) - simTime, 0);
   }
 
-  /** Fraction of one side's guns currently loaded, for the HUD. */
-  sideReadiness(ship: Ship, side: 1 | -1, simTime: number): number {
+  /** Fraction of a battery's guns currently loaded, for the HUD (side, or "fore"/"aft"). */
+  sideReadiness(ship: Ship, key: 1 | -1 | GunFacing, simTime: number): number {
     let total = 0;
     let ready = 0;
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
-      if (ship.build.cannonPorts[p].side !== side) continue;
+      if (!this.bears(ship.build.cannonPorts[p], key)) continue;
       total++;
       if (this.portReload(ship, p, simTime) <= 0) ready++;
     }
@@ -101,16 +106,16 @@ export class Cannons {
     }
   }
 
-  /** Queue a broadside: every LOADED gun on the side fires. */
-  fireBroadside(ship: Ship, side: 1 | -1, simTime: number, elevationDeg = 5, traverseDeg = 0): boolean {
+  /** Queue a battery: every LOADED gun that bears for `key` fires (a broadside by side,
+   *  or the bow/stern chasers for "fore"/"aft"). */
+  fireBroadside(ship: Ship, key: 1 | -1 | GunFacing, simTime: number, elevationDeg = 5, traverseDeg = 0): boolean {
     let i = 0;
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
-      if (ship.build.cannonPorts[p].side !== side) continue;
+      if (!this.bears(ship.build.cannonPorts[p], key)) continue;
       if (this.portReload(ship, p, simTime) > 0) continue;
       this.portReloadAt.set(this.portKey(ship, p), simTime + this.reloadS);
       this.pendingShots.push({
         delay: i * STAGGER,
-        side,
         portIndex: p,
         owner: ship,
         elevation: elevationDeg,

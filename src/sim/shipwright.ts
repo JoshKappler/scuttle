@@ -15,7 +15,9 @@ export interface ShipBuild {
   envelopeVolume: number; // m³ enclosed by the hull up to and including deck
   compartments: Compartment[];
   interiorLeaks: number[]; // packed indices of interior regions that escaped (should be empty)
-  cannonPorts: { x: number; y: number; z: number; side: 1 | -1 }[]; // voxel coords; side = +z / −z
+  // voxel coords; side = ±z broadside. `facing` (r17) marks a bow/stern CHASER that
+  // bears axially (±x) instead — fired independently of the broadsides.
+  cannonPorts: { x: number; y: number; z: number; side: 1 | -1; facing?: "fore" | "aft" }[];
   masts: { x: number; z: number; h: number }[]; // voxel coords on centerline; h = rig height (m)
   hatches: { x: number; z: number; w: number; d: number }[]; // deck openings
   lengthM: number;
@@ -231,6 +233,11 @@ export function buildSloop(): ShipBuild {
     cannonPorts.push({ x: px, y: deckY + 1, z: Math.floor(cz) + hb, side: 1 });
     cannonPorts.push({ x: px, y: deckY + 1, z: Math.ceil(cz) - hb, side: -1 });
   }
+
+  // r17: the sloop's bow + stern chasers (axial guns; see the brig for the rationale).
+  const czi = Math.round(cz);
+  cannonPorts.push({ x: x0 + L - 5, y: deckY - 4, z: czi, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + 4, y: deckY - 1, z: czi, side: 1, facing: "aft" });
 
   // single mast slightly forward of midship
   const masts = [{ x: x0 + Math.round(L * 0.42), z: Math.round(cz), h: 15 }];
@@ -499,6 +506,16 @@ export function buildBrig(): ShipBuild {
     cannonPorts.push({ x: px, y: deckY + 1, z: Math.floor(cz) + hb, side: 1 });
     cannonPorts.push({ x: px, y: deckY + 1, z: Math.ceil(cz) - hb, side: -1 });
   }
+
+  // r17: a bow chaser one gun deck BELOW the main deck (fires forward) and a stern chaser
+  // from the great cabin (fires aft) — axial guns so you can line a shot on a ship you're
+  // chasing or running from, not only abeam ("so hard to line up shots with the enemy").
+  // The hull voxels stay intact (shipVisual frames the gunport); both sit above the water.
+  const czi = Math.round(cz);
+  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: czi - 1, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: czi + 1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: czi - 1, side: -1, facing: "aft" });
+  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: czi + 1, side: 1, facing: "aft" });
 
   // brig rig: main mast forward of midship, fore mast toward the bow
   const masts = [

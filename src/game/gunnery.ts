@@ -53,29 +53,46 @@ export interface MuzzleOut {
 
 const tmpQ = new THREE.Quaternion();
 
+/** Which way a gun bears at rest: out a broadside (undefined → use `side`, ±z) or
+ *  axially as a bow/stern CHASER (r17: fires straight forward/back so you can line a
+ *  shot on a ship you're chasing or running from, not just abeam). */
+export type GunFacing = "fore" | "aft";
+
 /**
  * Barrel direction in SHIP-LOCAL space. Elevation lifts the muzzle;
- * traverse (±, degrees) swings it toward the bow for positive values —
- * coarse aim is the helm's job, this is the gun captain's handspike.
+ * traverse (±, degrees) swings it. Broadside guns bear out ±z; a fore/aft
+ * chaser bears out ±x (and traverse then swings it across the beam).
  */
 export function barrelDirLocal(
   side: 1 | -1,
   elevationDeg: number,
   traverseDeg: number,
   out: THREE.Vector3,
+  facing?: GunFacing,
 ): THREE.Vector3 {
   const el = (elevationDeg * Math.PI) / 180;
   const tv = (traverseDeg * Math.PI) / 180;
-  out.set(Math.sin(tv), Math.tan(el), side * Math.cos(tv));
+  if (facing === "fore") out.set(Math.cos(tv), Math.tan(el), Math.sin(tv));
+  else if (facing === "aft") out.set(-Math.cos(tv), Math.tan(el), Math.sin(tv));
+  else out.set(Math.sin(tv), Math.tan(el), side * Math.cos(tv));
   return out.normalize();
 }
 
 /** Trunnion pivot in SHIP-LOCAL meters for a cannon port. */
 export function pivotLocal(ship: Ship, portIndex: number, out: THREE.Vector3): THREE.Vector3 {
   const port = ship.build.cannonPorts[portIndex];
+  // r17: use the port's own height so a below-deck/cabin gun sits lower (deck guns store
+  // y = deckY+1, unchanged). Mirrored in shipVisual. A chaser seats its carriage inboard
+  // along ±x (behind the bow / forward of the stern) instead of ±z.
+  const cy = port.y * VOXEL_SIZE + BARREL_PIVOT_UP;
+  const cz = (port.z + 0.5) * VOXEL_SIZE;
+  if (port.facing === "fore")
+    return out.set((port.x + 0.5 - BARREL_INBOARD) * VOXEL_SIZE - GUN_INBOARD_M, cy, cz);
+  if (port.facing === "aft")
+    return out.set((port.x + 0.5 + BARREL_INBOARD) * VOXEL_SIZE + GUN_INBOARD_M, cy, cz);
   return out.set(
     (port.x + 0.5) * VOXEL_SIZE,
-    (ship.build.deckY + 1) * VOXEL_SIZE + BARREL_PIVOT_UP,
+    cy,
     (port.z + 0.5 - port.side * BARREL_INBOARD) * VOXEL_SIZE - port.side * GUN_INBOARD_M,
   );
 }
@@ -109,10 +126,10 @@ export function muzzleWorld(
   pivotLocal(ship, portIndex, out.pos);
   // exactly the visual model's articulation: traverse slews the carriage
   // (trunnion rides the level bore line), elevation pitches about the trunnion
-  barrelDirLocal(port.side, 0, traverseDeg, out.dir);
+  barrelDirLocal(port.side, 0, traverseDeg, out.dir, port.facing);
   out.pos.y += BORE_UP;
   out.pos.addScaledVector(out.dir, TRUNNION_OUT);
-  barrelDirLocal(port.side, elevationDeg, traverseDeg, out.dir);
+  barrelDirLocal(port.side, elevationDeg, traverseDeg, out.dir, port.facing);
   out.pos.addScaledVector(out.dir, TIP_FROM_TRUNNION);
   const rot = ship.body.rotation();
   tmpQ.set(rot.x, rot.y, rot.z, rot.w);

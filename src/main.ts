@@ -317,7 +317,7 @@ async function main() {
       controls.lmbPressed = false;
       if (controls.aiming) {
         if (plugChannel <= 0) {
-          cannons.fireBroadside(sloop, aimSide(), t, controls.elevationDeg, controls.traverseDeg);
+          cannons.fireBroadside(sloop, aimBearing(), t, controls.elevationDeg, controls.traverseDeg);
         }
       } else if (onFoot) {
         slash = boarding.canFight();
@@ -613,7 +613,7 @@ async function main() {
     const windBearing = Math.atan2(-wind.dirZ, -wind.dirX) - heading;
     hudEls.windMarker.style.transform = `rotate(${(windBearing * 180) / Math.PI}deg)`;
 
-    const readiness = cannons.sideReadiness(sloop, aimSide(), world.simTime);
+    const readiness = cannons.sideReadiness(sloop, aimBearing(), world.simTime);
     hudEls.gunBar.style.width = `${readiness * 100}%`;
     // helm indicator: where the rudder is SET (it holds until changed)
     hudEls.rudderInd.style.left = `${50 - sailing.rudder * 42}%`;
@@ -648,7 +648,7 @@ async function main() {
       `${boarding.grappled ? " · GRAPPLED" : ""}` +
       `${plugChannel > 0 ? ` · plugging ${plugChannel.toFixed(1)}s` : ""}`;
 
-    const ready2 = cannons.sideReadiness(sloop, aimSide(), world.simTime);
+    const ready2 = cannons.sideReadiness(sloop, aimBearing(), world.simTime);
     if (plugChannel > 0) {
       hudEls.gunStatus.textContent = "REPAIRING";
       hudEls.gunStatus.className = "";
@@ -656,7 +656,7 @@ async function main() {
       hudEls.gunStatus.textContent = "GUNS READY";
       hudEls.gunStatus.className = "ready";
     } else {
-      const sideGuns = sloop.build.cannonPorts.filter((p) => p.side === aimSide()).length;
+      const sideGuns = sloop.build.cannonPorts.filter((p) => gunBears(p, aimBearing())).length;
       hudEls.gunStatus.textContent = `LOADING ${Math.round(ready2 * sideGuns)}/${sideGuns}`;
       hudEls.gunStatus.className = "";
     }
@@ -709,14 +709,20 @@ async function main() {
     aimLines.push({ line, pos });
   }
 
-  // which broadside the camera is looking ACROSS — from the camera's look
-  // direction, so it works identically in first person and orbit views
+  // which battery the camera bears toward — from the camera's look direction (works
+  // identically first-person or orbit). Looking more along the keel than across it lays
+  // the bow/stern CHASERS; looking across it lays the broadside you're facing.
   const lookV = new THREE.Vector3();
-  function aimSide(): 1 | -1 {
+  type Bearing = 1 | -1 | "fore" | "aft";
+  function aimBearing(): Bearing {
     const rot2 = sloop.body.rotation();
     const inv = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w).invert();
     camera.getWorldDirection(lookV).applyQuaternion(inv);
+    if (Math.abs(lookV.x) > Math.abs(lookV.z)) return lookV.x >= 0 ? "fore" : "aft";
     return lookV.z >= 0 ? 1 : -1;
+  }
+  function gunBears(p: { side: 1 | -1; facing?: "fore" | "aft" }, b: Bearing): boolean {
+    return typeof b === "number" ? !p.facing && p.side === b : p.facing === b;
   }
 
   const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
@@ -727,9 +733,9 @@ async function main() {
     // all cannons and then fire all simultaneously")
     const portIdxs: number[] = [];
     if (controls.aiming) {
-      const side = aimSide();
+      const bearing = aimBearing();
       sloop.build.cannonPorts.forEach((p, i) => {
-        if (p.side === side) portIdxs.push(i);
+        if (gunBears(p, bearing)) portIdxs.push(i);
       });
     }
 
@@ -999,14 +1005,15 @@ async function main() {
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")
     boarding.player?.postPose();
-    controls.aimSideSign = aimSide(); // traverse input is screen-relative
+    const bearNow = aimBearing(); // traverse input is screen-relative (broadside only)
+    controls.aimSideSign = typeof bearNow === "number" ? bearNow : 1;
     updateAimArc();
     sloopVisual.animate(
       world.simTime,
       sailing.rudder,
       sailing.sailSet,
       controls.aiming
-        ? { side: aimSide(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
+        ? { bearing: aimBearing(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
         : null,
     );
     enemyVisual.animate(world.simTime, captain.sailing.rudder, captain.sailing.sailSet);

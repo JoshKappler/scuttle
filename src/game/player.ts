@@ -107,7 +107,9 @@ export class PlayerControls {
         // RMB held: mouse Y lays the guns, mouse X swings them — in SCREEN
         // space (facing the +side broadside puts the bow on the screen LEFT,
         // so ship-space traverse runs opposite the mouse there)
-        this.elevationDeg = Math.min(Math.max(this.elevationDeg - e.movementY * 0.05, 0), 14);
+        // r17: allow DEPRESSION (negative) so the guns can angle DOWN as well as up — to
+        // hit a target the ship has rolled away from, or a low target close alongside.
+        this.elevationDeg = Math.min(Math.max(this.elevationDeg - e.movementY * 0.05, -8), 16);
         this.traverseDeg = Math.min(
           Math.max(this.traverseDeg + e.movementX * 0.06 * -this.aimSideSign, -12),
           12,
