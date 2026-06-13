@@ -55,3 +55,12 @@ describe("wave spectrum (round 8)", () => {
     }
   });
 });
+
+describe("crossing seas (round 11)", () => {
+  it("the swell is not unidirectional — long waves span a real spread of headings", () => {
+    const phys = physicsWaves(waves); // ≥14 m subset
+    const angs = phys.map((w) => Math.atan2(w.dirZ, w.dirX));
+    const spread = Math.max(...angs) - Math.min(...angs);
+    expect(spread).toBeGreaterThan(0.6); // > ~34° between the extreme swell headings
+  });
+});

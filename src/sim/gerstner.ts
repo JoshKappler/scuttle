@@ -47,9 +47,12 @@ export function makeWaves(rng: Rng, count = 16): Wave[] {
   for (let i = 0; i < count; i++) {
     const f = count === 1 ? 0 : i / (count - 1);
     const wavelength = Math.max(L_MAX * Math.pow(L_MIN / L_MAX, f) * (1 + rng.range(-0.12, 0.12)), 2.2);
-    // long swell marches with the wind; chop scatters across it
-    const spreadHalf = 0.16 + 0.85 * f * f;
-    const angle = primary + rng.range(-spreadHalf, spreadHalf);
+    // long swell now crosses too (round 11: "ripples all going the exact same
+    // direction"): the longest waves fan ~±0.45 rad around two swell trains
+    // ~0.7 rad apart, short chop scatters wider. Physics rides the result.
+    const train = i % 2 === 0 ? 0 : 0.7; // two interleaved swell systems
+    const spreadHalf = 0.45 + 0.7 * f * f;
+    const angle = primary + train + rng.range(-spreadHalf, spreadHalf);
     // chop: lift the SHORT components (λ < the physics cutoff, which the hull
     // never feels) so the sea reads as wind chop riding the swell rather than
     // long rolling waves (round 9: "I wanted … chop instead of just long,
