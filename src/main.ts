@@ -370,6 +370,9 @@ async function main() {
     boarding,
     controls,
     camera,
+    sailing,
+    ramming,
+    debris,
     get character() {
       return character;
     },

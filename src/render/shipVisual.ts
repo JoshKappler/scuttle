@@ -352,12 +352,6 @@ export class ShipVisual {
       t.colorSpace = THREE.SRGBColorSpace;
       t.repeat.set(3, 2.2);
     });
-    const sailMat = new THREE.MeshStandardMaterial({
-      color: 0xe8dfc8,
-      map: sailTex,
-      roughness: 0.95,
-      side: THREE.DoubleSide,
-    });
 
     // billow + flutter in the vertex stage; uFill scales the belly with sail
     // set. SQUARE RIG: the sail hangs between two yards (top/bottom pinned by
@@ -365,7 +359,7 @@ export class ShipVisual {
     // playtest ("billow out vertically, not in a horizontal curve")
     this.sailUniforms = { uTime: { value: 0 }, uFill: { value: 1 } };
     const su = this.sailUniforms;
-    sailMat.onBeforeCompile = (shader) => {
+    const injectBillow = (shader: { uniforms: Record<string, unknown>; vertexShader: string }) => {
       shader.uniforms.uTime = su.uTime;
       shader.uniforms.uFill = su.uFill;
       shader.vertexShader = shader.vertexShader
@@ -387,6 +381,19 @@ export class ShipVisual {
             transformed.x += belly + flutter;
           }`,
         );
+    };
+    // every sail needs its OWN material (its own puncture alphaMap), and
+    // Material.clone() does NOT carry onBeforeCompile — round 7's first cut
+    // cloned the base and every sail went paper-flat. Build each from scratch.
+    const newSailMaterial = () => {
+      const m = new THREE.MeshStandardMaterial({
+        color: 0xe8dfc8,
+        map: sailTex,
+        roughness: 0.95,
+        side: THREE.DoubleSide,
+      });
+      m.onBeforeCompile = injectBillow;
+      return m;
     };
 
     this.build.masts.forEach((m, mi) => {
@@ -462,7 +469,7 @@ export class ShipVisual {
         cctx.fillStyle = "#fff";
         cctx.fillRect(0, 0, 128, 128);
         const tex = new THREE.CanvasTexture(canvas);
-        const mat = sailMat.clone(); // same onBeforeCompile + shared uniforms
+        const mat = newSailMaterial();
         mat.alphaMap = tex;
         mat.alphaTest = 0.45;
 

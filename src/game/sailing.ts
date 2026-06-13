@@ -131,6 +131,8 @@ export class SailingController {
     body.addTorque({ x: 0, y: yaw, z: 0 }, true);
   }
 
-  /** COM height above the keel's lateral-force center (m) — heel tuning. */
-  static TURN_HEEL_ARM = 3.0;
+  /** COM height above the keel's lateral-force center (m) — heel tuning.
+   *  Verified in-game: ~7° at 22 kn hard over with 3.0; 4.2 lands the
+   *  requested pronounced-but-safe 9–12°. */
+  static TURN_HEEL_ARM = 4.2;
 }

@@ -357,10 +357,12 @@ export class Pirate {
       return;
     }
 
-    // sprint: shift pours stamina into a longer stride
+    // sprint: shift pours stamina into a longer stride. No grounded gate on
+    // the drain — computedGrounded flickers on a heaving deck and quietly
+    // quartered the cost
     const moving = moveX * moveX + moveZ * moveZ > 0.01;
     const sprinting = sprint && moving && this.stamina > 0.02;
-    this.tickStamina(dt, sprinting && grounded);
+    this.tickStamina(dt, sprinting);
     const speed = WALK_SPEED * (sprinting ? SPRINT_MULT : 1);
 
     const desired = {

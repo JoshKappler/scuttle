@@ -183,8 +183,8 @@ void main() {
     vec2 f0 = uShipA[s0].zw;
     vec2 ctr = uShipA[s0].xy - f0 * uShipB[s0].y;
     vec2 rel0 = vWorldPos.xz - ctr;
-    float al0 = dot(rel0, f0) / max(uShipB[s0].y * 0.95, 0.1);
-    float ac0 = dot(rel0, vec2(-f0.y, f0.x)) / max(uShipB[s0].z * 0.78 * dry, 0.1);
+    float al0 = dot(rel0, f0) / max(uShipB[s0].y * 0.88, 0.1);
+    float ac0 = dot(rel0, vec2(-f0.y, f0.x)) / max(uShipB[s0].z * 0.62 * dry, 0.1);
     if (al0 * al0 + ac0 * ac0 < 1.0) discard;
   }
 
