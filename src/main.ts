@@ -532,31 +532,63 @@ async function main() {
     const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x1d3a52, roughness: 0.85 });
     const cuffMat = new THREE.MeshStandardMaterial({ color: 0x1c6e6e, roughness: 0.8 });
     const skinMat = new THREE.MeshStandardMaterial({ color: 0xc99066, roughness: 0.7 });
-    const steelMat = new THREE.MeshStandardMaterial({ color: 0xc2cad2, roughness: 0.3, metalness: 0.7 });
+    const steelMat = new THREE.MeshStandardMaterial({
+      color: 0xc2cad2,
+      roughness: 0.3,
+      metalness: 0.7,
+      emissive: 0x2a2f36, // lifts the blade off pure-black when backlit against the sky
+      emissiveIntensity: 0.6,
+    });
     const brassMat = new THREE.MeshStandardMaterial({ color: 0xb08d3a, roughness: 0.45, metalness: 0.6 });
     const gripMat = new THREE.MeshStandardMaterial({ color: 0x3a2415, roughness: 0.85 });
-    const forearm = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.4, 4, 8), sleeveMat);
-    forearm.position.set(0, 0.2, 0);
-    const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.07, 10), cuffMat);
-    cuff.position.set(0, 0.38, 0);
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.072, 10, 8), skinMat);
-    hand.position.set(0, 0.44, 0.01);
-    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.13, 8), gripMat);
-    grip.position.set(0, 0.48, 0.02);
-    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.03, 0.05), brassMat);
-    guard.position.set(0, 0.55, 0.02);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.52, 0.07), steelMat);
-    blade.position.set(0, 0.82, 0.03);
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.12, 4), steelMat);
-    tip.position.set(0, 1.09, 0.03);
-    vmArm.add(forearm, cuff, hand, grip, guard, blade, tip);
+    // r17: the old viewmodel was a flat BOX blade on a ball "hand" — read as janky/blocky.
+    // Rebuilt with a real curved+tapered cutlass blade (an extruded silhouette), a brass
+    // knuckle-bow, a pommel, and a fist gripping the hilt.
+    const forearm = new THREE.Mesh(new THREE.CapsuleGeometry(0.058, 0.34, 6, 12), sleeveMat);
+    forearm.position.set(0, 0.17, 0);
+    forearm.rotation.x = 0.1;
+    const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.07, 0.06, 14), cuffMat);
+    cuff.position.set(0, 0.34, 0.01);
+    // a closed fist (rounded box) reads as a hand gripping the hilt, not a marble
+    const hand = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.095, 0.12), skinMat);
+    hand.position.set(0, 0.41, 0.03);
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.027, 0.14, 10), gripMat);
+    grip.position.set(0, 0.45, 0.04);
+    const pommel = new THREE.Mesh(new THREE.SphereGeometry(0.027, 10, 8), brassMat);
+    pommel.position.set(0, 0.38, 0.04);
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.165, 0.026, 0.04), brassMat);
+    guard.position.set(0, 0.52, 0.04);
+    // the cutlass's signature curved knuckle-bow, sweeping from guard to pommel
+    const knuckle = new THREE.Mesh(new THREE.TorusGeometry(0.072, 0.01, 6, 16, Math.PI * 1.1), brassMat);
+    knuckle.position.set(0.0, 0.45, 0.055);
+    knuckle.rotation.set(Math.PI / 2, 0, -0.2);
+    // curved, tapered blade silhouette → extruded thin (replaces the flat box + cone tip)
+    const bladeShape = new THREE.Shape();
+    bladeShape.moveTo(0, 0);
+    bladeShape.lineTo(0.03, 0.015);
+    bladeShape.quadraticCurveTo(0.056, 0.34, 0.015, 0.55);
+    bladeShape.lineTo(-0.004, 0.6);
+    bladeShape.quadraticCurveTo(-0.056, 0.33, -0.022, 0.03);
+    bladeShape.lineTo(0, 0);
+    const blade = new THREE.Mesh(
+      new THREE.ExtrudeGeometry(bladeShape, {
+        depth: 0.014,
+        bevelEnabled: true,
+        bevelThickness: 0.004,
+        bevelSize: 0.004,
+        bevelSegments: 1,
+      }),
+      steelMat,
+    );
+    blade.position.set(0, 0.54, 0.026);
+    vmArm.add(forearm, cuff, hand, grip, pommel, guard, knuckle, blade);
     vmArm.traverse((o) => {
       o.castShadow = false;
       o.frustumCulled = false;
     });
     // elbow toward the bottom-right corner, blade angled diagonally up-left across
     // the frame (classic FPS sword pose) so the tip stays comfortably in view
-    vmArm.rotation.set(-0.1, 0.3, 0.85);
+    vmArm.rotation.set(-0.12, 0.28, 0.78);
     viewModel.add(vmArm);
   }
   viewModel.scale.setScalar(0.85);
@@ -1042,8 +1074,9 @@ async function main() {
       vmOffset.set(0.28, -0.4 + bob, -0.62).applyQuaternion(camera.quaternion);
       viewModel.position.copy(camera.position).add(vmOffset);
       viewModel.quaternion.copy(camera.quaternion);
-      // chop the blade down-forward through the swing, with a touch of follow-through
-      vmArm.rotation.set(-0.1 - swingP * 1.5, 0.3 + swingP * 0.15, 0.85 - swingP * 0.4);
+      // a diagonal cutlass slash: the blade sweeps down-and-across the view (more roll +
+      // yaw than the old straight chop) with a little follow-through, then recovers.
+      vmArm.rotation.set(-0.12 - swingP * 1.7, 0.28 + swingP * 0.55, 0.78 - swingP * 0.95);
     } else {
       viewModel.visible = false;
       // bird's-eye orbit on the ship's CENTER (the body origin is the grid

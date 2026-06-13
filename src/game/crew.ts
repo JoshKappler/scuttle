@@ -122,9 +122,16 @@ export class Pirate {
     this.swordArm = new THREE.Group();
     const armR = new THREE.Mesh(armGeo, cloth);
     armR.position.y = -0.22;
+    armR.castShadow = true;
     this.swordArm.add(armR);
-    this.swordArm.position.set(0, 1.28, 0.32);
-    this.swordArm.rotation.x = 0.18;
+    // held OUT to the right and a touch forward — the old (0,1.28,0.32) sat on
+    // the centreline, so the arm + blade speared straight down through the
+    // torso ("holds the saber within his body … arm poking through the front").
+    // z=0.40 clears the torso capsule (r≈0.24) + arm (r≈0.07); the z-splay
+    // cants the cutlass forward/up and out, away from the chest.
+    this.swordArm.position.set(0.14, 1.3, 0.4);
+    this.swordArm.rotation.z = 0.5; // cant the blade forward/up & out of the chest
+    this.swordArm.rotation.x = 0.18; // swing base (syncMesh drives the chop on x)
     const armL = new THREE.Mesh(armGeo, cloth);
     armL.position.set(0, 1.05, -0.32);
     armL.rotation.x = -0.15;
@@ -207,6 +214,11 @@ export class Pirate {
   setFirstPerson(fp: boolean): void {
     this.fpHide = fp;
     if (this.rig) this.rig.root.visible = !fp;
+    // restore the rigged head bone when leaving FP — step()/idleTick() shrink
+    // it to ~0 each frame in FP so it can't block the eye-level camera; that
+    // scale was never put back, so a head that went first-person stayed
+    // headless in third (playtest: "the 3rd-person pirate has no head").
+    if (this.rig?.head) this.rig.head.scale.setScalar(fp ? 0.001 : 1);
     for (const part of this.headParts) part.visible = !fp;
   }
 
@@ -284,7 +296,10 @@ export class Pirate {
     this.attackTimer = Math.max(this.attackTimer - dt, 0);
     this.kickTimer = Math.max(this.kickTimer - dt, 0);
     this.rig?.update(dt);
-    if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
+    // FP hides the head (camera sits inside it); 3rd person keeps it full size.
+    // Re-applied every frame and two-sided so the head can never stay shrunk
+    // after returning from first-person.
+    if (this.rig?.head) this.rig.head.scale.setScalar(this.fpHide ? 0.001 : 1);
     if (!this.alive) {
       this.syncMesh();
       this.ragdollAge += dt;
@@ -421,7 +436,7 @@ export class Pirate {
       this.helmGrip = new Map();
       for (const name of Object.keys(bones)) this.helmGrip.set(name, bones[name].quaternion.clone());
     }
-    if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
+    if (this.rig?.head) this.rig.head.scale.setScalar(this.fpHide ? 0.001 : 1);
   }
 
   private tickStamina(dt: number, draining: boolean): void {
