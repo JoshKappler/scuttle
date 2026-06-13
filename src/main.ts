@@ -980,7 +980,7 @@ async function main() {
       title: "Buoyancy / Attitude",
       controls: [
         { type: "slider", label: "lift ×", obj: TUN.phys, key: "buoyancy", min: 0.5, max: 2, step: 0.05 },
-        { type: "slider", label: "heave damp", obj: TUN.phys, key: "heaveDamp", min: 0.5, max: 6, step: 0.1 },
+        { type: "slider", label: "heave ζ", obj: TUN.phys, key: "heaveDamp", min: 0.2, max: 1.5, step: 0.05 },
         { type: "slider", label: "pitch damp", obj: TUN.phys, key: "pitchDamp", min: 0, max: 4, step: 0.05 },
         { type: "slider", label: "roll damp", obj: TUN.phys, key: "rollDamp", min: 0, max: 3, step: 0.05 },
         { type: "slider", label: "trim level", obj: TUN.phys, key: "trim", min: 0, max: 12, step: 0.5 },

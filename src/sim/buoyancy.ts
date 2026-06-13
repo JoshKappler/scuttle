@@ -91,6 +91,66 @@ export function makeProbes(grid: VoxelGrid, compartments: Compartment[]): Probe[
   return probes;
 }
 
+/**
+ * TRUE PER-VOXEL buoyancy (round 16). One entry per occupied (x,z) hull column,
+ * listing the displacing cells stacked in it. Each cell pushes up by
+ * ρ·g·V_cell·(its own submerged fraction) at its own height — so a small bit of
+ * the bow under water lifts LESS than a fat midship section under the same water,
+ * and the hydrostatic stiffness is exactly ρ·g·(waterplane area) and CONSTANT with
+ * draft (the playtest's "the threshold should be constant; she shouldn't sit 3 m
+ * lower or higher"). The consumer samples the wave surface ONCE per column (height
+ * depends only on x,z) and reuses it down the stack, so per-voxel accuracy costs
+ * O(columns) wave evaluations, not O(cells).
+ */
+export interface VoxelColumn {
+  /** ship-local center (m) of the column in the x,z plane (shared by every cell). */
+  x: number;
+  z: number;
+  /** waterplane area this column occupies (m²) = VOXEL_SIZE² — the heave-stiffness unit. */
+  area: number;
+  /** ship-local center Y (m) of each displacing cell, ascending keel→deck. */
+  cellY: number[];
+}
+
+/** Build per-(x,z) columns of displacing cells. A cell displaces if it is solid OR
+ *  enclosed by a compartment (a sealed hull's trapped air still pushes water) — the
+ *  same envelope makeProbes uses, so the resting draft is unchanged. */
+export function makeVoxelColumns(grid: VoxelGrid, compartments: Compartment[]): VoxelColumn[] {
+  const [nx, ny, nz] = grid.dims;
+  const enclosed = new Set<number>();
+  for (const c of compartments) for (const cell of c.cells) enclosed.add(cell);
+  const idx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
+
+  const cols: VoxelColumn[] = [];
+  for (let x = 0; x < nx; x++) {
+    for (let z = 0; z < nz; z++) {
+      let lo = -1;
+      let hi = -1;
+      for (let y = 0; y < ny; y++) {
+        if (grid.isSolid(x, y, z)) {
+          if (lo === -1) lo = y;
+          hi = y;
+        }
+      }
+      if (lo === -1) continue;
+      const cellY: number[] = [];
+      for (let y = lo; y <= hi; y++) {
+        if (grid.isSolid(x, y, z) || enclosed.has(idx(x, y, z))) {
+          cellY.push((y + 0.5) * VOXEL_SIZE);
+        }
+      }
+      if (cellY.length === 0) continue;
+      cols.push({
+        x: (x + 0.5) * VOXEL_SIZE,
+        z: (z + 0.5) * VOXEL_SIZE,
+        area: VOXEL_SIZE * VOXEL_SIZE,
+        cellY,
+      });
+    }
+  }
+  return cols;
+}
+
 /** A per-column keel/deck height-field baked from the voxel grid, for the ocean's
  *  VOXEL-ACCURATE, attitude-aware in-hull cut (round 14, P4). For every (x,z) grid
  *  column it stores the local-Y of the lowest solid cell (keel) and the top of the

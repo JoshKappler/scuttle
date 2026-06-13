@@ -1,9 +1,9 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
-import { VOXEL_SIZE, WATER_DENSITY } from "../core/constants";
+import { G, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
 import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
-import { makeProbes, probeForce, submergedFraction, type Probe } from "../sim/buoyancy";
+import { makeVoxelColumns, type VoxelColumn } from "../sim/buoyancy";
 import { sphereCells } from "../sim/ballistics";
 import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
@@ -23,7 +23,8 @@ export class Ship {
   readonly body: RAPIER.RigidBody;
   readonly build: ShipBuild;
   readonly visual: ShipVisual;
-  probes: Probe[];
+  /** per-(x,z) hull columns of displacing cells — TRUE per-voxel buoyancy (r16). */
+  columns: VoxelColumn[];
 
   /** Diagnostic: 0..1 share of envelope currently below the surface. */
   submergedFrac = 0;
@@ -68,7 +69,10 @@ export class Ship {
   /** Holes shot through bulkheads connecting compartments. */
   private openings: Opening[] = [];
   private tmpV = new THREE.Vector3();
+  private tmpV2 = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
+  /** live heave stiffness k = ρg·waterplaneArea·buoyancy (N/m), set each step for damping. */
+  private heaveStiffness = 0;
 
   private phys: Physics;
   private deckCollider: RAPIER.Collider | null = null;
@@ -77,7 +81,7 @@ export class Ship {
     this.phys = phys;
     this.build = build;
     this.visual = visual;
-    this.probes = makeProbes(build.grid, build.compartments);
+    this.columns = makeVoxelColumns(build.grid, build.compartments);
 
     // keel anchor: lowest solid cell on the midship centerline
     const [kx, , knz] = build.grid.dims;
@@ -414,37 +418,62 @@ export class Ship {
     const rot = body.rotation();
     this.tmpQ.set(rot.x, rot.y, rot.z, rot.w);
 
+    // ---- TRUE PER-VOXEL buoyancy (r16) -------------------------------------
+    // Every displacing cell pushes up by ρ·g·V_cell·(its OWN submerged fraction)
+    // at its OWN height. The wave surface depends only on (x,z), so it's sampled
+    // ONCE per column and reused down the stack → per-voxel accuracy at O(columns)
+    // wave evals. We accumulate the net vertical force + the couple it makes about
+    // the COM and apply them once (rigid-body-identical to per-cell forces, far
+    // cheaper than thousands of addForceAtPoint). Because lift grows by exactly
+    // ρ·g·(waterplane area) per metre of draft, the stiffness is CONSTANT — she
+    // holds a near-fixed waterline instead of wandering ±3 m, and a small bit of
+    // bow under water lifts far less than a fat midship section (playtest r16).
+    const liftPerCell = WATER_DENSITY * G * VOXEL_VOLUME * TUN.phys.buoyancy * (1 - this.waterlog);
+    const com0 = body.worldCom();
+    // world-Y gained per 1 m of LOCAL up — folds the live heel/pitch into the
+    // vertical stacking of cells without a full transform per cell.
+    const upY = this.tmpV2.set(0, 1, 0).applyQuaternion(this.tmpQ).y;
+    let netLift = 0;
+    let torqueX = 0;
+    let torqueZ = 0;
+    let waterplane = 0; // m² straddling the surface this step → live heave stiffness
     let submergedVolume = 0;
     let totalVolume = 0;
-
-    for (const p of this.probes) {
-      const wp = this.tmpV.set(p.local[0], p.local[1], p.local[2]).applyQuaternion(this.tmpQ);
-      const wx = wp.x + tr.x;
-      const wy = wp.y + tr.y;
-      const wz = wp.z + tr.z;
+    for (const col of this.columns) {
+      // column anchor (its lowest cell) → world; sample the surface once here
+      const aw = this.tmpV.set(col.x, col.cellY[0], col.z).applyQuaternion(this.tmpQ);
+      const wx = aw.x + tr.x;
+      const wz = aw.z + tr.z;
+      const anchorWY = aw.y + tr.y;
       const surfaceY = surfaceHeight(waves, wx, wz, t);
-      // flood = 0 here deliberately: the hull envelope always displaces;
-      // flooded water is accounted as WEIGHT below (scaling lift AND adding
-      // weight would double-count — a full submerged compartment must be
-      // net-zero, and weight-only handles partial submersion correctly)
-      const f = probeForce(p, wy, surfaceY, 0) * (1 - this.waterlog) * TUN.phys.buoyancy;
-      totalVolume += p.volume;
-      if (f > 0) {
-        const sub = submergedFraction(p, wy, surfaceY);
-        // apply at the submerged-segment centroid (ship-local), else the ship
-        // is hydrostatically unstable — see buoyancy.ts and stability.test.ts
-        const ap = this.tmpV
-          .set(p.local[0], p.local[1] + (sub * p.height) / 2, p.local[2])
-          .applyQuaternion(this.tmpQ);
-        body.addForceAtPoint(
-          { x: 0, y: f, z: 0 },
-          { x: ap.x + tr.x, y: ap.y + tr.y, z: ap.z + tr.z },
-          true,
-        );
-        submergedVolume += p.volume * sub;
+      const rx = wx - com0.x; // horizontal lever arm of this column from the COM
+      const rz = wz - com0.z;
+      const y0 = col.cellY[0];
+      let straddles = false;
+      for (let k = 0; k < col.cellY.length; k++) {
+        totalVolume += VOXEL_VOLUME;
+        // cell center world-Y, then its submerged fraction over the voxel height
+        const cellWY = anchorWY + (col.cellY[k] - y0) * upY;
+        const frac = Math.min(Math.max((surfaceY - cellWY) / VOXEL_SIZE + 0.5, 0), 1);
+        if (frac > 0) {
+          const f = liftPerCell * frac;
+          netLift += f;
+          // τ = r × F for a vertical F: τx = −rz·F, τz = +rx·F (ry irrelevant)
+          torqueX -= rz * f;
+          torqueZ += rx * f;
+          submergedVolume += VOXEL_VOLUME * frac;
+          if (frac < 1) straddles = true;
+        }
       }
+      if (straddles) waterplane += col.area;
     }
+    // flooded water is accounted as WEIGHT below (not as a lift cut) — scaling lift
+    // AND adding weight would double-count; weight-only handles partial submersion.
+    body.addForce({ x: 0, y: netLift, z: 0 }, true);
+    body.addTorque({ x: torqueX, y: 0, z: torqueZ }, true);
     this.submergedFrac = totalVolume > 0 ? submergedVolume / totalVolume : 0;
+    // live hydrostatic heave stiffness for the critical-damping term in the drag block
+    this.heaveStiffness = WATER_DENSITY * G * waterplane * TUN.phys.buoyancy;
 
     // flooded water is cargo: its weight bears at each compartment's water
     // centroid, so a flooded bow pulls the bow down — listing is emergent
@@ -490,11 +519,14 @@ export class Ship {
 
       const fF = -mass * 0.04 * (1 + 0.08 * Math.abs(vF)) * vF * sub;
       const fL = -mass * TUN.phys.lateralDrag * vL * sub;
-      // round 14: the round-9 value 4.5 was OVER-critical and sat her flat — the
-      // playtest "she doesn't rise with the waves even close to enough". ~2.8 lets
-      // vertical velocity TRACK the swell crests (she rides up and over instead of
-      // pushing through) while staying damped enough not to porpoise out of the sea.
-      const fY = -mass * TUN.phys.heaveDamp * vY * wet;
+      // r16 CRITICAL-RATIO heave damping: c = 2·ζ·√(k·m) against the LIVE hydrostatic
+      // stiffness k = ρg·waterplane·buoyancy (set in the per-voxel loop above). Tying
+      // the damper to the real spring means she settles the same whether buoyancy is
+      // 1.0 or the playtest-preferred 1.5 — no more "constantly bouncing instead of
+      // finding equilibrium" when the spring stiffens. TUN.phys.heaveDamp is now the
+      // damping RATIO ζ (≈0.8 = near-critical: rides the swell, kills the porpoise).
+      const cCrit = 2 * Math.sqrt(Math.max(this.heaveStiffness * mass, 1));
+      const fY = -TUN.phys.heaveDamp * cCrit * vY * wet;
 
       // forward + heave + the FULL lateral resistance now ride at the COM, so a
       // hard skid no longer pours an unbounded couple into the roll axis. The bank
@@ -639,7 +671,7 @@ export class Ship {
       { x: 0, y: 0, z: 0, w: 1 },
       true,
     );
-    this.probes = makeProbes(grid, this.build.compartments);
+    this.columns = makeVoxelColumns(grid, this.build.compartments);
   }
 
   /** World-space position of the ship-local point (meters). Alias-safe:
