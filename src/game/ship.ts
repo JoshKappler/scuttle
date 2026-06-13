@@ -489,7 +489,11 @@ export class Ship {
 
       const fF = -mass * 0.04 * (1 + 0.08 * Math.abs(vF)) * vF * sub;
       const fL = -mass * 1.7 * vL * sub;
-      const fY = -mass * 4.5 * vY * wet;
+      // round 14: the round-9 value 4.5 was OVER-critical and sat her flat — the
+      // playtest "she doesn't rise with the waves even close to enough". 2.8 lets
+      // vertical velocity TRACK the swell crests (she rides up and over instead of
+      // pushing through) while staying damped enough not to porpoise out of the sea.
+      const fY = -mass * 2.8 * vY * wet;
 
       // forward + heave drag at the COM. LATERAL resistance belongs to the
       // keel, and the keel is DEEP — applying it all below the COM is what

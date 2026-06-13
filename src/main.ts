@@ -79,9 +79,9 @@ async function main() {
     cascades: [
       // amplitudes are uncalibrated Phillips scales — tuned in-browser via readback
       // to ~1.1 / 0.45 / 0.15 m crests (a rough, crashing, but not deck-flooding sea)
-      { L: 40, band: [12, 40], windDirX: c0.x, windDirZ: c0.z, amplitude: 350, choppiness: 1.3 },
-      { L: 18, band: [5, 18], windDirX: c1.x, windDirZ: c1.z, amplitude: 430, choppiness: 1.0 },
-      { L: 7, band: [2, 7], windDirX: c2.x, windDirZ: c2.z, amplitude: 350, choppiness: 0.6 },
+      { L: 40, band: [12, 40], windDirX: c0.x, windDirZ: c0.z, amplitude: 280, choppiness: 1.35 },
+      { L: 18, band: [5, 18], windDirX: c1.x, windDirZ: c1.z, amplitude: 360, choppiness: 1.05 },
+      { L: 7, band: [2, 7], windDirX: c2.x, windDirZ: c2.z, amplitude: 300, choppiness: 0.6 },
     ],
   });
   const ocean = createOcean(waves, skySetup.sunDir, oceanField);
