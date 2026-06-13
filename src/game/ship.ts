@@ -28,6 +28,9 @@ export class Ship {
 
   /** Diagnostic: 0..1 share of envelope currently below the surface. */
   submergedFrac = 0;
+  /** Live turn-heel lever (m): COM height above the centre of buoyancy, recomputed each
+   *  step from the wet voxels. The real arm the old `turnHeelArm` magic number faked. */
+  heelArm = 0;
 
   /** Fired when damage severs hull sections; receiver spawns debris bodies. */
   onSevered?: (islands: Island[]) => void;
@@ -439,6 +442,20 @@ export class Ship {
     let waterplane = 0; // m² straddling the surface this step → live heave stiffness
     let submergedVolume = 0;
     let totalVolume = 0;
+    // centre of buoyancy (world point) — where the keel's lateral resistance acts, so
+    // the leeway force there both RIGHTS her against sail heel and BANKS her in a turn.
+    let cbWeight = 0; // Σ submergedFrac  (voxel volume cancels in the centroid ratio)
+    let cbXSum = 0; // Σ submergedFrac · cellWorldX
+    let cbYSum = 0; // Σ submergedFrac · cellWorldY
+    let cbZSum = 0; // Σ submergedFrac · cellWorldZ
+    // ... and the wet waterplane's area-moments about the COM, which turn the single
+    // heave-damping coefficient into emergent pitch + roll damping (drag block below).
+    let aSub = 0; // Σ col.area over columns with any submerged cell
+    let sMx = 0; // Σ area·rx        (first moments)
+    let sMz = 0; // Σ area·rz
+    let sxx = 0; // Σ area·rx·rx     (second moments)
+    let szz = 0; // Σ area·rz·rz
+    let sxz = 0; // Σ area·rx·rz
     for (const col of this.columns) {
       // column anchor (its lowest cell) → world; sample the surface once here
       const aw = this.tmpV.set(col.x, col.cellY[0], col.z).applyQuaternion(this.tmpQ);
@@ -450,6 +467,7 @@ export class Ship {
       const rz = wz - com0.z;
       const y0 = col.cellY[0];
       let straddles = false;
+      let colWet = false;
       for (let k = 0; k < col.cellY.length; k++) {
         totalVolume += VOXEL_VOLUME;
         // cell center world-Y, then its submerged fraction over the voxel height
@@ -462,10 +480,23 @@ export class Ship {
           torqueX -= rz * f;
           torqueZ += rx * f;
           submergedVolume += VOXEL_VOLUME * frac;
+          cbWeight += frac;
+          cbXSum += frac * wx;
+          cbYSum += frac * cellWY;
+          cbZSum += frac * wz;
+          colWet = true;
           if (frac < 1) straddles = true;
         }
       }
       if (straddles) waterplane += col.area;
+      if (colWet) {
+        aSub += col.area;
+        sMx += col.area * rx;
+        sMz += col.area * rz;
+        sxx += col.area * rx * rx;
+        szz += col.area * rz * rz;
+        sxz += col.area * rx * rz;
+      }
     }
     // flooded water is accounted as WEIGHT below (not as a lift cut) — scaling lift
     // AND adding weight would double-count; weight-only handles partial submersion.
@@ -474,6 +505,16 @@ export class Ship {
     this.submergedFrac = totalVolume > 0 ? submergedVolume / totalVolume : 0;
     // live hydrostatic heave stiffness for the critical-damping term in the drag block
     this.heaveStiffness = WATER_DENSITY * G * waterplane * TUN.phys.buoyancy;
+    // live turn-heel lever: COM height above the centre of buoyancy (both world Y). This
+    // is the real arm the magic `turnHeelArm` faked — it shrinks as she rises, grows as
+    // she settles, and tracks flooding/damage for free. Guarded to a small positive.
+    // live centre of buoyancy (world): the keel's lateral force is applied HERE, below
+    // the COM, so a turn banks her outward and sail-leeway rights her — both emergent.
+    const cbWorldY = cbWeight > 1e-6 ? cbYSum / cbWeight : com0.y;
+    const clrX = cbWeight > 1e-6 ? cbXSum / cbWeight : com0.x;
+    const clrZ = cbWeight > 1e-6 ? cbZSum / cbWeight : com0.z;
+    // diagnostic only now (the heel force comes from applying lateral drag at the CB).
+    this.heelArm = com0.y - cbWorldY;
 
     // flooded water is cargo: its weight bears at each compartment's water
     // centroid, so a flooded bow pulls the bow down — listing is emergent
@@ -491,87 +532,64 @@ export class Ship {
     }
 
     // water drag split into ship-frame components: a hull slips easily
-    // forward, resists sideways motion strongly (the keel), and damps heave
-    // hard. All scaled by how much of the hull is actually in the water.
+    // forward, resists sideways motion strongly (the keel), and damps heave.
+    // All scaled by how much of the hull is actually in the water.
     const sub = this.submergedFrac;
     if (sub > 0.001) {
       const mass = this.body.mass();
       const v = body.linvel();
+      const om = body.angvel();
       const fwd = this.tmpV.set(1, 0, 0).applyQuaternion(this.tmpQ);
-      const pitch = Math.asin(Math.min(Math.max(fwd.y, -1), 1)); // bow-up +
-      // keep drag axes horizontal so heave stays separable
+      // keep the horizontal drag axes flat so heave stays separable
       fwd.y = 0;
       fwd.normalize();
-      const lat = { x: -fwd.z, z: fwd.x }; // horizontal perpendicular
+      const lat = { x: -fwd.z, z: fwd.x }; // horizontal perpendicular (port +)
 
-      const vF = v.x * fwd.x + v.z * fwd.z;
-      const vL = v.x * lat.x + v.z * lat.z;
+      const vF = v.x * fwd.x + v.z * fwd.z; // forward speed
+      const vL = v.x * lat.x + v.z * lat.z; // sideways (leeway) speed
       const vY = v.y;
 
-      // "in the water at all" — a healthy hull only sinks ~20% of its ENVELOPE,
-      // so gating drag on raw `sub` throttles it to nothing. The angular terms
-      // were fixed to use `wet` back in round 4; HEAVE was missed, leaving the
-      // buoyancy spring ~6× under-damped — she resonated and bobbed clean out
-      // of the sea on a modest swell (round 9). `wet` saturates the instant
-      // she's afloat, so heave is now near-critically damped: she rides the
-      // swell and settles instead of porpoising.
+      // "in the water at all" — a healthy hull only sinks ~20% of its ENVELOPE, so
+      // gating drag on raw `sub` would throttle it to nothing. `wet` saturates the
+      // instant she's afloat.
       const wet = Math.min(sub * 5, 1);
 
+      // ---- translational drag ---------------------------------------------------
+      // forward slip is light; the keel's lateral grip (leeway resistance) is strong.
       const fF = -mass * 0.04 * (1 + 0.08 * Math.abs(vF)) * vF * sub;
       const fL = -mass * TUN.phys.lateralDrag * vL * sub;
-      // r16 CRITICAL-RATIO heave damping: c = 2·ζ·√(k·m) against the LIVE hydrostatic
-      // stiffness k = ρg·waterplane·buoyancy (set in the per-voxel loop above). Tying
-      // the damper to the real spring means she settles the same whether buoyancy is
-      // 1.0 or the playtest-preferred 1.5 — no more "constantly bouncing instead of
-      // finding equilibrium" when the spring stiffens. TUN.phys.heaveDamp is now the
-      // damping RATIO ζ (≈0.8 = near-critical: rides the swell, kills the porpoise).
-      const cCrit = 2 * Math.sqrt(Math.max(this.heaveStiffness * mass, 1));
-      const fY = -TUN.phys.heaveDamp * cCrit * vY * wet;
 
-      // forward + heave + the FULL lateral resistance now ride at the COM, so a
-      // hard skid no longer pours an unbounded couple into the roll axis. The bank
-      // (the keel grip acting below the COM) is re-added below as a SEPARATE torque
-      // off a CAPPED lateral velocity, so max-speed-hard-over banks her without
-      // ever rolling the rail under (playtest r15: "under max speed and turn the
-      // ship can go completely underwater"). Below the cap this is identical to the
-      // old apply-at-keelDepth couple; above it the heel saturates instead of growing.
-      body.addForce({ x: fwd.x * fF + lat.x * fL, y: fY, z: fwd.z * fF + lat.z * fL }, true);
-      const vLcap = Math.max(-TUN.phys.heelVelCap, Math.min(TUN.phys.heelVelCap, vL));
-      const fLheel = -mass * TUN.phys.lateralDrag * vLcap * sub;
-      const bankT = -TUN.phys.keelDepth * fLheel; // roll about the fore-aft axis
+      // ---- EMERGENT heave + pitch + roll damping (ONE coefficient) --------------
+      // Every wet column resists vertical motion with a drag ∝ its waterplane area.
+      // The vertical velocity at a column offset (rx,rz) from the COM is
+      // vY + (ω×r)_y = vY + ωz·rx − ωx·rz, so distributing that single per-area damper
+      // over the waterplane area-moments (gathered in the buoyancy pass) yields the
+      // heave force AND the pitch/roll couples at once — no separate pitchDamp/rollDamp.
+      // The damping matrix is a sum of area·u·uᵀ (u = [1,−rz,rx]) → provably dissipative.
+      // cArea is calibrated so PURE heave equals the old critical-ratio 2·ζ·√(k·m)·vY.
+      const cHeave = 2 * Math.sqrt(Math.max(this.heaveStiffness * mass, 1));
+      const cArea = aSub > 1e-6 ? (TUN.phys.heaveDamp * cHeave * wet) / aSub : 0;
+      const fY = -cArea * (vY * aSub + om.z * sMx - om.x * sMz);
+      const dampTX = cArea * (vY * sMz + om.z * sxz - om.x * szz); // opposes roll (world X)
+      const dampTZ = -cArea * (vY * sMx + om.z * sxx - om.x * sxz); // opposes pitch (world Z)
 
-      // angular damping decomposed in the SHIP frame: pitch is damped
-      // hardest — a real hull's waterplane kills porpoising almost dead.
-      // (`wet` computed above — gated on "is she in the water at all", not
-      // submergedFrac, which a healthy hull keeps near 0.2.)
-      const om = body.angvel();
-      const [ix, iy, iz] = this.inertia;
-      const fx = fwd.x;
-      const fz = fwd.z;
-      const wRoll = om.x * fx + om.z * fz; // rate about the fore-aft axis
-      const wPitch = om.x * lat.x + om.z * lat.z; // rate about the beam axis
-      // r15: pitch/roll damping is LIGHT now. The per-column buoyancy torques
-      // already carry the wave-following (a crest under the bow over-submerges the
-      // bow columns → bow-up torque); the old 4.2×/1.2× inertia damping was so
-      // stiff it froze that response and she "just rose and fell uniformly". Keep
-      // only enough to settle in a wave or two and stop hobby-horsing. The capped
-      // turn-bank couple (bankT) is summed into the roll axis.
-      const tRoll = -wRoll * wet * TUN.phys.rollDamp * ix + bankT;
-      // speed trim: a small RESTORING moment toward level, saturating at ±4° of
-      // error. Its predecessor (×12) flattened her so hard at speed she couldn't
-      // pitch to the swell; small now so she planes a touch level without fighting
-      // the sea. Its ancestor was a one-signed v² bow lift that looped her over
-      // the top (playtest round 5: "almost doing a wheelie … flipped upside down").
-      const trim = wet * vF * vF * mass * TUN.phys.trim * Math.min(Math.max(-pitch, -0.07), 0.07);
-      const tPitch = -wPitch * wet * TUN.phys.pitchDamp * iz + trim;
-      body.addTorque(
-        {
-          x: tRoll * fx + tPitch * lat.x,
-          y: -om.y * wet * TUN.phys.yawDamp * iy,
-          z: tRoll * fz + tPitch * lat.z,
-        },
+      // forward slip + heave damping ride at the COM (pure translation, no couple).
+      body.addForce({ x: fwd.x * fF, y: fY, z: fwd.z * fF }, true);
+
+      // ---- the keel's lateral resistance, applied at the CENTRE OF BUOYANCY -------
+      // This one force does three jobs at once, all emergent: it resists leeway, it
+      // supplies a turn's centripetal pull, and — because the CB sits BELOW the COM — it
+      // both banks her OUTWARD in a turn and RIGHTS her against sail heel. No turnHeelArm,
+      // no keelDepth, no heel cap: the ρgV·GM·sinθ buoyant righting bounds the heel.
+      body.addForceAtPoint(
+        { x: lat.x * fL, y: 0, z: lat.z * fL },
+        { x: clrX, y: cbWorldY, z: clrZ },
         true,
       );
+
+      // yaw damping: the one rotational axis with no buoyant restoring of its own.
+      const yawT = -om.y * wet * TUN.phys.yawDamp * this.inertia[1];
+      body.addTorque({ x: dampTX, y: yawT, z: dampTZ }, true);
     }
   }
 

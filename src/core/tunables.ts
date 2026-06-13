@@ -11,40 +11,37 @@
  * the panel moves them live.
  */
 export const TUN = {
-  /** Buoyancy + hull-attitude dynamics (read in game/ship.ts + game/sailing.ts). */
+  /** Hull hydrodynamics — read in game/ship.ts + game/sailing.ts. r17 PHILOSOPHY:
+   *  the ship's ATTITUDE is now emergent from the per-voxel hull, not hand-tuned.
+   *  Pitch, roll, trim and the turn-bank all come from real physics on the voxels:
+   *  • buoyancy torques (each submerged cell lifts at its own spot) → wave-following
+   *    pitch/roll + the ρgV·GM·sinθ righting that limits any heel — no clamp needed;
+   *  • per-column VERTICAL drag (one ζ below) → heave + pitch + roll DAMPING for free;
+   *  • turn-heel = the real centripetal G-force couple m·(v·ω)·h, where the lever h =
+   *    (COM height − centre-of-buoyancy height) is measured LIVE from the wet voxels;
+   *  • trim = where the hull settles given its per-voxel mass (move ballast, not a knob).
+   *  So the six former levers (pitchDamp, rollDamp, trim, keelDepth, heelVelCap,
+   *  turnHeelArm) are GONE — "mechanical interference with the voxel system just
+   *  convolutes". What's left are four genuine physical coefficients. */
   phys: {
     /** global multiplier on per-voxel Archimedes lift. 1.5 was the playtest's
      *  preferred feel ("immediately makes things more realistic"). */
     buoyancy: 1.5,
-    /** heave damping RATIO ζ (r16): the actual drag is c = 2·ζ·√(k·m) against the
-     *  LIVE hydrostatic stiffness, so settling is consistent at any buoyancy. ~0.8
-     *  is near-critical — rides the swell without porpoising or bouncing. (Was a raw
-     *  force coefficient 2.8 before the per-voxel stiffness existed.) */
-    heaveDamp: 0.8,
-    /** beam-axis angular damping. The round-9..14 value was 4.2× the pitch
-     *  inertia, which FROZE the wave-following the per-column buoyancy torques
-     *  would otherwise produce ("the boat does not pitch fore/aft with the water
-     *  under it, it just rises and falls uniformly"). Light now → she follows the
-     *  swell face; just enough to settle in a wave or two without hobby-horsing. */
-    pitchDamp: 1.3,
-    /** fore-aft-axis (roll) angular damping (was 1.2×roll inertia). */
-    rollDamp: 0.9,
-    /** yaw angular damping (×yaw inertia). */
+    /** heave damping RATIO ζ: per submerged column the hull resists vertical motion
+     *  with c = 2·ζ·√(k·m) against the LIVE hydrostatic stiffness, distributed over the
+     *  waterplane so the SAME coefficient also damps pitch & roll (a bow plunging into a
+     *  wave drags water = pitch damping). 0.2 was the playtest's preferred feel ("heave
+     *  ... looks the best (and most intense) at the lowest setting of .2") — lightly
+     *  damped so she rides the swell with life but never builds a resonant hobby-horse. */
+    heaveDamp: 0.2,
+    /** yaw angular damping (×yaw inertia) — the water + rudder resisting a spin. The one
+     *  rotational axis with no buoyant restoring of its own, so it keeps a light damper. */
     yawDamp: 0.7,
-    /** speed-planing bow-lift trim authority. Was 12 and swamped the wave pitch;
-     *  small now so she planes a touch bow-up at speed without fighting the sea. */
-    trim: 3.0,
-    /** keel lateral resistance (×mass·vLat·submergedFrac). */
+    /** hydrodynamic lateral (leeway) resistance — the keel's grip on the water
+     *  (×mass·vLat·submergedFrac). A REAL force (without it she slides sideways forever);
+     *  applied at the COM so it supplies the turn's centripetal pull without itself
+     *  heeling her — the bank is the separate emergent G-couple. The one lateral knob. */
     lateralDrag: 1.7,
-    /** depth below COM (m) the lateral keel force bites — the bank lever in turns. */
-    keelDepth: 1.8,
-    /** cap (m/s) on the lateral skid velocity that feeds the heel moment, so a
-     *  hard snap-turn can't drive an unbounded couple that rolls the rail under
-     *  ("under max speed and turn the ship can go completely underwater"). */
-    heelVelCap: 6.0,
-    /** turn-heel lever arm (m) handed to sailing.heel.turnHeelTorque — how hard she
-     *  banks into a turn (was the static 4.2). */
-    turnHeelArm: 3.4,
   },
 
   /** Dynamic-wave interaction field (Crest/Atlas FDTD) — read in main.ts each frame
@@ -71,8 +68,9 @@ export const TUN = {
   chop: {
     /** overall chop height/strength. 0 = pure swell (no FFT detail), 1 = default. */
     strength: 1.0,
-    /** crest-pinch (horizontal choppiness): 0 = rounded swell, higher = sharper crests. */
-    choppiness: 1.0,
+    /** crest-pinch (horizontal choppiness): 0 = rounded swell, higher = sharper crests.
+     *  1.5 was the playtest's preferred look ("chop looks best at chop:1 and chopiness:1.5"). */
+    choppiness: 1.5,
   },
 
   /** Bow spray emission (read in main.ts checkBowSpray). The far-field ambient

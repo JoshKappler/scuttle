@@ -964,17 +964,14 @@ async function main() {
   // physics + render read every step. A reload resets (TUN is not persisted).
   const devPanel = createDevPanel([
     {
-      title: "Buoyancy / Attitude",
+      // r17: pitch/roll/trim/keel-depth/heel-cap/turn-bank are GONE — attitude is now
+      // emergent from the voxels. What's left are the four real physical coefficients.
+      title: "Hull physics",
       controls: [
         { type: "slider", label: "lift ×", obj: TUN.phys, key: "buoyancy", min: 0.5, max: 2, step: 0.05 },
-        { type: "slider", label: "heave ζ", obj: TUN.phys, key: "heaveDamp", min: 0.2, max: 1.5, step: 0.05 },
-        { type: "slider", label: "pitch damp", obj: TUN.phys, key: "pitchDamp", min: 0, max: 4, step: 0.05 },
-        { type: "slider", label: "roll damp", obj: TUN.phys, key: "rollDamp", min: 0, max: 3, step: 0.05 },
-        { type: "slider", label: "trim level", obj: TUN.phys, key: "trim", min: 0, max: 12, step: 0.5 },
-        { type: "slider", label: "keel drag", obj: TUN.phys, key: "lateralDrag", min: 0.5, max: 3, step: 0.1 },
-        { type: "slider", label: "keel depth", obj: TUN.phys, key: "keelDepth", min: 0, max: 3, step: 0.1 },
-        { type: "slider", label: "heel cap", obj: TUN.phys, key: "heelVelCap", min: 2, max: 12, step: 0.5 },
-        { type: "slider", label: "turn bank", obj: TUN.phys, key: "turnHeelArm", min: 0, max: 6, step: 0.1 },
+        { type: "slider", label: "heave ζ", obj: TUN.phys, key: "heaveDamp", min: 0.05, max: 1.2, step: 0.05 },
+        { type: "slider", label: "leeway grip", obj: TUN.phys, key: "lateralDrag", min: 0.5, max: 3, step: 0.1 },
+        { type: "slider", label: "yaw damp", obj: TUN.phys, key: "yawDamp", min: 0, max: 2, step: 0.05 },
       ],
     },
     {
