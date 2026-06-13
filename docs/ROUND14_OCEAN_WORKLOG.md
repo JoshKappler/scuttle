@@ -6,6 +6,38 @@ real flood fluid, GPU bow-spray/side-bulge/stern-wake; go all out, no approval s
 Driven by an 11-agent research + codebase-map workflow → design at
 `docs/superpowers/specs/2026-06-13-ocean-rebuild-design.md`. Every visual change verified
 in-browser (Playwright on :5180 + numeric readback) because GLSL bugs pass tsc/unit tests.
+(Note: the dev server actually runs on **:5173** — vite's default; the 5180 above was wrong.)
+
+## Round 17 — voxel-centric physics + chasers + cleanup (commits `f9c313e`, `0095390`, `befd1c1`, `c1a6c04`, `a3ee5c4`)
+
+Directive: "tune the voxels, not the knobs — mechanical interference with the dynamic voxel
+system just convolutes." Ran a 7-agent opus discovery workflow (2 physics-research + 5 code-map),
+then implemented + verified each piece in-browser. Five commits, all pushed to main:
+
+- **`f9c313e` voxel-emergent hull dynamics.** Deleted the six hand-tuned levers (pitchDamp,
+  rollDamp, trim, keelDepth, heelVelCap, turnHeelArm). Heave + pitch + roll damping now emerge
+  from ONE coefficient — per-column vertical drag distributed over the wet waterplane's
+  area-moments (a provably-dissipative `Σ area·u·uᵀ`, u=[1,−rz,rx]). Turn-heel, sail-heel
+  righting and the turn's centripetal pull all emerge from applying the leeway force at the
+  live **centre of buoyancy** (below the COM). Trim emerges from the per-voxel mass (static
+  trim measured −0.8° = level). **Capsize gotcha (cost one iteration): applying the leeway
+  force at the COM deletes the keel's righting against sail heel → she capsizes under full
+  sail; apply it at the CB and do NOT also add an explicit m·v·ω·h torque (double-count).**
+  Verified: full sail ~6° stable heel, hard turn +9.6° outward bank, never swamps, waterlog 0.
+  Defaults: buoyancy 1.5, heave ζ 0.2, chop 1 / choppiness 1.5. Dev panel → "Hull physics" (4
+  real coefficients only).
+- **`0095390` removed the LOST-AT-SEA / PRIZE-TAKEN end-game.** A sinking ship just continues
+  the voyage now — no banner, no freeze, no reload. Kept isSunk, enemy salvage, respawn.
+- **`befd1c1` constant bow spray + a short displacement wake.** Spray is a steady ~16 Hz sheet
+  off both cutwater shoulders (was crest-gated, cut in/out). Wake spacing 2.4→1.2 m, retention
+  16→7 s, faster foam fade + tighter width spread → a ~1-hull-length feathering wake, not a
+  3-boat-length speedboat tail. (Foam outline still centreline-trail; voxel-shaped outline deferred.)
+- **`c1a6c04` bow & stern chasers.** Axial guns that fire forward/aft (the player: "so hard to
+  line up shots"). `cannonPorts.facing` ("fore"/"aft"), gunnery/shipVisual/cannons generalized,
+  `aimBearing()` routes fire to the battery the camera bears toward. Guns depress now (−8..16°).
+- **`a3ee5c4` character.** Rebuilt the FP cutlass (curved extruded blade + brass knuckle-bow +
+  fist, was a flat box on a ball); restored the 3P head (rigged head bone was stuck at scale
+  0.001 from the FP-hide) and moved the sword arm outboard so it clears the torso.
 
 ## Round 16 — the big reassessment (commits `76fa66c`, `332e7bf`, `a4c39c3`, `bda6c83`)
 
