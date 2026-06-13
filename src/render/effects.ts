@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { Spray } from "./spray";
 
 /**
  * Pooled particle systems for all transient effects. Two layers:
@@ -86,6 +87,17 @@ export class Effects {
   private smoke: Layer;
   private fire: Layer;
   private flashes: { light: THREE.PointLight; life: number; maxLife: number; peak: number }[] = [];
+
+  // P5: when set, the bow/crest/directional WATER spray is emitted by the GPU-
+  // instanced ballistic system (src/render/spray.ts) instead of the CPU Points
+  // pool — "this should utilize the GPU heavily". Smoke/fire/debris/blood stay on
+  // the CPU pool. `_simTime` is the absolute sim clock the GPU arcs need.
+  private gpuSpray: Spray | null = null;
+  private _simTime = 0;
+  /** Route water spray to the GPU instanced system. */
+  attachSpray(spray: Spray): void {
+    this.gpuSpray = spray;
+  }
 
   constructor() {
     const s = makeLayer(MAX, 0.55, false);
@@ -307,6 +319,10 @@ export class Effects {
    *  cutting through water"). Particles leave at the waterline and arc OUTWARD,
    *  away from the hull — they never climb onto the deck. */
   bowWave(x: number, y: number, z: number, fwdX: number, fwdZ: number, strength = 1): void {
+    if (this.gpuSpray) {
+      this.gpuSpray.bow(x, y, z, fwdX, fwdZ, strength, this._simTime);
+      return;
+    }
     const rx = -fwdZ; // starboard (right) unit, horizontal
     const rz = fwdX;
     const n = Math.round(8 * strength);
@@ -333,6 +349,11 @@ export class Effects {
 
   /** Directional sheet of spray (bow plunging through a sea). */
   spray(x: number, y: number, z: number, dirX: number, dirZ: number, strength = 1): void {
+    if (this.gpuSpray) {
+      // a forward-leaning sheet: reuse the bow emitter aimed along the dir.
+      this.gpuSpray.bow(x, y, z, dirX, dirZ, strength, this._simTime);
+      return;
+    }
     const n = Math.round(10 * strength);
     for (let i = 0; i < n; i++) {
       const a = (Math.random() - 0.5) * 1.7;
@@ -360,6 +381,10 @@ export class Effects {
    *  wave and wake (both hull-driven) can't provide. Driven by the ambient
    *  crest probe in the render loop, NOT by any ship. */
   crestSpray(x: number, y: number, z: number, windX: number, windZ: number, strength = 1): void {
+    if (this.gpuSpray) {
+      this.gpuSpray.crest(x, y, z, windX, windZ, strength, this._simTime);
+      return;
+    }
     const s = Math.min(strength, 2.6);
     // a DENSE tight cluster launched up together reads as a sheet of thrown water;
     // a handful of scattered motes just reads as floating dots.
@@ -438,9 +463,12 @@ export class Effects {
     L.geo.attributes.color.needsUpdate = true;
   }
 
-  update(dt: number): void {
+  update(dt: number, time?: number): void {
+    if (time !== undefined) this._simTime = time;
     this.updateLayer(this.smoke, dt);
     this.updateLayer(this.fire, dt);
+    // tick the GPU spray clock (its arcs are evaluated in the vertex shader).
+    if (this.gpuSpray) this.gpuSpray.update(this._simTime);
     for (const f of this.flashes) {
       if (f.life <= 0) continue;
       f.life -= dt;

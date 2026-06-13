@@ -64,6 +64,12 @@ export interface Ocean {
   /** P4: feed the player hull's live world→local rotation (inverse of the body
    *  quaternion) and world translation each frame, so the cut tracks heave/pitch/roll. */
   updateHullPose(invRot: THREE.Matrix3, trans: THREE.Vector3): void;
+  /** P5: bind the dynamic-wave interaction field (src/render/dynamicWaves.ts). Its
+   *  R-channel height is summed onto the surface in VERT and the legacy analytic
+   *  collar/bow mounds cross-fade down where it is active. Pass the field texture, its
+   *  world-space window size (m) and its current snapped origin (window min-corner XZ)
+   *  each frame. Call with on=false to disable (falls back to the analytic mounds). */
+  setDynamicField(tex: THREE.Texture | null, windowSize: number, originX: number, originZ: number, on: boolean): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -121,6 +127,16 @@ uniform sampler2D uCascadeDisp[NCASC]; // per-cascade chop displacement (RGB = D
 uniform float uCascadeTile[NCASC]; // per-cascade world tile size (m)
 uniform float uCascadeChop[NCASC]; // per-cascade horizontal choppiness λ
 uniform float uFftOn; // 1 when the cascade backend is live, else 0
+
+// P5 dynamic-wave interaction field (Crest/Atlas FDTD ping-pong, src/render/
+// dynamicWaves.ts). A camera-centred height/velocity field the ships stamp their
+// waterline footprint into — the bow push, the side bulge, the stern contrail.
+// R = surface height (m). Sampled at (worldXZ − origin)/window. VISUAL ONLY: the
+// hull still floats on the analytic swell (physics never samples this).
+uniform sampler2D uDynDisp; // R = dynamic-wave height (m)
+uniform vec2 uDynOrigin; // window min-corner world XZ
+uniform float uDynWindow; // window size (m)
+uniform float uDynOn; // 1 when the dynamic-wave field is live, else 0
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -188,6 +204,25 @@ void main() {
     #endif
   }
 
+  // P5: sum the DYNAMIC-WAVE interaction height (the GPU FDTD field the ships stamp
+  // their footprint into — bow push, side bulge, stern contrail) on top of the swell
+  // + cascades, AFTER the cascade sum. Sampled at (worldXZ − origin)/window from the
+  // camera-centred field. dynMix fades to 0 toward the window edge (and is 0 when the
+  // field is off), and ALSO cross-fades the legacy analytic collar/bow Gaussians DOWN
+  // (below) so the two systems don't double-count the hull's bulge — the dynamic field
+  // takes over near the ship, the analytic mounds fade out.
+  float dynMix = 0.0;
+  if (uDynOn > 0.5) {
+    vec2 duv = (rest.xz - uDynOrigin) / uDynWindow;
+    if (duv.x > 0.0 && duv.x < 1.0 && duv.y > 0.0 && duv.y < 1.0) {
+      vec2 dEdge = min(duv, 1.0 - duv);
+      dynMix = smoothstep(0.0, 0.04, min(dEdge.x, dEdge.y));
+      float dynH = texture2D(uDynDisp, duv).r;
+      p.y += dynH * dynMix;
+      crest += max(dynH, 0.0) * dynMix;
+    }
+  }
+
   // the hull's effect on the sea: a STANDING displacement collar at all times
   // (round 9: "real boats have an effect on the water … make it bulge as it
   // displaces it"), plus the speed-driven bow wave on top.
@@ -206,10 +241,14 @@ void main() {
     // mounds in a ridge just OUTSIDE it (inside is discarded as the dry hull)
     // and falls away both directions — the water the hull shoves aside has to
     // pile up somewhere, moving or not.
+    // P5 cross-fade: where the dynamic-wave field is active (dynMix→1) the GPU FDTD
+    // field now carries the hull's bulge, so fade these legacy analytic mounds DOWN
+    // to avoid double-counting (the field is gated OFF → aMix=1 → unchanged look).
+    float aMix = 1.0 - dynMix;
     float rr = sqrt((along / hL) * (along / hL) + (across / hB) * (across / hB));
     float collar = exp(-pow((rr - 1.08) / 0.17, 2.0));
-    p.y += collar * 0.22;
-    crest += collar * 0.18;
+    p.y += collar * 0.22 * aMix;
+    crest += collar * 0.18 * aMix;
 
     // bow wave: the stem physically shoulders water aside — a mound at the
     // cutting point spilling into a ridge down the forward flanks, which the
@@ -218,13 +257,13 @@ void main() {
     if (spd < 1.0) continue;
     float sF = clamp(spd / 8.0, 0.0, 1.2);
     float bd2 = dot(p.xz - bow, p.xz - bow);
-    p.y += sF * 1.05 * exp(-bd2 / 5.5);
+    p.y += sF * 1.05 * exp(-bd2 / 5.5) * aMix;
     float ridge = exp(-pow((abs(across) - (hB + 0.4)) / 1.5, 2.0));
     float span = smoothstep(-hL * 0.35, hL * 0.55, along) * (1.0 - smoothstep(hL * 0.8, hL * 1.1, along));
-    p.y += sF * 0.5 * ridge * span;
+    p.y += sF * 0.5 * ridge * span * aMix;
     // the GEOMETRY is the show now — foam only laces it (the first cut
     // painted the whole bow quarter white)
-    crest += sF * (0.45 * exp(-bd2 / 5.5) + 0.28 * ridge * span);
+    crest += sF * (0.45 * exp(-bd2 / 5.5) + 0.28 * ridge * span) * aMix;
   }
 
   vWorldPos = p;
@@ -252,6 +291,13 @@ uniform sampler2D uCascadeNormal[NCASC]; // per-cascade surface normal (RGB = no
 uniform sampler2D uCascadeFoam[NCASC]; // per-cascade Jacobian foam (R)
 uniform float uCascadeTile[NCASC]; // per-cascade world tile size (m)
 uniform float uFftOn; // 1 when the cascade backend is live, else 0
+// P5: the dynamic-wave interaction field again (FRAG side), for its FOAM channel —
+// the whitewater the ships churn up (bow/side/stern) and where GPU spray lands. B =
+// foam coverage. Sampled at (worldXZ − origin)/window, gated by uDynOn.
+uniform sampler2D uDynDisp; // B = dynamic-wave foam coverage
+uniform vec2 uDynOrigin;
+uniform float uDynWindow;
+uniform float uDynOn;
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -502,7 +548,21 @@ void main() {
   float crestFoam = smoothstep(1.0 - foamCov, 1.0 - foamCov + 0.22, fDetail)
                   * smoothstep(0.05, 0.20, foamCov);
 
-  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.55 + crestFoam * 0.85, 0.0, 0.95));
+  // P5: dynamic-wave foam — the whitewater the ships churn (bow/side/stern) and the
+  // spray splash-down, broken up by the same high-frequency detail so it reads as
+  // bubbly froth, not a flat decal. Gated + edge-faded inside the field window.
+  float dynFoam = 0.0;
+  if (uDynOn > 0.5) {
+    vec2 dfuv = (vWorldPos.xz - uDynOrigin) / uDynWindow;
+    if (dfuv.x > 0.0 && dfuv.x < 1.0 && dfuv.y > 0.0 && dfuv.y < 1.0) {
+      float cov = texture2D(uDynDisp, dfuv).b;
+      vec2 de = min(dfuv, 1.0 - dfuv);
+      float ef = smoothstep(0.0, 0.04, min(de.x, de.y));
+      dynFoam = smoothstep(0.12, 0.5, cov) * ef;
+    }
+  }
+
+  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.55 + crestFoam * 0.85 + dynFoam * 0.8, 0.0, 0.95));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);
@@ -619,6 +679,11 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uCascadeTile: { value: cascTile },
       uCascadeChop: { value: cascChop },
       uFftOn: { value: field.active ? 1 : 0 },
+      // P5 dynamic-wave interaction field (off until setDynamicField binds it).
+      uDynDisp: { value: dummyTex },
+      uDynOrigin: { value: new THREE.Vector2() },
+      uDynWindow: { value: 1 },
+      uDynOn: { value: 0 },
     },
   });
 
@@ -670,6 +735,12 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     updateHullPose(invRot, trans) {
       (mat.uniforms.uProfileInvRot.value as THREE.Matrix3).copy(invRot);
       (mat.uniforms.uProfileTrans.value as THREE.Vector3).copy(trans);
+    },
+    setDynamicField(tex, windowSize, originX, originZ, on) {
+      if (tex) mat.uniforms.uDynDisp.value = tex;
+      mat.uniforms.uDynWindow.value = windowSize;
+      (mat.uniforms.uDynOrigin.value as THREE.Vector2).set(originX, originZ);
+      mat.uniforms.uDynOn.value = on && tex ? 1 : 0;
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

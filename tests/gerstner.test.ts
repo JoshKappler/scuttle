@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { makeWaves, surfaceHeight, surfaceNormal, displace } from "../src/sim/gerstner";
+import { makeWaves, surfaceHeight, surfaceNormal, displace, surfaceVelocity } from "../src/sim/gerstner";
 import { Rng } from "../src/core/rng";
 import { G } from "../src/core/constants";
 
@@ -51,5 +51,27 @@ describe("gerstner surface", () => {
   it("waves are deterministic for a given seed", () => {
     const again = makeWaves(new Rng("sea"), 4);
     expect(again).toEqual(waves);
+  });
+
+  it("surfaceVelocity equals the time-derivative of displace (central difference)", () => {
+    const e = 1e-4;
+    for (let i = 0; i < 40; i++) {
+      const x0 = i * 2.3 - 30;
+      const z0 = i * -1.9 + 25;
+      const t = i * 0.17 + 0.05;
+      const [xp, yp, zp] = displace(waves, x0, z0, t + e);
+      const [xm, ym, zm] = displace(waves, x0, z0, t - e);
+      const fd: [number, number, number] = [(xp - xm) / (2 * e), (yp - ym) / (2 * e), (zp - zm) / (2 * e)];
+      const v = surfaceVelocity(waves, x0, z0, t);
+      expect(v[0]).toBeCloseTo(fd[0], 3);
+      expect(v[1]).toBeCloseTo(fd[1], 3);
+      expect(v[2]).toBeCloseTo(fd[2], 3);
+    }
+  });
+
+  it("surfaceVelocity is zero on a flat (zero-amplitude) sea", () => {
+    const flat = waves.map((w) => ({ ...w, amplitude: 0 }));
+    const v = surfaceVelocity(flat, 4.4, -8.8, 3.3);
+    expect(Math.hypot(v[0], v[1], v[2])).toBeCloseTo(0, 6);
   });
 });

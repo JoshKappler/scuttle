@@ -124,6 +124,35 @@ export function displace(waves: Wave[], x0: number, z0: number, t: number): [num
 }
 
 /**
+ * Velocity of the water surface (m/s) at a rest point (x0, z0): the partial time
+ * derivative ∂/∂t of {@link displace}. Used by P5's bow-crash spray trigger — the
+ * cutwater throws spray in proportion to how hard the HULL drives into the water
+ * RELATIVE to the water's own orbital motion (vHull − vOrbital). Because Gerstner
+ * orbits are circular, the vertical component leads the horizontal by 90°.
+ *
+ *   phase   = k·(dir·x0) − ω·t,  ω = k·phaseSpeed
+ *   ∂x/∂t   = Σ dirX·(Q·a)·ω·sin(phase)
+ *   ∂y/∂t   = −Σ a·ω·cos(phase)
+ *   ∂z/∂t   = Σ dirZ·(Q·a)·ω·sin(phase)
+ */
+export function surfaceVelocity(waves: Wave[], x0: number, z0: number, t: number): [number, number, number] {
+  let vx = 0;
+  let vy = 0;
+  let vz = 0;
+  for (const w of waves) {
+    const k = (2 * Math.PI) / w.wavelength;
+    const omega = k * w.phaseSpeed;
+    const phase = k * (w.dirX * x0 + w.dirZ * z0) - omega * t;
+    const qa = Math.min(w.steepness, 1) * w.amplitude;
+    const s = Math.sin(phase);
+    vx += w.dirX * qa * omega * s;
+    vz += w.dirZ * qa * omega * s;
+    vy += -w.amplitude * omega * Math.cos(phase);
+  }
+  return [vx, vy, vz];
+}
+
+/**
  * Water surface height at a fixed horizontal world position (x, z).
  * Gerstner displaces points horizontally, so we invert that displacement with
  * a few fixed-point iterations (Crest-style); 3 iterations is ample at game

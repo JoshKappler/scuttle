@@ -4,6 +4,7 @@ import { makeWaves, surfaceHeight, surfaceNormal, physicsWaves } from "./sim/ger
 import { createOcean } from "./render/ocean";
 import { SeamMask } from "./render/seamMask";
 import { createOceanField } from "./render/oceanField";
+import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
 import { createSky } from "./render/sky";
 import { buildBrig, buildSloop } from "./sim/shipwright";
@@ -22,6 +23,7 @@ import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
+import { createSpray } from "./render/spray";
 
 async function main() {
   const app = document.getElementById("app")!;
@@ -104,25 +106,29 @@ async function main() {
   // the cutaway hole in the sea matches the player hull's footprint
   ocean.setFootprint(sloopBuild.lengthM / 2 + 1.2, sloopBuild.beamM / 2 + 1.0);
 
-  // P4: bake the player hull's per-column keel/deck profile from the voxel grid
-  // (once) and bind it for the ocean's voxel-accurate, attitude-aware in-hull cut.
-  {
-    const prof = buildHullProfile(sloop.build.grid);
+  // P4/P5: bake a hull's per-column keel/deck profile from the voxel grid (once)
+  // into a float texture. P4 binds the PLAYER's for the voxel-accurate in-hull cut;
+  // P5 stamps BOTH ships' profiles into the dynamic-wave field for the interaction
+  // bulge. RG = keelYLocal, deckYLocal (m); Nearest so cut edges stay voxel-crisp.
+  const makeProfileTex = (grid: typeof sloop.build.grid) => {
+    const prof = buildHullProfile(grid);
     const texData = new Float32Array(prof.nx * prof.nz * 4);
     for (let i = 0; i < prof.nx * prof.nz; i++) {
       texData[i * 4] = prof.data[i * 2]; // keelYLocal → R
       texData[i * 4 + 1] = prof.data[i * 2 + 1]; // deckYLocal → G
       texData[i * 4 + 3] = 1;
     }
-    const profTex = new THREE.DataTexture(texData, prof.nx, prof.nz, THREE.RGBAFormat, THREE.FloatType);
-    profTex.minFilter = THREE.NearestFilter; // crisp, voxel-accurate cut edges
-    profTex.magFilter = THREE.NearestFilter;
-    profTex.wrapS = THREE.ClampToEdgeWrapping;
-    profTex.wrapT = THREE.ClampToEdgeWrapping;
-    profTex.flipY = false; // texel (x,z) ↔ data idx z*nx+x
-    profTex.needsUpdate = true;
-    ocean.setHullProfile(profTex, prof.sizeX, prof.sizeZ);
-  }
+    const tex = new THREE.DataTexture(texData, prof.nx, prof.nz, THREE.RGBAFormat, THREE.FloatType);
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.flipY = false; // texel (x,z) ↔ data idx z*nx+x
+    tex.needsUpdate = true;
+    return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ };
+  };
+  const sloopProfile = makeProfileTex(sloop.build.grid);
+  ocean.setHullProfile(sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
 
   // enemy captain: the old, smaller sloop — kept as the easier opponent
   // (round 6) — spawns upwind, ALREADY POINTED AT YOU, and runs down on you.
@@ -142,6 +148,25 @@ async function main() {
     enemy.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
   }
   world.addShip(enemy);
+  const enemyProfile = makeProfileTex(enemy.build.grid);
+
+  // P5: the dynamic-wave INTERACTION field (Crest/Atlas FDTD ping-pong, GPU
+  // fragment passes). A 256 m height/velocity sheet re-centred on the camera each
+  // frame that the ships stamp their waterline footprint into — the bow pushes
+  // water up, the flanks bulge, the stern leaves a contrail — summed onto the ocean
+  // surface in VERT. VISUAL ONLY: physics still rides the analytic swell. The flow
+  // advection drifts disturbances downwind so they trail. Falls back to inert
+  // (active=false) on a context without float RTs; the ocean then ignores it.
+  const dynWaves = createDynamicWaves(renderer, {
+    N: 256,
+    window: 256,
+    speed: 9,
+    damping: 0.55,
+    flowDirX: waves[0].dirX,
+    flowDirZ: waves[0].dirZ,
+    flowSpeed: 1.4,
+    maxShips: 2,
+  });
 
   // stencil seam mask: each frame, paint both hull silhouettes into the
   // stencil buffer before the ocean draws; the ocean's NotEqual stencil test
@@ -155,6 +180,12 @@ async function main() {
 
   const effects = new Effects();
   scene.add(effects.group); // both particle layers + pooled flash lights
+  // P5: GPU-instanced ballistic spray — effects.ts routes its bow/crest WATER spray
+  // here (the arc runs in the vertex shader; "utilize the GPU heavily"). Spray splash-
+  // downs are drained each frame and stamped as foam into the dynamic-wave field.
+  const spray = createSpray();
+  scene.add(spray.object);
+  effects.attachSpray(spray);
   const cannons = new Cannons(scene, effects);
   const debris = new DebrisManager(physics, scene);
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
@@ -482,6 +513,8 @@ async function main() {
     ramming,
     debris,
     oceanField,
+    dynWaves,
+    spray,
     get character() {
       return character;
     },
@@ -806,6 +839,50 @@ async function main() {
     }
   };
 
+  // P5: assemble both ships' pose + plan for the dynamic-wave INJECTION pass. Each
+  // ship stamps its waterline footprint (the P4 hull profile, posed live) into the
+  // GPU field — the bow/side/stern impulses are computed in dynamicWaves.ts. The
+  // profile texture is the same one P4 cuts with. Pre-allocated to avoid per-frame
+  // garbage. wetness peaks while she floats normally and fades to 0 when she lifts
+  // clear of the sea or sinks under it (no surface disturbance either way).
+  const _dynShips: DynShip[] = [
+    { profileTex: sloopProfile.tex, sizeX: sloopProfile.sizeX, sizeZ: sloopProfile.sizeZ,
+      trans: new THREE.Vector3(), invRot: new THREE.Matrix3(), fwdX: 1, fwdZ: 0, speed: 0, wetness: 0, waterY: 0 },
+    { profileTex: enemyProfile.tex, sizeX: enemyProfile.sizeX, sizeZ: enemyProfile.sizeZ,
+      trans: new THREE.Vector3(), invRot: new THREE.Matrix3(), fwdX: 1, fwdZ: 0, speed: 0, wetness: 0, waterY: 0 },
+  ];
+  const _dynQuat = new THREE.Quaternion();
+  const _dynM4 = new THREE.Matrix4();
+  const _dynFwd = new THREE.Vector3();
+  const buildDynShips = (): DynShip[] => {
+    const ships = [sloop, enemy];
+    for (let i = 0; i < 2; i++) {
+      const ship = ships[i];
+      const d = _dynShips[i];
+      const rot = ship.body.rotation();
+      const tr = ship.body.translation();
+      _dynQuat.set(rot.x, rot.y, rot.z, rot.w);
+      _dynM4.makeRotationFromQuaternion(_dynQuat);
+      d.invRot.setFromMatrix4(_dynM4).transpose(); // world→local = Rᵀ
+      d.trans.set(tr.x, tr.y, tr.z);
+      _dynFwd.set(1, 0, 0).applyQuaternion(_dynQuat);
+      _dynFwd.y = 0;
+      _dynFwd.normalize();
+      d.fwdX = _dynFwd.x;
+      d.fwdZ = _dynFwd.z;
+      const v = ship.body.linvel();
+      d.speed = Math.hypot(v.x, v.z);
+      const sf = ship.submergedFrac;
+      d.wetness = (sf <= 0.02 ? 0 : Math.min((sf - 0.02) / 0.1, 1)) * (1 - Math.min(Math.max((sf - 0.7) / 0.25, 0), 1));
+      // still-water surface height at the hull centre (the analytic swell the field
+      // rides on top of). The footprint zC is amidships; localToWorld gives world XZ.
+      const fp = ship.build.footprint;
+      ship.localToWorld([(fp.minX + fp.maxX) / 2, 0, fp.zC], wakeV);
+      d.waterY = surfaceHeight(waves, wakeV.x, wakeV.z, world.simTime);
+    }
+    return _dynShips;
+  };
+
   // bow spray (round 8: "adding splashes when it's breaking through waves"):
   // when the stem plunges into a rising face with way on, throw white water
   const sprayState = [
@@ -890,7 +967,7 @@ async function main() {
     checkBowSpray(0, sloop, dt);
     checkBowSpray(1, enemy, dt);
     ambientSpray(dt);
-    effects.update(dt);
+    effects.update(dt, world.simTime);
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")
     boarding.player?.postPose();
@@ -975,6 +1052,10 @@ async function main() {
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
 
     oceanField.update(world.simTime);
+    // P5: advance the dynamic-wave interaction field (off-screen GPU passes) and
+    // bind its texture + snapped window/origin to the ocean BEFORE the main render.
+    dynWaves.update(dt, camera.position, buildDynShips(), spray.drainLandings());
+    ocean.setDynamicField(dynWaves.texture, dynWaves.window, dynWaves.origin.x, dynWaves.origin.y, dynWaves.active);
     ocean.update(world.simTime, camera.position);
     renderer.autoClear = true;
     renderer.clear(); // clears color + depth + stencil
