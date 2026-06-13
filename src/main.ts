@@ -15,7 +15,7 @@ import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
 import { Ramming } from "./game/ramming";
 import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld } from "./game/gunnery";
-import { FIXED_DT, G } from "./core/constants";
+import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -626,6 +626,19 @@ async function main() {
   // painted onto the ship itself instead of being a physical presence")
   const wakeV = new THREE.Vector3();
   const wakeF = new THREE.Vector3();
+  // hull vertical span (ship-local m): keel bottom → just above the deck. The
+  // ocean removes its surface ONLY within the footprint AND between these, so
+  // the hold never shows ocean and a hull riding high shows no void (round 10).
+  const hullSpan = (ship: Ship) => {
+    const g = ship.build.grid;
+    const [nx, ny, nz] = g.dims;
+    const cx = Math.floor(nx / 2);
+    const cz = Math.floor(nz / 2);
+    let lo = 0;
+    while (lo < ny && !g.isSolid(cx, lo, cz)) lo++;
+    return { keel: lo * VOXEL_SIZE, deck: (ship.build.deckY + 1) * VOXEL_SIZE };
+  };
+  const spans = [hullSpan(sloop), hullSpan(enemy)];
   const feedWake = (slot: 0 | 1, ship: Ship) => {
     const v = ship.body.linvel();
     const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
@@ -635,18 +648,8 @@ async function main() {
     wakeF.normalize();
     const fp = ship.build.footprint;
     ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
-    // dry hold: the ocean surface is discarded inside the hull while she's
-    // sound; as compartments fill (or she founders) the sea closes back in
-    let totV = 0;
-    let totW = 0;
-    for (const c of ship.build.compartments) {
-      totV += c.volume;
-      totW += c.waterVolume;
-    }
-    const flood = totV > 0 ? totW / totV : 0;
-    const dry =
-      Math.min(Math.max(1 - flood * 1.4, 0), 1) *
-      Math.min(Math.max((0.55 - ship.submergedFrac) / 0.2, 0), 1);
+    const tr = ship.body.translation();
+    const span = spans[slot];
     ocean.updateShipWake(
       slot,
       wakeV.x,
@@ -657,7 +660,8 @@ async function main() {
       ship.build.lengthM / 2,
       ship.build.beamM / 2,
       world.simTime,
-      dry,
+      tr.y + span.keel,
+      tr.y + span.deck,
     );
   };
 

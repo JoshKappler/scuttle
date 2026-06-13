@@ -50,10 +50,11 @@ export interface Ocean {
     halfL: number,
     halfB: number,
     time: number,
-    /** 1 = intact hull (the sea is discarded inside the waterline ellipse —
-     *  a dry hold, round 7); fades to 0 as she floods/founders and the sea
-     *  closes back over her. */
-    dry: number,
+    /** World-Y of the keel bottom and the deck top: the sea is removed only
+     *  within the footprint AND between these (round 10) — no white void under
+     *  a lifted hull, no ocean in the hold. */
+    keelWorldY: number,
+    deckWorldY: number,
   ): void;
 }
 
@@ -231,6 +232,7 @@ uniform vec2 uHalf; // half-length, half-beam of the footprint
 uniform vec4 uCutPlane; // xyz = normal, w = constant (THREE.Plane form)
 uniform vec4 uShipA[2]; // bow x, bow z, fwdX, fwdZ
 uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
+uniform vec2 uShipC[2]; // keel world-Y, deck-top world-Y (hull vertical span)
 uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 
 void main() {
@@ -241,19 +243,21 @@ void main() {
   // shows timber, not "the wake and the water flowing by" through the hatch
   // (round 7). uShipB[s].w fades to 0 as she floods — the sea closes back in.
   for (int s0 = 0; s0 < 2; s0++) {
-    float dry = uShipB[s0].w;
-    if (dry < 0.01) continue;
+    float keelY = uShipC[s0].x;
+    float deckY = uShipC[s0].y;
+    if (deckY <= keelY) continue; // unused slot
     vec2 f0 = uShipA[s0].zw;
     vec2 ctr = uShipA[s0].xy - f0 * uShipB[s0].y;
     vec2 rel0 = vWorldPos.xz - ctr;
-    // hug the true hull plan: 0.62·beam left the sea drawn over the outer
-    // third of the hull and 0.88·length left it over the bow/stern tips, so a
-    // pitching bow got "consumed" by the flat sheet (round 9). The ellipse now
-    // tracks the waterline outline — and, being purely in xz, it removes the
-    // sea over the hull no matter how she pitches or heaves.
     float al0 = dot(rel0, f0) / max(uShipB[s0].y * 0.97, 0.1);
-    float ac0 = dot(rel0, vec2(-f0.y, f0.x)) / max(uShipB[s0].z * 0.92 * dry, 0.1);
-    if (al0 * al0 + ac0 * ac0 < 1.0) discard;
+    float ac0 = dot(rel0, vec2(-f0.y, f0.x)) / max(uShipB[s0].z * 0.92, 0.1);
+    // remove ONLY the sea that is genuinely inside the hull volume: within the
+    // waterline footprint AND between the keel and the deck (round 10). A flat
+    // 2D cut showed the white void under a lifted hull and let ocean waves into
+    // the hold while sinking; the vertical gate fixes both — below the keel the
+    // sea shows under the hull (no void), the hold never shows ocean (flooding
+    // is the separate water-box system), and the sea closes over a sunk wreck.
+    if (al0 * al0 + ac0 * ac0 < 1.0 && vWorldPos.y > keelY && vWorldPos.y < deckY) discard;
   }
 
   // cutaway: the sea over the hull footprint is removed outright (the hold
@@ -421,6 +425,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
       uCutPlane: { value: new THREE.Vector4(0, 0, 1, 0) },
       uShipA: { value: [new THREE.Vector4(), new THREE.Vector4()] },
       uShipB: { value: [new THREE.Vector4(), new THREE.Vector4()] },
+      uShipC: { value: [new THREE.Vector2(0, -1), new THREE.Vector2(0, -1)] },
       uTrail: { value: Array.from({ length: 64 }, () => new THREE.Vector4()) },
     },
   });
@@ -440,11 +445,13 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
     setFootprint(halfL, halfB) {
       (mat.uniforms.uHalf.value as THREE.Vector2).set(halfL, halfB);
     },
-    updateShipWake(slot, centerX, centerZ, fwdX, fwdZ, speed, halfL, halfB, time, dry) {
+    updateShipWake(slot, centerX, centerZ, fwdX, fwdZ, speed, halfL, halfB, time, keelWorldY, deckWorldY) {
       const a = (mat.uniforms.uShipA.value as THREE.Vector4[])[slot];
       const b = (mat.uniforms.uShipB.value as THREE.Vector4[])[slot];
+      const c = (mat.uniforms.uShipC.value as THREE.Vector2[])[slot];
       a.set(centerX + fwdX * halfL, centerZ + fwdZ * halfL, fwdX, fwdZ);
-      b.set(speed, halfL, halfB, dry);
+      b.set(speed, halfL, halfB, 0);
+      c.set(keelWorldY, deckWorldY);
 
       const trail = trails[slot];
       const sx = centerX - fwdX * (halfL + 0.8);
