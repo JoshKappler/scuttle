@@ -178,6 +178,25 @@ export class Pirate {
     this.rig.play(key);
   }
 
+  /** One full sword swing (round 7: the 0.28 s timer cut the clip off right
+   *  after the wind-up — "missing that slash animation that we had"). */
+  swingAnim(): void {
+    this.attackTimer = 0.7;
+    if (this.rig) {
+      this.animKey = "attack";
+      this.rig.playFresh("attack");
+    }
+  }
+
+  /** One full kick/punch. */
+  kickAnim(): void {
+    this.kickTimer = 0.6;
+    if (this.rig) {
+      this.animKey = "punch";
+      this.rig.playFresh("punch");
+    }
+  }
+
   worldPos(out: THREE.Vector3): THREE.Vector3 {
     const t = this.body.translation();
     return out.set(t.x, t.y, t.z);
@@ -430,11 +449,11 @@ export class Pirate {
     if (this.alive) {
       // kick: brief forward lunge of the whole body (procedural body only —
       // the rigged model has a real Punch clip)
-      const kickP = this.kickTimer > 0 && !this.rig ? Math.sin((1 - this.kickTimer / 0.3) * Math.PI) : 0;
+      const kickP = this.kickTimer > 0 && !this.rig ? Math.sin((1 - this.kickTimer / 0.6) * Math.PI) : 0;
       this.mesh.rotation.set(0, -this.facing, kickP * 0.28);
       // slash: overhead chop of the stand-in's sword arm
       if (this.swordArm) {
-        const swingP = this.attackTimer > 0 ? Math.sin((1 - this.attackTimer / 0.28) * Math.PI) : 0;
+        const swingP = this.attackTimer > 0 ? Math.sin((1 - this.attackTimer / 0.7) * Math.PI) : 0;
         this.swordArm.rotation.x = 0.18 - swingP * 1.9;
       }
     } else {

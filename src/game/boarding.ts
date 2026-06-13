@@ -194,12 +194,12 @@ export class BoardingSystem {
 
       if (onFoot && input.slash && this.slashCd <= 0) {
         this.slashCd = PLAYER_SLASH_CD;
-        this.player.attackTimer = 0.28;
+        this.player.swingAnim();
         this.swing(this.player, this.enemies, 1);
       }
       if (onFoot && input.kick && this.kickCd <= 0) {
         this.kickCd = KICK_CD;
-        this.player.kickTimer = 0.3;
+        this.player.kickAnim();
         this.kick(this.player, this.enemies);
       }
 
@@ -239,7 +239,7 @@ export class BoardingSystem {
         }
         if (engaged && dist < SLASH_RANGE && e.slashCd <= 0) {
           e.slashCd = ENEMY_SLASH_CD;
-          e.attackTimer = 0.28;
+          e.swingAnim();
           e.facing = Math.atan2(dz, dx);
           this.effects.blood(pp.x, pp.y + 0.9, pp.z);
           this.playerHp -= 1;
