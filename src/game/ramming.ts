@@ -120,18 +120,31 @@ export class Ramming {
     return null;
   }
 
-  /** Carve a sphere out of the ship nearest the world contact point — the
-   *  point is clamped into the hull's real footprint so the bite always
-   *  lands on timber, not the grid's empty padding. */
+  /** Carve a sphere out of the ship at the world contact point. The contact
+   *  lies on the boundary BETWEEN the two hulls — and for the ship whose
+   *  padded grid-perimeter supplied it (findContact samples grid rectangles,
+   *  which are bigger than the curved hull), that point is its own OUTER edge,
+   *  often in the grid's empty padding or just outside the planking. A bite
+   *  there removed NOTHING — "I got rammed and absolutely nothing happened to
+   *  my ship" (round 8): the rammer's hull was carved, the victim's wasn't.
+   *  So we march the bite toward the hull's centre until it lands in solid
+   *  timber (applyDamage reports the cells it took); both ships always bleed. */
   private bite(ship: Ship, contactW: THREE.Vector3, radiusVox: number): void {
     ship.worldToLocal(this.tmpCell.copy(contactW), this.tmpCell);
-    const fp = ship.build.footprint;
-    const lx = Math.min(Math.max(this.tmpCell.x, fp.minX + 0.4), fp.maxX - 0.4);
-    const lz = Math.min(Math.max(this.tmpCell.z, fp.zC - fp.halfZ + 0.3), fp.zC + fp.halfZ - 0.3);
+    const [nx, , nz] = ship.build.grid.dims;
+    const cx = (nx * VOXEL_SIZE) / 2; // hull centre, ship-local
+    const cz = (nz * VOXEL_SIZE) / 2;
     const ly = ship.comLocal[1] * 0.8; // near the waterline: rams flood
-    ship.applyDamage(
-      [Math.floor(lx / VOXEL_SIZE), Math.floor(ly / VOXEL_SIZE), Math.floor(lz / VOXEL_SIZE)],
-      radiusVox,
-    );
+    let lx = this.tmpCell.x;
+    let lz = this.tmpCell.z;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const removed = ship.applyDamage(
+        [Math.floor(lx / VOXEL_SIZE), Math.floor(ly / VOXEL_SIZE), Math.floor(lz / VOXEL_SIZE)],
+        radiusVox,
+      );
+      if (removed > 0) return; // bit timber — done
+      lx += (cx - lx) * 0.35; // missed (padding / outside the curve) — step inboard
+      lz += (cz - lz) * 0.35;
+    }
   }
 }
