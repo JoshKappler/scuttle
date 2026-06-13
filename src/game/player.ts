@@ -36,6 +36,14 @@ export class PlayerControls {
   elevationDeg = 4;
   /** Gun traverse in degrees (+ = muzzles swing toward the bow). */
   traverseDeg = 0;
+  /** Which broadside the camera is looking across (set by the game each
+   *  frame). Traverse input is SCREEN-relative: mouse right swings the
+   *  muzzles right on screen — and which way that is in ship space flips
+   *  with the side (round 7: "left and right aiming on the mouse is
+   *  inverted" — it was inverted on one side, correct on the other). */
+  aimSideSign: 1 | -1 = 1;
+  /** Spyglass magnification: FOV in degrees, wheel-adjustable while up. */
+  spyFov = 16;
   /** Pointer-lock state — when locked, the camera follows the bare mouse. */
   locked = false;
   /** First-person look state: own yaw/pitch, FPS sign convention, full
@@ -96,9 +104,14 @@ export class PlayerControls {
     });
     window.addEventListener("mousemove", (e) => {
       if (this.aiming) {
-        // RMB held: mouse Y lays the guns, mouse X swings them
+        // RMB held: mouse Y lays the guns, mouse X swings them — in SCREEN
+        // space (facing the +side broadside puts the bow on the screen LEFT,
+        // so ship-space traverse runs opposite the mouse there)
         this.elevationDeg = Math.min(Math.max(this.elevationDeg - e.movementY * 0.05, 0), 14);
-        this.traverseDeg = Math.min(Math.max(this.traverseDeg + e.movementX * 0.06, -12), 12);
+        this.traverseDeg = Math.min(
+          Math.max(this.traverseDeg + e.movementX * 0.06 * -this.aimSideSign, -12),
+          12,
+        );
         return;
       }
       if (!this.locked && !this.dragging) return;
@@ -113,7 +126,15 @@ export class PlayerControls {
         this.orbitPitch = Math.min(Math.max(this.orbitPitch + e.movementY * (k * 0.8), 0.05), 1.25);
       }
     });
-    dom.addEventListener("wheel", (e) => {
+    // WINDOW-level: the wheel must zoom even when the cursor rests over a
+    // HUD panel (round 7: "the view is sometimes locked in way too close and
+    // scrolling does nothing" — the panels were eating the event)
+    window.addEventListener("wheel", (e) => {
+      if (this.spyglass) {
+        // wheel works the spyglass draw-tube instead
+        this.spyFov = Math.min(Math.max(this.spyFov + Math.sign(e.deltaY) * 2.5, 8), 28);
+        return;
+      }
       this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 8), 130);
     });
   }
@@ -142,8 +163,8 @@ export class PlayerControls {
     return this.firstPersonMode ? this.fpPitch : -this.orbitPitch + 0.45;
   }
 
-  /** On-foot movement from WASD, camera-relative. */
-  footMove(): { x: number; z: number; jump: boolean } {
+  /** On-foot movement from WASD, camera-relative. Shift sprints. */
+  footMove(): { x: number; z: number; jump: boolean; sprint: boolean } {
     let fwd = 0;
     let strafe = 0;
     if (this.keys.has("KeyW")) fwd += 1;
@@ -158,6 +179,7 @@ export class PlayerControls {
       x: Math.cos(yaw) * fwd - Math.sin(yaw) * strafe,
       z: Math.sin(yaw) * fwd + Math.cos(yaw) * strafe,
       jump: this.keys.has("Space"),
+      sprint: this.keys.has("ShiftLeft") || this.keys.has("ShiftRight"),
     };
   }
 

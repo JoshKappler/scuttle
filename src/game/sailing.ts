@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { turnHeelTorque } from "../sim/heel";
 import type { Ship } from "./ship";
 
 /**
@@ -73,20 +74,28 @@ export class SailingController {
     const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.019 * upright * this.efficiency;
 
     if (thrust > 0 && ship.submergedFrac > 0.02) {
-      // drive and heel split across every mast (the brig carries two)
+      // drive and heel split across every mast (the brig carries two) —
+      // scaled per mast by its canvas integrity, zero once it's by the board
+      // (round 7: shot-up sails slow you; a felled mast pulls nothing)
       const masts = ship.build.masts;
       const latX = -fwd.z;
       const latZ = fwd.x;
       const wLat = wind.speed * (wind.dirX * latX + wind.dirZ * latZ);
       const heelF = (this.sailSet * wLat * Math.abs(wLat) * mass * 0.012 * upright) / masts.length;
-      for (const m of masts) {
+      masts.forEach((m, mi) => {
+        if (!ship.mastAlive[mi]) return;
+        const canvas = ship.sailIntegrity[mi];
         const mx = (m.x + 0.5) * 0.25;
         const mz = (m.z + 0.5) * 0.25;
         // drive applied at COM height (thrust high on the mast buried the
         // bow; pitch is the trim controller's job now)
         const ap = ship.localToWorld([mx, ship.comLocal[1], mz], this.tmpF.clone());
         body.addForceAtPoint(
-          { x: (fwd.x * thrust) / masts.length, y: 0, z: (fwd.z * thrust) / masts.length },
+          {
+            x: (fwd.x * thrust * canvas) / masts.length,
+            y: 0,
+            z: (fwd.z * thrust * canvas) / masts.length,
+          },
           ap,
           true,
         );
@@ -94,14 +103,36 @@ export class SailingController {
         // what actually heels a square-rigger on a reach, and the deep keel
         // resisting the resulting leeway completes the couple
         const hp = ship.localToWorld([mx, ship.comLocal[1] + m.h * 0.23, mz], this.tmpF.clone());
-        body.addForceAtPoint({ x: latX * heelF, y: 0, z: latZ * heelF }, hp, true);
-      }
+        body.addForceAtPoint(
+          { x: latX * heelF * canvas, y: 0, z: latZ * heelF * canvas },
+          hp,
+          true,
+        );
+      });
+    }
+
+    // turn heel: lateral G (v·ω) reacts on the mass above the keel's grip
+    // and rolls her OUTWARD, like a car body on springs — speed and rudder
+    // together now produce the lean, not the wind alone (round 7: "the
+    // leaning feels pretty random and not based in anything the ship is
+    // actually doing")
+    if (ship.submergedFrac > 0.02) {
+      const om = body.angvel();
+      const heelT = turnHeelTorque(this.speed, om.y, mass, SailingController.TURN_HEEL_ARM);
+      body.addTorque({ x: fwd.x * heelT, y: 0, z: fwd.z * heelT }, true);
     }
 
     // rudder: yaw torque scales with water flow over it, with a generous
-    // low-speed floor so you can always work the bow off the wind
+    // low-speed floor so you can always work the bow off the wind — and with
+    // what's LEFT of the blade (round 7: "holes in the rudder should mess
+    // up their maneuverability")
     const flow = Math.sign(this.speed || 1) * (1.5 + Math.abs(this.speed));
-    const yaw = this.rudder * flow * mass * 0.5;
+    const yaw = this.rudder * flow * mass * 0.5 * ship.rudderEff;
     body.addTorque({ x: 0, y: yaw, z: 0 }, true);
   }
+
+  /** COM height above the keel's lateral-force center (m) — heel tuning.
+   *  Verified in-game: ~7° at 22 kn hard over with 3.0; 4.2 lands the
+   *  requested pronounced-but-safe 9–12°. */
+  static TURN_HEEL_ARM = 4.2;
 }

@@ -67,6 +67,9 @@ export interface PirateRig {
   mixer: THREE.AnimationMixer;
   head: THREE.Object3D | null;
   play(key: ClipKey, fadeS?: number): void;
+  /** Restart a one-shot from frame 0 even if it's already the current
+   *  action (a second sword swing must not hold the clamped last frame). */
+  playFresh(key: ClipKey): void;
   update(dt: number): void;
 }
 
@@ -172,6 +175,18 @@ export function createPirateRig(name: ModelName, heightM = 1.72): PirateRig | nu
       next.reset();
       next.fadeIn(fadeS).play();
       current?.fadeOut(fadeS);
+      current = next;
+    },
+    playFresh(key) {
+      const next = actions.get(key);
+      if (!next) return;
+      if (next === current) {
+        next.reset().play(); // re-trigger from the top, no fade
+        return;
+      }
+      next.reset();
+      next.fadeIn(0.07).play();
+      current?.fadeOut(0.07);
       current = next;
     },
     update(dt) {

@@ -13,7 +13,8 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
-import { muzzleWorld, velocityAtPoint } from "./game/gunnery";
+import { Ramming } from "./game/ramming";
+import { muzzleWorld } from "./game/gunnery";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -24,7 +25,9 @@ async function main() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.85;
+  // 1.0 + the stronger hemisphere fill: shade reads as shade, not a void
+  // (round 7: "anything that's not in direct sunlight is completely pitch black")
+  renderer.toneMappingExposure = 1.0;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.localClippingEnabled = true;
@@ -85,6 +88,24 @@ async function main() {
 
   const captain = new AICaptain(enemy, scene, effects);
   const boarding = new BoardingSystem(physics, scene, effects, sloop, enemy);
+
+  // rig damage feedback (round 7): masts fall, rudders splinter
+  sloop.onMastFelled = () => (boarding.message = "YOUR MAST GOES BY THE BOARD!");
+  enemy.onMastFelled = () => (boarding.message = "her mast goes by the board!");
+  sloop.onRudderHit = (hp) => {
+    sloopVisual.chipRudder(hp / 3);
+    boarding.message = hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!";
+  };
+  enemy.onRudderHit = (hp) => {
+    enemyVisual.chipRudder(hp / 3);
+    boarding.message = hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!";
+  };
+
+  // hull-on-hull: meeting with way on carves BOTH ships (round 7)
+  const ramming = new Ramming(effects);
+  ramming.onRam = (speed) => {
+    boarding.message = speed > 7 ? "TIMBERS SHATTER — RAMMED!" : "hulls grind and crack!";
+  };
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
   // Steering only happens at the wheel (E to take/leave it); V toggles
   // first person. Third person keeps a bird's-eye orbit on the ship.
@@ -191,7 +212,7 @@ async function main() {
     // one action button (round 6): LMB fires the broadside while RMB-aiming
     // — from the wheel, the deck, first or third person, all identically —
     // and swings the sword on foot otherwise
-    const mv = onFoot ? controls.footMove() : { x: 0, z: 0, jump: false };
+    const mv = onFoot ? controls.footMove() : { x: 0, z: 0, jump: false, sprint: false };
     let slash = false;
     if (controls.lmbPressed) {
       controls.lmbPressed = false;
@@ -208,7 +229,13 @@ async function main() {
       controls.kickPressed = false;
       kick = onFoot;
     }
-    boarding.update(dt, t, waves, { moveX: mv.x, moveZ: mv.z, jump: mv.jump, slash, kick, interact }, onFoot);
+    boarding.update(
+      dt,
+      t,
+      waves,
+      { moveX: mv.x, moveZ: mv.z, jump: mv.jump, sprint: mv.sprint, slash, kick, interact },
+      onFoot,
+    );
 
     // pin the captain to the wheel while steering
     if (atWheel && boarding.player) {
@@ -238,6 +265,7 @@ async function main() {
     }
 
     cannons.update(dt, t, waves, [enemy]);
+    ramming.update(dt, [sloop, enemy]);
     debris.update(dt, t, waves);
     character?.update(dt, controls.cameraYaw());
 
@@ -309,6 +337,13 @@ async function main() {
     sloop.localToWorld([(fp.minX + fp.maxX) / 2, 2, fp.zC], holeCenter);
     ocean.updateCutaway(holeCenter, holeFwd.x, holeFwd.z, cutPlane);
   };
+  // fullscreen (round 7): F or the brass corner button
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen();
+  };
+  document.getElementById("fs-btn")!.addEventListener("click", toggleFullscreen);
+
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
     if (e.code === "KeyV" && boarding.player) {
@@ -316,6 +351,7 @@ async function main() {
       boarding.player.setFirstPerson(firstPerson);
       controls.syncFirstPerson(firstPerson);
     }
+    if (e.code === "KeyF") toggleFullscreen();
     if (e.code === "KeyX") {
       cutaway = !cutaway;
       for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
@@ -334,6 +370,9 @@ async function main() {
     boarding,
     controls,
     camera,
+    sailing,
+    ramming,
+    debris,
     get character() {
       return character;
     },
@@ -351,6 +390,9 @@ async function main() {
     crewLine: $("crew-line"),
     hpRow: $("hp-row"),
     hpBar: $("hp-bar"),
+    stamRow: $("stam-row"),
+    stamBar: $("stam-bar"),
+    spyglass: $("spyglass"),
     gunStatus: $("gun-status"),
     gunBar: $("gun-bar"),
     gunSub: $("gun-sub"),
@@ -439,11 +481,13 @@ async function main() {
 
     hudEls.hpRow.style.display = onFoot ? "flex" : "none";
     if (onFoot) hudEls.hpBar.style.width = `${(boarding.playerHp / 5) * 100}%`;
+    hudEls.stamRow.style.display = onFoot ? "flex" : "none";
+    if (onFoot && boarding.player) hudEls.stamBar.style.width = `${boarding.player.stamina * 100}%`;
 
     const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
     hudEls.hints.textContent = onFoot
-      ? `${lockHint}WASD move · Space jump · LMB slash · hold RMB aim guns + LMB fire · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : `${lockHint}W/S sails · A/D helm (holds where set) · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway`;
+      ? `${lockHint}WASD move · Shift sprint · Space jump · LMB slash · hold RMB aim + LMB fire · C kick · E wheel/grab · V view · F fullscreen${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
+      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass (wheel zooms) · R plank · P pump · G grapple · F fullscreen`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
@@ -487,7 +531,6 @@ async function main() {
   }
 
   const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
-  const arcVel = new THREE.Vector3();
   function updateAimArc(): void {
     // the WHOLE broadside, wherever you stand — looking across a side while
     // holding RMB lays every gun on it (playtest round 6: "regardless of
@@ -508,11 +551,12 @@ async function main() {
         continue;
       }
       arc.line.visible = true;
-      // arc starts at the barrel TIP and follows the true firing solution —
-      // including the ship's own velocity at the muzzle, like the real shot
+      // arc starts at the barrel TIP and runs barrel-true. Inherited ship
+      // velocity is OUT of both the prediction and the ball (round 7, third
+      // strike: the physically-honest lead read as "veers much further right
+      // than the gun actually shoots" — the line now shows exactly the bore)
       muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
-      velocityAtPoint(sloop, arcMuzzle.pos, arcVel);
-      const v = arcMuzzle.dir.clone().multiplyScalar(55).add(arcVel);
+      const v = arcMuzzle.dir.clone().multiplyScalar(55);
       const p = arcMuzzle.pos.clone();
       const step = 0.06;
       for (let i = 0; i < ARC_PTS; i++) {
@@ -552,6 +596,18 @@ async function main() {
     wakeF.normalize();
     const fp = ship.build.footprint;
     ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
+    // dry hold: the ocean surface is discarded inside the hull while she's
+    // sound; as compartments fill (or she founders) the sea closes back in
+    let totV = 0;
+    let totW = 0;
+    for (const c of ship.build.compartments) {
+      totV += c.volume;
+      totW += c.waterVolume;
+    }
+    const flood = totV > 0 ? totW / totV : 0;
+    const dry =
+      Math.min(Math.max(1 - flood * 1.4, 0), 1) *
+      Math.min(Math.max((0.55 - ship.submergedFrac) / 0.2, 0), 1);
     ocean.updateShipWake(
       slot,
       wakeV.x,
@@ -562,6 +618,7 @@ async function main() {
       ship.build.lengthM / 2,
       ship.build.beamM / 2,
       world.simTime,
+      dry,
     );
   };
 
@@ -571,6 +628,10 @@ async function main() {
     feedWake(0, sloop);
     feedWake(1, enemy);
     effects.update(dt);
+    // helm pose rides on top of the final mixer state, once per frame —
+    // re-posing per fixed step stacked offsets ("arm absolutely spasming")
+    boarding.player?.postPose();
+    controls.aimSideSign = aimSide(); // traverse input is screen-relative
     updateAimArc();
     sloopVisual.animate(
       world.simTime,
@@ -606,12 +667,14 @@ async function main() {
       controls.updateCamera(camera, new THREE.Vector3(c0.x, c0.y + Math.max(deckLift, 2.5), c0.z));
     }
 
-    // spyglass zoom (Q)
-    const targetFov = controls.spyglass ? 16 : 60;
+    // spyglass zoom (Q) — wheel works the draw-tube while it's up; the brass
+    // viewport overlay raises with it (round 7)
+    const targetFov = controls.spyglass ? controls.spyFov : 60;
     if (Math.abs(camera.fov - targetFov) > 0.1) {
       camera.fov += (targetFov - camera.fov) * 0.18;
       camera.updateProjectionMatrix();
     }
+    hudEls.spyglass.classList.toggle("up", controls.spyglass);
 
     // submerged camera: the sea closes over the lens — teal murk + dense fog
     // instead of a clean cut to the skybox (playtest round 4)
