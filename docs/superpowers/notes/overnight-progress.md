@@ -219,3 +219,55 @@ deck, waterline near the widest belt. Findings (do not relearn):
 - Sail billow must scale per sail (aBelly vertex attribute = width*0.17) — a fixed 1 m belly on a 15 m course reads flat.
 - Helmsman: pin 0.45 m aft of the wheel + post-mixer arm pose (UpperArm/LowerArm L/R bones, rotation.x -= ~1.05) — poses applied in idleTick stick for the frame; setInterval experiments race the mixer.
 - Cutaway on the brig: interior reads VERY dark + a boxy shadow ring + hull outline through the sea floor remain — user says pivot away for now; revisit with proper interior lighting later.
+
+## m10 — carnage & feel (playtest round 7)
+
+**Shipped:** screen-relative aim traverse (sign flips with aimed side — it was inverted on
+one broadside only); barrel-true ball AND arc (inherited ship velocity removed from both
+after three rounds of "the line veers"); window-level zoom wheel (HUD panels were eating
+wheel events — the "sometimes locked" zoom); guns ×1.25 and pulled 0.4 m inboard (wheels
+on planks, constants shared so bore ≡ math survives scaling via group scale + base/scaled
+constant pairs); turn-G heel `T = m·(v·ω)·arm` about the fwd axis (sailing.ts, arm 4.2 →
+~10° outward at 20+ kn; unit-tested sign convention in tests/heel.test.ts); hull-box vs
+character collision split (cuboid group 0x0002, KCC filter ~0x0002 — the box top stood
+1.1 m proud of the brig waist deck = the jump-landing "walk on air" + stair ejection);
+sprint (shift, ×1.62, stamina drain 0.3/s ungated from computedGrounded which flickers
+on a heaving deck) + antique stamina bar; helm pose applied ONCE per render frame against
+a captured mixer snapshot (idempotent — per-substep `-=` offsets were the arm spasm);
+full-length slash/kick one-shots via playFresh() (0.28 s timers had cut the Sword clip at
+the wind-up; clips were present all along); rig damage: sail rect/mast cylinder/rudder box
+segment tests (sim/rigDamage.ts, pure + tested), canvas-alphaMap shot holes, per-mast
+sailIntegrity scaling thrust, mast HP 2 + foot-census fall (whole mast group topples and
+slides into the sea), rudderEff 0.15..1 on yaw torque; ramming (perimeter-sample contact
++ closing speed > 4 m/s → waterline bites through applyDamage on BOTH hulls); severed
+islands ≥ 250 cells become foundering wrecks (corner-probe buoyancy, wreckLift decay —
+floats listing ~40 s then goes under); dry hold (ocean discarded inside each hull's
+waterline ellipse, gated by flood state so the sea closes back over a foundering ship) +
+compartment water boxes always-on; spyglass brass viewport overlay + wheel-zoomed FOV;
+fullscreen on F; bolder antique skin.
+
+**Hard-won:**
+- `Material.clone()` does NOT copy onBeforeCompile (or customProgramCacheKey). The
+  per-sail material clones silently lost the billow injection — sails went paper-flat for
+  half the session. Build per-instance materials from a factory that assigns the injector.
+- Rapier wasm: holding a reference to a removed body (despawned wreck in a camera-lock
+  interval) → `RuntimeError: unreachable` + the whole physics world poisoned. Never cache
+  rapier bodies across frames in test harness code; guard with try/catch.
+- The iron keel ballast resists blast fringes BY DESIGN (sphere fringe skips IRON), so a
+  midship cut leaves an iron spine bridging the halves — splits happen through wood
+  sections (bow quarters), which reads right anyway: the keel is the last thing to go.
+- isSunk fires on 95% flood — sawing a third of the hull off legitimately ends the game
+  ("PRIZE SUNK") before the wreck show finishes. Fine for now.
+- computedGrounded() flickers ~75% duty on a deck in a seaway — never gate per-second
+  resource drains (or anything cumulative) on it.
+- Ships that sink keep falling forever (enemy ended at y −2012 still stepping). Cheap
+  freeze below ~−60 m is future polish.
+- Playwright camlock intervals race the render loop's camera writes — monkey-patching
+  `controls.updateCamera = () => {}` first makes framing deterministic.
+
+**Verified numbers:** traverse delta = expected on both sides; ball speed 52.6 m/s at
+120 ms (pure muzzle + drag — no ship-velocity term); heel +7.6° at 21.7 kn and rising
+(arm 4.2), outward, sign-stable; ram at 12 m/s closing: 622/302 voxels, both hulls
+breached + flooding; clean bow amputation → 1096-cell wreck floating at −2.4 m; mast
+fall animates with punctured sails attached; stamina 1→0.62 over ~1.9 s sprint; arm bone
+steady at −2.3 rad ±0.08 idle sway at the wheel; fullscreen toggles via real F press.
