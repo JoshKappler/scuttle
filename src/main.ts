@@ -894,33 +894,32 @@ async function main() {
   const checkBowSpray = (slot: 0 | 1, ship: Ship, dt: number) => {
     const st = sprayState[slot];
     st.cd -= dt;
-    const fp = ship.build.footprint;
-    // stem reference rides just above the static waterline at the cutwater
-    ship.localToWorld([fp.maxX - 1.5, ship.comLocal[1] + 0.4, fp.zC], sprayP);
-    const surf = surfaceHeight(waves, sprayP.x, sprayP.z, world.simTime);
-    const imm = surf - sprayP.y;
-    const rate = dt > 1e-3 ? (imm - st.imm) / dt : 0;
-    st.imm = imm;
+    if (!TUN.spray.enabled) return;
     const v = ship.body.linvel();
     const spd = Math.hypot(v.x, v.z);
-    // fire when the cutwater drives into the sea — from forward way OR from the
-    // hull crashing back down off a crest (round 9: "the boat crashing down
-    // over a wave to cause a real splash"). `rate` folds in both: the surface
-    // rising and the stem dropping, so a hard slam triggers even at rest.
-    if (TUN.spray.enabled && imm > 0 && rate > 1.2 && (spd > 2.0 || rate > 2.4) && st.cd <= 0 && ship.submergedFrac < 0.5) {
-      st.cd = 0.2;
-      const rot = ship.body.rotation();
-      sprayQ.set(rot.x, rot.y, rot.z, rot.w);
-      sprayF.set(1, 0, 0).applyQuaternion(sprayQ);
-      effects.bowWave(
-        sprayP.x,
-        surf + 0.1,
-        sprayP.z,
-        sprayF.x,
-        sprayF.z,
-        Math.min(0.7 + rate * 0.5 + spd * 0.06, 3.0) * TUN.spray.bow,
-      );
+    // r17: bow spray is CONSTANT and SPEED-BASED, not crest-timed. The old code gated on
+    // the immersion RATE (surface rising / stem dropping) with a 0.2 s cooldown, so it cut
+    // in and out as the bow rode the wave faces ("cuts in and out — should be constant").
+    // Now it streams a steady sheet off the cutwater whenever she has way on and the stem
+    // is in the water; strength scales with speed (the bow wave).
+    if (spd < 2.5 || st.cd > 0 || ship.submergedFrac > 0.55) return;
+    const rot = ship.body.rotation();
+    sprayQ.set(rot.x, rot.y, rot.z, rot.w);
+    sprayF.set(1, 0, 0).applyQuaternion(sprayQ);
+    const fp = ship.build.footprint;
+    const strength = Math.min(0.5 + spd * 0.12, 2.4) * TUN.spray.bow;
+    // emit from BOTH cutwater shoulders (port + starboard of the stem) so the spray reads
+    // as a sheet peeling off the whole bow voxel-face, not one jet on the centreline.
+    let emitted = false;
+    for (const dz of [-1.6, 1.6]) {
+      ship.localToWorld([fp.maxX - 1.5, ship.comLocal[1] + 0.4, fp.zC + dz], sprayP);
+      const surf = surfaceHeight(waves, sprayP.x, sprayP.z, world.simTime);
+      if (surf - sprayP.y > -0.35) {
+        effects.bowWave(sprayP.x, surf + 0.1, sprayP.z, sprayF.x, sprayF.z, strength);
+        emitted = true;
+      }
     }
+    if (emitted) st.cd = 0.06; // ~16 Hz → reads as a continuous sheet, not bursts
   };
 
   // r16: the ambient open-water crest spray was REMOVED. It probed a ring around

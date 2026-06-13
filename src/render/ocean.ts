@@ -529,8 +529,12 @@ void main() {
     // smooth and is also stuttering") — the hull-flank wash band covers the
     // first meters astern while they fade up
     float hb2 = i < 32 ? uShipB[0].z : uShipB[1].z;
-    float width = hb2 + 0.3 + ageM * 0.75;
-    wash += exp(-pow(dseg / width, 2.0)) * exp(-ageM * 0.24) * mix(A.w, B.w, h)
+    // r17: a feathering displacement wake — width grows gently (0.35/s, was 0.75 = a
+    // spreading delta) and the foam fades fast (e^-0.5·age, was 0.24) so the tail tapers
+    // to nothing within ~1 hull length instead of trailing wide and bright like a planing
+    // speedboat. Fresh segments still ramp in over a third of a second (no popping).
+    float width = hb2 + 0.3 + ageM * 0.35;
+    wash += exp(-pow(dseg / width, 2.0)) * exp(-ageM * 0.5) * mix(A.w, B.w, h)
           * smoothstep(0.0, 0.35, ageM);
   }
   // break the wash up so it reads as churned water, not paint
@@ -697,10 +701,14 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       const sx = centerX - fwdX * (halfL + 0.8);
       const sz = centerZ - fwdZ * (halfL + 0.8);
       const last = trail[trail.length - 1];
-      if (speed > 1.5 && (!last || Math.hypot(sx - last.x, sz - last.z) > 2.4)) {
+      // r17: tighter 1.2 m spacing (was 2.4) → twice as many points = a SMOOTH continuous
+      // ribbon instead of a lace that pops a blob every ~0.25 s, and 31 points now span
+      // only ~37 m (~1 hull length, was ~74 m) so the tail no longer reads as a speedboat.
+      if (speed > 1.5 && (!last || Math.hypot(sx - last.x, sz - last.z) > 1.2)) {
         trail.push({ x: sx, z: sz, t: time, w: Math.min(speed / 8, 0.9) });
       }
-      while (trail.length > 31 || (trail.length > 0 && time - trail[0].t > 16)) trail.shift();
+      // and a 7 s age cap (was 16) so a slow displacement hull leaves only a short stub.
+      while (trail.length > 31 || (trail.length > 0 && time - trail[0].t > 7)) trail.shift();
 
       const u = mat.uniforms.uTrail.value as THREE.Vector4[];
       const base = slot * 32;
