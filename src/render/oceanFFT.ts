@@ -169,7 +169,11 @@ void main() {
   for (int nn = 0; nn < NRES; nn++) {
     float n = float(nn);
     vec2 H = texture2D(uSrc, vec2((n + 0.5) / N, (m + 0.5) / N)).rg;
-    float ang = 2.0 * 3.14159265358979323846 * j * n / N; // +i twiddle (inverse)
+    // range-reduce j*n mod N before scaling: e^{i2π·jn/N} is N-periodic in jn,
+    // and j*n (≤127²) is exact in float32, so the cos/sin argument stays under
+    // 2π at full highp precision (else ~791 rad loses ~4 digits → drift off the
+    // CPU oracle).
+    float ang = 2.0 * 3.14159265358979323846 * mod(j * n, N) / N; // +i twiddle (inverse)
     float c = cos(ang);
     float s = sin(ang);
     // complex multiply H · e^{+i ang}
@@ -197,7 +201,7 @@ void main() {
   for (int mm = 0; mm < NRES; mm++) {
     float m = float(mm);
     vec2 T = texture2D(uSrc, vec2((j + 0.5) / N, (m + 0.5) / N)).rg;
-    float ang = 2.0 * 3.14159265358979323846 * i * m / N; // +i twiddle
+    float ang = 2.0 * 3.14159265358979323846 * mod(i * m, N) / N; // +i twiddle (range-reduced, see row pass)
     float c = cos(ang);
     float s = sin(ang);
     acc.x += T.x * c - T.y * s;
