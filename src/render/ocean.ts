@@ -164,10 +164,10 @@ void main() {
     // choppiness: exaggerate the horizontal trochoid pinch so crests sharpen
     // into peaks and the troughs broaden — the difference between round swell
     // and genuine wind-torn open-sea chop. With the chop now concentrated in the
-    // 6–14 m sub-band, a stronger 2.7x pinch crashes crossing crests into sharp
-    // peaks instead of round curves.
-    p.x += d.x * chopFade * 2.7;
-    p.z += d.z * chopFade * 2.7;
+    // 8.5–14 m sub-band, a 2.2x pinch crashes crossing crests into sharp peaks
+    // without the frantic jitter the old 2.7x put on the (then shorter) ripples.
+    p.x += d.x * chopFade * 2.2;
+    p.z += d.z * chopFade * 2.2;
     p.y += d.y * chopFade;
     crest += max(d.y, 0.0) * chopFade;
   }
@@ -432,16 +432,23 @@ void main() {
   // break the wash up so it reads as churned water, not paint
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
 
-  // FFT foam: the Jacobian-fold whitecaps from the chop field, folded into the
-  // existing foam composite (analytic crest foam + caps + ship wash). The raw
-  // foam texture is ~1 m/texel — magnified it reads as smooth low-res blobs ("an
-  // ugly mesh laid on the water"). Threshold it down to the genuine fold cores
-  // and dapple the edges with fine value-noise so it breaks up like real
-  // aerated whitewater instead of a flat sheet.
-  float fftFoamRaw = uFftOn > 0.5 ? texture2D(uFftFoam, vWorldPos.xz / uFftTile).r : 0.0;
-  float foamDapple = noise(vWorldPos.xz * 2.3 - uTime * 0.2) * 0.6
-                   + noise(vWorldPos.xz * 6.9 + uTime * 0.3) * 0.4;
-  float fftFoam = smoothstep(0.22, 0.6, fftFoamRaw) * (0.3 + 0.7 * foamDapple);
+  // FFT foam: the Jacobian-fold whitecaps from the chop field (the FFT pass now
+  // injects foam only on genuine breaking-crest cores). The mask is ~1 m/texel,
+  // so used raw it magnifies into the low-res "camo" blobs the playtest hated.
+  // Fix per Sea-of-Thieves/Crest: the mask is only a WHERE; the LOOK comes from
+  // high-frequency detail. Two octaves of value-noise MULTIPLIED erode the mask
+  // edge into fine lacy whitewater, then a crisp threshold removes the soft blob.
+  // Detail contrast fades with distance so the far field doesn't sparkle.
+  float fftFoam = 0.0;
+  if (uFftOn > 0.5) {
+    float foamMask = texture2D(uFftFoam, vWorldPos.xz / uFftTile).r;
+    float dCamF = length(uCameraPos - vWorldPos);
+    float detFade = 1.0 - smoothstep(35.0, 150.0, dCamF);
+    float d1 = noise(vWorldPos.xz * 1.7 + uTime * 0.06);
+    float d2 = noise(vWorldPos.xz * 4.3 - uTime * 0.09);
+    float detail = mix(1.0, d1 * d2 * 2.6, detFade);
+    fftFoam = smoothstep(0.5, 0.74, foamMask * detail);
+  }
 
   col = mix(col, vec3(0.92, 0.96, 0.95),
             clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.55 + fftFoam * 0.7, 0.0, 0.93));

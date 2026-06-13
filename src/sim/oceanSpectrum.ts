@@ -51,12 +51,13 @@ function phillips(kx: number, kz: number, windSpeed: number, wDirX: number, wDir
   const kHat = [kx / Math.sqrt(k2), kz / Math.sqrt(k2)];
   const wDot = kHat[0] * wDirX + kHat[1] * wDirZ;
   const dir = 0.35 + 0.65 * wDot * wDot;
-  // Suppress the very short ripples (< ~6 m). Spread over the WHOLE 2–14 m band
-  // the chop read as buzzy "eggshell" that shimmered fast in place; concentrating
-  // it in the 6–14 m sub-band makes the chop spaced-out and slower-moving (lower
-  // frequencies disperse slower), so it reads as small swell that crashes into
-  // sharp peaks rather than sandpaper.
-  const kCut = (2 * Math.PI) / 6; // cutoff wavenumber ≈ 6 m
+  // Suppress the short ripples (< ~8.5 m). Spread over the whole 2–14 m band the
+  // chop read as buzzy "eggshell" that shimmered fast in place — "so small and so
+  // violently fast it makes the whole ocean look like it's vibrating" (playtest).
+  // Concentrating it in the 8.5–14 m sub-band makes the chop spaced-out and
+  // slower-moving (lower frequencies disperse slower per ω=√(gk)), so it reads as
+  // small swell that crashes into sharp peaks rather than sandpaper.
+  const kCut = (2 * Math.PI) / 8.5; // cutoff wavenumber ≈ 8.5 m
   const shortDamp = Math.exp(-k2 / (kCut * kCut));
   return (Math.exp(-1 / (k2 * Lw * Lw)) / k2) * dir * shortDamp;
 }

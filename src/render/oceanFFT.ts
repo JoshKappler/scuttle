@@ -278,10 +278,16 @@ void main() {
   float dDzdz = (dU.z - dD.z) / (2.0 * dx);
 
   float J = (1.0 + dDxdx) * (1.0 + dDzdz) - dDxdz * dDzdx;
-  float foamInstant = clamp(-(J - 1.0), 0.0, 1.0);
+  // foam ONLY where the surface genuinely folds (J well below 1 = compression /
+  // breaking). The old clamp(-(J-1)) fired for ANY compression (J<1), smearing
+  // foam over most of the sea — which, sampled from a ~1 m/texel mask, magnified
+  // into the low-res "camo" blobs. A steep ramp from J=0.55 down to J=−0.1 keeps
+  // foam on the sparse breaking-crest cores; the fragment stage laces those into
+  // whitewater with high-frequency detail.
+  float foamInstant = smoothstep(0.55, -0.1, J);
 
   float prev = texture2D(uPrevFoam, vUv).r;
-  float foam = max(foamInstant, prev * 0.96);
+  float foam = max(foamInstant, prev * 0.95);
   gl_FragColor = vec4(foam, 0.0, 0.0, 1.0);
 }
 `;

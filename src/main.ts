@@ -63,10 +63,12 @@ async function main() {
     N: 256,
     L: 250,
     windSpeed: 11,
-    amplitude: 110, // the Phillips spectrum is uncalibrated; scale the chop up so
-    // the 6–14 m sub-band reads as real spaced-out crests (the short-wave cutoff
-    // halved the raw energy). Visual only — physics ignores the chop (band-limited
-    // under the 14 m hull cutoff), so a tall chop can't flood or surf the hull.
+    amplitude: 140, // the Phillips spectrum is uncalibrated; scale the chop up so
+    // the 8.5–14 m sub-band reads as real spaced-out crests. Raised 110→140 to put
+    // the height back that the higher 8.5 m short-wave cutoff removed, so the chop
+    // is BIGGER and slower (spaced crashing crests, not fast small "vibrating"
+    // ripples). Visual only — physics ignores the chop (band-limited under the 14 m
+    // hull cutoff), so a tall chop can't flood or surf the hull.
     windDirX: waves[0].dirX,
     windDirZ: waves[0].dirZ,
   });
