@@ -7,6 +7,45 @@ Driven by an 11-agent research + codebase-map workflow → design at
 `docs/superpowers/specs/2026-06-13-ocean-rebuild-design.md`. Every visual change verified
 in-browser (Playwright on :5180 + numeric readback) because GLSL bugs pass tsc/unit tests.
 
+## Round 16 — the big reassessment (commits `76fa66c`, `332e7bf`, `a4c39c3`, `bda6c83`)
+
+The player asked for a full step-back ("we keep coming back to this… something is fundamentally
+wrong with the wave or chop"), parallel opus agents + a research agent. Ran an 8-agent workflow
+(3 research, 4 code-analysis, 1 synthesis) for theory/code-map AND did my own empirical in-browser
+diagnosis. The synthesis *deduced* the jitter was the swell (reasoning "physics only reads the
+swell") — a **deduction error**; my instrument proved otherwise.
+
+- **THE JITTER = a structural FFT bug, found empirically** (`76fa66c`). Read back the cascade
+  height field and measured it: `oppositeSignAdjacentFraction 0.98`, `hiFrac 1.0` — i.e. every
+  adjacent texel flips sign while the *magnitude* varies smoothly → the field was the real surface
+  **× (−1)^(x+y)**, a per-texel CHECKERBOARD. Cause: `oceanFFT.ts` centers k at index N/2
+  (`kx=2π(m−N/2)/L`) but the inverse-DFT sums the RAW index `i·m`, omitting the `(−1)^(i+j)` the
+  −N/2 offset implies (the file even *says* "There is NO fftshift"). The mesh bilinear-samples that
+  checkerboard → the "vibrating sand" jitter we'd tuned amplitude/damping/foam around for ~5 rounds.
+  Fix = multiply the IDFT output by `(−1)^(i+j)`. Verified live: `oppSign 0.98→0.016`,
+  `hiFrac 1.0→0.002`; the sea is now smooth coherent waves. The big-wave shapes (the swell base)
+  were never the problem and are untouched.
+- **TRUE per-voxel buoyancy** (`332e7bf`). Replaced the per-column probe model (a fully-wet column's
+  stiffness collapses to 0 → ±3 m wander + bounce) with `makeVoxelColumns`: every displacing cell
+  pushes up `ρg·V_cell·(its own submerged fraction)` at its own height; wave surface sampled ONCE
+  per (x,z) column, net force+couple accumulated and applied once (rigid-body-identical, **4 ms
+  median frame**). Stiffness is now exactly `ρg·waterplaneArea` and CONSTANT with draft → she holds
+  a near-fixed waterline (measured heave span **1.6 m**, was ±3 m; **2 zero-crossings/6 s** = no
+  bounce). Heave damping is now `c=2ζ√(km)` off the LIVE stiffness, so she settles the same at any
+  buoyancy. Defaults: buoyancy **1.5** (the player's pick), heave **ζ 0.8**. `makeProbes` kept for
+  the hydrostatic tests. Hard turn still 8.8° heel, waterlog 0.
+- **Removed far-field particles + the foam mechanic** (`a4c39c3`). Deleted `ambientSpray` (the
+  camera-ring crest plumes = the "random white bursts a few ship-lengths away") and dropped both
+  open-water foam paths (`crestFoam` + `dynFoam`) from the ocean foam mix — only the ship WASH
+  (wake) whitens the sea now. Bow spray + wake kept; `crestSpray`/foam left dormant for later.
+- **Chop dev sliders + bulletproof fullscreen** (`bda6c83`). New "Waves / Chop" panel group
+  (`chop` strength + `choppiness`) → `ocean.setChop` via `uChopScale`/`uChoppiness`; chop=0 = pure
+  swell (the player's "play with the chop" + a jitter-bisect tool). Fullscreen: the API itself is
+  verified working (F entered fullscreen in Playwright), so the failure is most likely **already
+  being in browser F11** — hardened anyway (webkit fallback, dropped the options dict, try/catch,
+  on-screen failure text incl. an "already in F11?" hint). Swell-iteration "insurance" (3→5) was
+  SKIPPED — the swell measured fine; the jitter was the FFT.
+
 ## Round 15 — playtest fixes (commit `abba186`)
 
 Feedback after r14 hit the water at sea level: voxel cut good, large waves good, but
