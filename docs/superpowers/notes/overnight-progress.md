@@ -325,3 +325,37 @@ bow plunge crosses the spray threshold 5×/3 s at 25 kn; helm arm 0.032° frame-
 fixed rudder, 34° spread port↔starboard; enemy closes 148 m → 58 m from spawn; suite 105
 green. Open: F-fullscreen needs a real browser to confirm (headless lies); sunk ships
 still fall forever.
+
+## Round 9 (playtest m11) — wood, bob, guns, rudder, sails, water
+
+- **Violent bob — the real bug:** heave drag was gated on raw `submergedFrac` (~0.2 for a
+  healthy hull), throttling it to ~0.5/s. The buoyancy spring (ω_n≈2 rad/s) was therefore
+  ζ≈0.15 — she resonated and bobbed clean out of the sea on a modest swell. The *angular*
+  damping was fixed to use `wet=min(sub·5,1)` back in round 4; heave was missed. Gate heave
+  on `wet`, raise the coefficient to ~4.5 (near-critical). DON'T swap physics engines — the
+  engine was never the problem, the integration was under-damped.
+- **Wood still "light birch" → "darker pirate wood":** it's the bright plank photo × the
+  strong afternoon sun, not the base color. Darkening oak alone wasn't enough; you must cut
+  the texture lift (`0.4+tex*1.05` → `0.26+tex*0.62`) AND drop oak/pine ~30%. Rig wood tan
+  0xb89878 → 0x5a4128.
+- **Gun ports asymmetric:** `round(cz±hb)` with cz=21.5 (even beam) rounds both ports about
+  cell 22, biasing BOTH batteries a half-cell to starboard — the right guns hung a full
+  cell further over the edge. `floor(cz)+hb` / `ceil(cz)-hb` mirrors them exactly.
+- **Sail warble:** the billow's `sin(uv.y·π)` pinned the belly to the yards but the flutter
+  term had no envelope, so the laced head/foot floated off the spars. Multiply flutter by
+  the same `sin(uv.y·π)`.
+- **Ocean clipping the hull:** the dry-hull discard ellipse was only 0.62·beam × 0.88·len,
+  leaving the sea drawn over the outer third of the hull and the bow/stern tips. Widen to
+  0.97·len × 0.92·beam to hug the true waterline plan (still xz-only, so pitch/heave can't
+  reveal sea through the deck). Add a STANDING displacement collar (rr≈1.08 ridge just
+  outside the hull ellipse) so she bulges the sea even at rest. Chop: additive boost on the
+  sub-14 m components (physics never feels them) + a 3rd fine normal octave.
+- Ramming: dropped the onRam toast entirely — voxel carving only ("voxel based and dynamic").
+
+**Verified numbers (round 9):** full-sail heave 0.86 m p2p / max |v_y| 0.25 m/s (was the
+"bobs out of the water" resonance); rest draft submerged 0.43–0.53, deck ~1.5 m clear;
+all 5 gun stations symmetric (offsets ±14.5/±15.5/±15.5/±13.5/±11.5, stbd≡-port); dark oak
+holds in full sun, shadows still readable; bow throws a bulging bow wave + foam at 8 m/s,
+clean waterline (no sea through hull/deck/bow); suite 105 green; tsc clean. Open (unchanged):
+F-fullscreen needs a real browser; sunk ships still fall forever; "guns too far forward"
+may persist (only the L/R asymmetry + overhang were fixed — user to confirm).
