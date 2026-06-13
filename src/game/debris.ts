@@ -11,9 +11,12 @@ import type { Physics } from "./physics";
 import type { Ship } from "./ship";
 
 /**
- * Severed hull islands become short-lived dynamic bodies with their own
- * voxel meshes. Wood floats, iron-heavy chunks sink — single-probe Archimedes
- * per piece is plenty at debris scale.
+ * Severed hull islands become dynamic bodies with their own voxel meshes.
+ * Small pieces are short-lived flotsam (single-probe Archimedes). BIG pieces
+ * — a bow rammed clean off, half a ship (round 7: "if a ship is rammed hard
+ * enough, it can actually split in half") — become WRECKS: corner buoyancy
+ * probes so they trim and list like a hull, floating at first on entrained
+ * air, then waterlogging and foundering over the next minute.
  */
 interface DebrisPiece {
   body: RAPIER.RigidBody;
@@ -21,9 +24,22 @@ interface DebrisPiece {
   volume: number; // m³
   halfHeight: number;
   age: number;
+  /** Local-frame buoyancy probe points (wrecks get four corners). */
+  probes: [number, number, number][];
+  wreck: boolean;
 }
 
-const LIFETIME = 35; // s
+const LIFETIME = 35; // s — small flotsam
+const WRECK_LIFETIME = 150; // s — or until it founders below 40 m
+/** A severed island at least this many voxels is a wreck, not flotsam. */
+export const WRECK_CELLS = 250;
+
+/** Wreck lift multiplier vs age: fresh wreckage rides high on entrained air,
+ *  then waterlogs. Wood alone needs ≈×0.5 lift to float — dropping well
+ *  below that by a minute in guarantees she founders. */
+export function wreckLift(age: number): number {
+  return Math.max(1.45 - (age / 45) * 1.05, 0.32);
+}
 
 export class DebrisManager {
   private pieces: DebrisPiece[] = [];
@@ -87,13 +103,18 @@ export class DebrisManager {
     const hy = (gny * VOXEL_SIZE) / 2;
     const hz = (gnz * VOXEL_SIZE) / 2;
 
+    const wreck = island.cells.length >= WRECK_CELLS;
     const desc = R.RigidBodyDesc.dynamic()
       .setTranslation(origin.x, origin.y, origin.z)
       .setRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w })
-      .setLinvel(vel.x + (Math.random() - 0.5), vel.y + 0.5, vel.z + (Math.random() - 0.5))
-      .setAngvel({ x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5), z: (Math.random() - 0.5) * 2 })
-      .setLinearDamping(0.3)
-      .setAngularDamping(1.0);
+      .setLinvel(vel.x + (Math.random() - 0.5), vel.y + (wreck ? 0 : 0.5), vel.z + (Math.random() - 0.5))
+      .setAngvel(
+        wreck
+          ? ship.body.angvel()
+          : { x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5), z: (Math.random() - 0.5) * 2 },
+      )
+      .setLinearDamping(wreck ? 0.55 : 0.3)
+      .setAngularDamping(wreck ? 1.6 : 1.0);
     const body = world.createRigidBody(desc);
     const collider = R.ColliderDesc.cuboid(hx, hy, hz).setTranslation(hx, hy, hz).setDensity(0);
     world.createCollider(collider, body);
@@ -105,14 +126,30 @@ export class DebrisManager {
       true,
     );
 
+    // wrecks float on four corner probes (trim + list like a hull);
+    // flotsam needs only its center
+    const probes: [number, number, number][] = wreck
+      ? [
+          [hx * 0.35, 0, hz * 0.5],
+          [hx * 1.65, 0, hz * 0.5],
+          [hx * 0.35, 0, hz * 1.5],
+          [hx * 1.65, 0, hz * 1.5],
+        ]
+      : [[hx, hy, hz]];
+
     this.pieces.push({
       body,
       mesh: group,
       volume: island.cells.length * VOXEL_VOLUME * 1.6, // entrained air bumps wood buoyancy
       halfHeight: hy,
       age: 0,
+      probes,
+      wreck,
     });
   }
+
+  private tmpQ = new THREE.Quaternion();
+  private tmpP = new THREE.Vector3();
 
   /** Buoyancy + lifetime for every piece. Call each fixed step. */
   update(dt: number, simTime: number, waves: Wave[]): void {
@@ -120,28 +157,39 @@ export class DebrisManager {
       const p = this.pieces[i];
       p.age += dt;
       const tr = p.body.translation();
-      if (p.age > LIFETIME || tr.y < -60) {
+      const lifetime = p.wreck ? WRECK_LIFETIME : LIFETIME;
+      if (p.age > lifetime || tr.y < (p.wreck ? -40 : -60)) {
         this.scene.remove(p.mesh);
         this.physics.world.removeRigidBody(p.body);
         this.pieces.splice(i, 1);
         continue;
       }
-      const surf = surfaceHeight(waves, tr.x, tr.z, simTime);
-      const com = p.body.worldCom();
-      const depth = surf - (com.y - p.halfHeight);
-      const sub = Math.min(Math.max(depth / Math.max(p.halfHeight * 2, 0.1), 0), 1);
-      if (sub > 0) {
-        const f = WATER_DENSITY * G * p.volume * sub;
-        p.body.resetForces(true);
-        p.body.addForce({ x: 0, y: f, z: 0 }, true);
-        const v = p.body.linvel();
-        const k = p.body.mass() * 1.2 * sub;
-        p.body.addForce({ x: -v.x * k, y: -v.y * k, z: -v.z * k }, true);
-      } else {
-        p.body.resetForces(true);
-      }
-      // sync visual
+
+      p.body.resetForces(true);
       const rot = p.body.rotation();
+      this.tmpQ.set(rot.x, rot.y, rot.z, rot.w);
+      const lift = p.wreck ? wreckLift(p.age) : 1;
+      let wet = 0;
+      for (const pr of p.probes) {
+        this.tmpP.set(pr[0], pr[1], pr[2]).applyQuaternion(this.tmpQ);
+        const wx = this.tmpP.x + tr.x;
+        const wy = this.tmpP.y + tr.y;
+        const wz = this.tmpP.z + tr.z;
+        const surf = surfaceHeight(waves, wx, wz, simTime);
+        const span = Math.max(p.halfHeight * 2, 0.1);
+        const sub = Math.min(Math.max((surf - wy) / span, 0), 1);
+        if (sub <= 0) continue;
+        wet = Math.max(wet, sub);
+        const f = ((WATER_DENSITY * G * p.volume * lift) / p.probes.length) * sub;
+        p.body.addForceAtPoint({ x: 0, y: f, z: 0 }, { x: wx, y: wy, z: wz }, true);
+      }
+      if (wet > 0) {
+        const v = p.body.linvel();
+        const k = p.body.mass() * 1.2 * wet;
+        p.body.addForce({ x: -v.x * k, y: -v.y * k, z: -v.z * k }, true);
+      }
+
+      // sync visual
       p.mesh.position.set(tr.x, tr.y, tr.z);
       p.mesh.quaternion.set(rot.x, rot.y, rot.z, rot.w);
     }

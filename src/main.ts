@@ -13,6 +13,7 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
+import { Ramming } from "./game/ramming";
 import { muzzleWorld } from "./game/gunnery";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
@@ -98,6 +99,12 @@ async function main() {
   enemy.onRudderHit = (hp) => {
     enemyVisual.chipRudder(hp / 3);
     boarding.message = hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!";
+  };
+
+  // hull-on-hull: meeting with way on carves BOTH ships (round 7)
+  const ramming = new Ramming(effects);
+  ramming.onRam = (speed) => {
+    boarding.message = speed > 7 ? "TIMBERS SHATTER — RAMMED!" : "hulls grind and crack!";
   };
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
   // Steering only happens at the wheel (E to take/leave it); V toggles
@@ -258,6 +265,7 @@ async function main() {
     }
 
     cannons.update(dt, t, waves, [enemy]);
+    ramming.update(dt, [sloop, enemy]);
     debris.update(dt, t, waves);
     character?.update(dt, controls.cameraYaw());
 
