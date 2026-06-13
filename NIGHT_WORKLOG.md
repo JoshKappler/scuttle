@@ -106,10 +106,14 @@ so the right behavior emerges). Research real-world specs (yacht weight distn, h
 - [x] BUOYANCY: ride higher, ref-like freeboard (commit a9110ab). Dropped by+8 ballast course →
       draft 0.54→0.45, mass 689→574t, COM 2.30→2.14 (stiffer). Stable, no flood/capsize. draft.test
       band updated 0.4-0.5.
-- [ ] GAMEPLAY (b) remove enemy crew (clearest — do first)
-- [ ] GAMEPLAY (a) sink ≠ permanent game-over → swim/board (CharacterSpike + boarding exist)
-- [ ] GAMEPLAY (c) first-person arms always in frame holding selected tool
-- [ ] VOXEL roadmap (collision, masts/sails, in-hull fluid, ramming) — brainstorm/spec/plan, careful
+- [x] GAMEPLAY (b) remove enemy crew (commit 627b022) — ensureCrew posts=[] ; verified 0 spawn.
+- [x] GAMEPLAY (a) sink ≠ instant game-over (commit 627b022). Enemy sink = non-terminal (salvage+
+      sail on). Player sink = 35s "ABANDON SHIP swim for it" grace then LOST AT SEA. Verified.
+      NOTE: full swim-to-enemy-board CONTINUATION not wired (respawn assumes own ship); left for
+      boarding/voxel overhaul. The grace removes the instant binary death the user hated.
+- [ ] GAMEPLAY (c) first-person arms always in frame holding selected tool (viewmodel) — IN PROGRESS
+- [ ] VOXEL roadmap — PLAN: too big/risky to implement unattended. Produce a design/spec/plan doc
+      for the user to review+direct in the morning (don't gamble the codebase overnight).
 
 ## HARNESS LESSON (important)
 - DO NOT zero a ship's linvel/angvel each tick to "stop" it for a screenshot — it destabilizes the

@@ -455,6 +455,51 @@ async function main() {
     },
   };
 
+  // ---- first-person viewmodel: a right arm + cutlass always in frame ----
+  // Playtest: "in first person I don't see any sword or anything … I want it always
+  // in frame, the right arm carrying whatever tool is selected." The body is a single
+  // skinned GLB (can't cheaply show just its arm), so this is a dedicated procedural
+  // viewmodel in the game's blocky style, parented to the camera each frame and
+  // swung when the player slashes.
+  const viewModel = new THREE.Group();
+  viewModel.visible = false;
+  const vmArm = new THREE.Group();
+  {
+    const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x1d3a52, roughness: 0.85 });
+    const cuffMat = new THREE.MeshStandardMaterial({ color: 0x1c6e6e, roughness: 0.8 });
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xc99066, roughness: 0.7 });
+    const steelMat = new THREE.MeshStandardMaterial({ color: 0xc2cad2, roughness: 0.3, metalness: 0.7 });
+    const brassMat = new THREE.MeshStandardMaterial({ color: 0xb08d3a, roughness: 0.45, metalness: 0.6 });
+    const gripMat = new THREE.MeshStandardMaterial({ color: 0x3a2415, roughness: 0.85 });
+    const forearm = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.4, 4, 8), sleeveMat);
+    forearm.position.set(0, 0.2, 0);
+    const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.07, 10), cuffMat);
+    cuff.position.set(0, 0.38, 0);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.072, 10, 8), skinMat);
+    hand.position.set(0, 0.44, 0.01);
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.13, 8), gripMat);
+    grip.position.set(0, 0.48, 0.02);
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.03, 0.05), brassMat);
+    guard.position.set(0, 0.55, 0.02);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.52, 0.07), steelMat);
+    blade.position.set(0, 0.82, 0.03);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.12, 4), steelMat);
+    tip.position.set(0, 1.09, 0.03);
+    vmArm.add(forearm, cuff, hand, grip, guard, blade, tip);
+    vmArm.traverse((o) => {
+      o.castShadow = false;
+      o.frustumCulled = false;
+    });
+    // elbow toward the bottom-right corner, blade angled diagonally up-left across
+    // the frame (classic FPS sword pose) so the tip stays comfortably in view
+    vmArm.rotation.set(-0.1, 0.3, 0.85);
+    viewModel.add(vmArm);
+  }
+  viewModel.scale.setScalar(0.85);
+  scene.add(viewModel);
+  const vmOffset = new THREE.Vector3();
+  let vmBob = 0;
+
   const clock = new THREE.Clock();
   let hudTimer = 0;
 
@@ -830,7 +875,19 @@ async function main() {
         eyeY + Math.sin(pitch),
         pt.z + Math.sin(yaw) * Math.cos(pitch),
       );
+      // viewmodel: track the camera, idle-bob, and chop on a slash
+      viewModel.visible = true;
+      const swingT = boarding.player.attackTimer ?? 0;
+      const swingP = swingT > 0 ? Math.sin((1 - swingT / 0.7) * Math.PI) : 0;
+      vmBob += dt * 3.2;
+      const bob = Math.sin(vmBob) * 0.01;
+      vmOffset.set(0.28, -0.4 + bob, -0.62).applyQuaternion(camera.quaternion);
+      viewModel.position.copy(camera.position).add(vmOffset);
+      viewModel.quaternion.copy(camera.quaternion);
+      // chop the blade down-forward through the swing, with a touch of follow-through
+      vmArm.rotation.set(-0.1 - swingP * 1.5, 0.3 + swingP * 0.15, 0.85 - swingP * 0.4);
     } else {
+      viewModel.visible = false;
       // bird's-eye orbit on the ship's CENTER (the body origin is the grid
       // corner, aft — orbiting that made every view sit off-center). The
       // look-at rides at deck height so close zooms don't dip into the hull.
