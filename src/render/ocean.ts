@@ -288,7 +288,13 @@ void main() {
     // the planking (the "ocean clipping through the deck" green-water bug — worse
     // now the chop is rougher). The +3 m ceiling clears the tallest chop while a
     // hull that has SUNK well below the sea still lets the water close over it.
-    if (al0 * al0 + ac0 * ac0 < 1.0 && vWorldPos.y > keelY && vWorldPos.y < deckY + 3.0) discard;
+    // taper the cut to the actual hull PLAN (pointed bow/stern), not a fat ellipse.
+    // A full-width ellipse discarded sea OUTSIDE the narrow stem, leaving the void
+    // crescents at the bow ("the void is visible from directly above, and a few other
+    // angles"). beamProfile narrows the cut toward the ends so it follows the timber.
+    float along2 = al0 * al0;
+    float beamProfile = (1.0 - along2) * (0.5 + 0.5 * (1.0 - along2));
+    if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) discard;
   }
 
   // cutaway: the sea over the hull footprint is removed outright (the hold
@@ -370,16 +376,12 @@ void main() {
   float sss = pow(max(dot(V, -L), 0.0), 3.0) * smoothstep(0.3, 1.0, vCrest / uAmpTotal);
   col += vec3(0.05, 0.18, 0.16) * sss;
 
-  // crest foam + whitecaps, broken up by noise. A 16-wave sum spends most of
-  // its time near the middle of its range, so the thresholds sit HIGH — only
-  // genuine crest coincidences whiten (the first cut boiled the whole sea)
-  float foamNoise = noise(vWorldPos.xz * 0.9 + uTime * 0.15) * 0.6
-                  + noise(vWorldPos.xz * 3.1 - uTime * 0.1) * 0.4;
-  float crestF = vCrest / uAmpTotal;
-  float foam = smoothstep(0.62, 0.95, crestF) * smoothstep(0.42, 0.78, foamNoise);
-  // hard whitecaps right at breaking crests (steep + high)
-  float cap = smoothstep(0.8, 1.0, crestF) * smoothstep(0.97, 0.88, N.y);
-  float flat_ = smoothstep(0.94, 1.0, N.y);
+  // THE CAMO LIVED HERE. This block whitened every wave whose crest passed a height
+  // threshold (crestF > 0.62), broken up by low-frequency value-noise — which is, by
+  // construction, a camouflage pattern. That is the "solid texture that gets applied
+  // after the waves reach a certain height" the playtest kept rejecting. Removed
+  // outright. Open water carries NO height-triggered foam now; whitewater comes only
+  // from the ship wake below and the breaking-crest spray particles.
 
   // ship wash: (a) churned white along the forward hull flanks where the
   // stem shoulders the sea aside, (b) a turbulent trail laced between the
@@ -441,8 +443,7 @@ void main() {
   // always read as low-res camo blobs no matter how it was thresholded or eroded.
   // Whitewater now comes only from the analytic crest foam + caps + ship wash here;
   // open-sea breaking SPRAY is the particle system's job (and is being beefed up).
-  col = mix(col, vec3(0.92, 0.96, 0.95),
-            clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.55, 0.0, 0.93));
+  col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.55, 0.0, 0.93));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);
