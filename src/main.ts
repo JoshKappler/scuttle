@@ -14,7 +14,8 @@ import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
 import { Ramming } from "./game/ramming";
-import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld, velocityAtPoint } from "./game/gunnery";
+import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld } from "./game/gunnery";
+import { FIXED_DT, G } from "./core/constants";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -519,7 +520,10 @@ async function main() {
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
   // the aiming side (playtest: "all four cannons … should show their
   // trajectory as well and articulate")
-  const ARC_PTS = 64; // 72 m/s balls fly further — the preview reaches with them
+  const ARC_PTS = 64; // vertices in the preview polyline
+  // integrate the preview at the ball's exact step; record 1 vertex per this
+  // many sim steps → ARC_PTS·ARC_SUB·FIXED_DT ≈ 4.3 s of flight covered
+  const ARC_SUB = 4;
   const gunsPerSide = Math.max(
     sloop.build.cannonPorts.filter((p) => p.side === 1).length,
     sloop.build.cannonPorts.filter((p) => p.side === -1).length,
@@ -557,7 +561,6 @@ async function main() {
   }
 
   const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
-  const arcCarry = new THREE.Vector3();
   function updateAimArc(): void {
     // the WHOLE broadside, wherever you stand — looking across a side while
     // holding RMB lays every gun on it (playtest round 6: "regardless of
@@ -578,27 +581,34 @@ async function main() {
         continue;
       }
       arc.line.visible = true;
-      // arc starts at the barrel TIP with EXACTLY the ball's initial state:
-      // muzzle velocity along the bore PLUS the ship's velocity at the
-      // muzzle (round 8: "the cannonballs … fire with the ship's velocity
-      // vector taken into account … But I also need the outline trajectory
-      // to be consistent with that"). Same constants, same integrator as
-      // cannons.ts — the line IS the shot.
+      // PURE-bore trajectory — muzzle velocity along the barrel, NO ship carry
+      // (round 8). The line is redrawn every frame from the MOVING muzzle, so
+      // it lives in the ship's frame; a pure curve co-moving with the ship has
+      // the ball ride along it as both translate together, and it stays aligned
+      // with the visible barrel so you can aim. Folding the ship's velocity in
+      // bent the line off the barrel and away from the ball you actually watch
+      // fly ("30° off, worse with speed"). The carry belongs to the projectile
+      // alone — its launch point is already moving at ship speed. Integrated
+      // with the ball's OWN step (FIXED_DT)/G/drag, sub-sampled 1 vertex per
+      // ARC_SUB steps, so the curve's SHAPE and range match the shot exactly.
       muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
-      const v = arcMuzzle.dir.clone().multiplyScalar(MUZZLE_SPEED).add(velocityAtPoint(sloop, arcMuzzle.pos, arcCarry));
+      const v = arcMuzzle.dir.clone().multiplyScalar(MUZZLE_SPEED);
       const p = arcMuzzle.pos.clone();
-      const step = 0.06;
-      for (let i = 0; i < ARC_PTS; i++) {
-        arc.pos[i * 3] = p.x;
-        arc.pos[i * 3 + 1] = p.y;
-        arc.pos[i * 3 + 2] = p.z;
+      let vi = 0;
+      for (let stepN = 0; vi < ARC_PTS; stepN++) {
+        if (stepN % ARC_SUB === 0) {
+          arc.pos[vi * 3] = p.x;
+          arc.pos[vi * 3 + 1] = p.y;
+          arc.pos[vi * 3 + 2] = p.z;
+          vi++;
+        }
         const sp = v.length();
-        v.x += -BALL_DRAG * sp * v.x * step;
-        v.y += (-9.81 - BALL_DRAG * sp * v.y) * step;
-        v.z += -BALL_DRAG * sp * v.z * step;
-        p.addScaledVector(v, step);
+        v.x += -BALL_DRAG * sp * v.x * FIXED_DT;
+        v.y += (-G - BALL_DRAG * sp * v.y) * FIXED_DT;
+        v.z += -BALL_DRAG * sp * v.z * FIXED_DT;
+        p.addScaledVector(v, FIXED_DT);
         if (p.y < surfaceHeight(waves, p.x, p.z, world.simTime)) {
-          for (let j = i + 1; j < ARC_PTS; j++) {
+          for (let j = vi; j < ARC_PTS; j++) {
             arc.pos[j * 3] = p.x;
             arc.pos[j * 3 + 1] = p.y;
             arc.pos[j * 3 + 2] = p.z;

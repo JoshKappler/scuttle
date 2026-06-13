@@ -50,14 +50,18 @@ export function createSky(): SkySetup {
   sunLight.shadow.camera.bottom = -ext;
   sunLight.shadow.bias = -0.0005;
   // shadows ATTENUATE the sun rather than erase it — skylight still reaches
-  // shadowed ground in life (round 8: "any part not directly in the sun")
-  sunLight.shadow.intensity = 0.85;
+  // shadowed ground in life (round 8: "any part not directly in the sun").
+  // This (plus the hemisphere fill) lifts the dark side WITHOUT the IBL env
+  // that bleached the oak — shadow.intensity only touches shadowed pixels,
+  // so the lit wood keeps m10's tone (round 8 v2: "same wood, was fine before").
+  sunLight.shadow.intensity = 0.7;
 
   // sky bounce carries the shade: at 0.55 anything out of the sun read as
   // pitch black (round 7). 1.3 + a strong IBL env then over-lit it and
-  // bleached the dark oak hull to "a light birch" (round 8 v2) — back to a
-  // moderate fill; the gentle IBL env (set in bakeEnvironment) does the rest.
-  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 0.9);
+  // bleached the dark oak hull to "a light birch" (round 8 v2). Back to m10's
+  // fill value — the lifted shadows + a faint IBL env keep shade out of the
+  // void without brightening the wood's overall tone.
+  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 0.95);
 
   return {
     sky,
@@ -77,9 +81,13 @@ export function createSky(): SkySetup {
       const rt = pmrem.fromScene(env, 0.04);
       scene.add(sky); // give it back
       scene.environment = rt.texture;
-      // 0.72 bleached the oak to birch (round 8 v2). A gentle 0.28 fills the
-      // shaded flanks so they read as dim wood without washing out the tone.
-      scene.environmentIntensity = 0.28;
+      // IBL ambient bleached the dark oak hull to birch (round 8 v2) at every
+      // level I tried (0.72 → 0.16). m10 had NO environment and its wood was
+      // right, so the env is now barely-there — just enough to keep the metal
+      // guns from going dead-flat. The shade is lifted by shadow.intensity +
+      // the hemisphere instead, neither of which touches the lit wood's tone.
+      // (IBL is baked ONCE here: only a full page reload re-bakes it.)
+      scene.environmentIntensity = 0.05;
       pmrem.dispose();
     },
   };
