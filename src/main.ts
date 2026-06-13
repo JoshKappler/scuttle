@@ -63,6 +63,8 @@ async function main() {
     N: 256,
     L: 250,
     windSpeed: 11,
+    amplitude: 30, // the Phillips spectrum is uncalibrated; scale the chop to a
+    // visible ~0.3 m (vs ~1 cm raw). Visual only — physics ignores the chop.
     windDirX: waves[0].dirX,
     windDirZ: waves[0].dirZ,
   });

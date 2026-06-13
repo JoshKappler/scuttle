@@ -14,6 +14,12 @@ export interface SpectrumOptions {
   windSpeed: number; // m/s
   windDirX?: number;
   windDirZ?: number;
+  /** Visual height multiplier on the chop. The Phillips spectrum here is
+   *  UNCALIBRATED (it returns tiny relative values), so without this the chop
+   *  comes out ~1 cm — invisible against the ~0.6 m swell. This scales the
+   *  band-limited chop up to a visible, deliberately-exaggerated-for-game-feel
+   *  height. VISUAL ONLY — physics never samples the FFT chop. Default 1. */
+  amplitude?: number;
 }
 
 export interface OceanSpectrum {
@@ -55,6 +61,7 @@ export function makeOceanSpectrum(rng: Rng, opts: SpectrumOptions): OceanSpectru
   const { N, L, windSpeed } = opts;
   const wDirX = opts.windDirX ?? 1;
   const wDirZ = opts.windDirZ ?? 0;
+  const A = opts.amplitude ?? 1;
   const h0Re = new Float32Array(N * N);
   const h0Im = new Float32Array(N * N);
 
@@ -67,7 +74,7 @@ export function makeOceanSpectrum(rng: Rng, opts: SpectrumOptions): OceanSpectru
       if (kLen > 1e-6) {
         const lambda = (2 * Math.PI) / kLen;
         if (lambda < CHOP_MAX_WAVELENGTH) {
-          amp = Math.sqrt(phillips(kx, kz, windSpeed, wDirX, wDirZ) / 2);
+          amp = A * Math.sqrt(phillips(kx, kz, windSpeed, wDirX, wDirZ) / 2);
         }
       }
       const idx = m * N + n;
