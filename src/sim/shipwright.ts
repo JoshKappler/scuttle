@@ -132,8 +132,10 @@ export function buildSloop(): ShipBuild {
 
   // cannon ports are decided BEFORE the rail so the fence can leave
   // embrasures for the barrels (playtest: "cannon barrels clipping directly
-  // through the railing … should be slotted in between gaps in the fence")
-  const portXs = [0.3, 0.45, 0.6, 0.75].map((f) => x0 + Math.round(L * f));
+  // through the railing … should be slotted in between gaps in the fence").
+  // Battery sits aft of the old spread: the forward stations were on the bow
+  // taper, where the carriage wheels overhung the narrowing deck (round 8)
+  const portXs = [0.3, 0.43, 0.56, 0.69].map((f) => x0 + Math.round(L * f));
 
   // bulwark as a FENCE, not a solid wall: continuous toe course at the deck,
   // posts every third cell, continuous cap rail at chest height. The 0.5 m
@@ -401,8 +403,10 @@ export function buildBrig(): ShipBuild {
     }
   }
 
-  // five gun ports a side along the waist, clear of the quarterdeck break
-  const portXs = [0.3, 0.42, 0.54, 0.66, 0.78].map((f) => x0 + Math.round(L * f));
+  // five gun ports a side along the waist, clear of the quarterdeck break.
+  // Spread pulled aft (round 8: the 0.78 station rode the bow taper — "the
+  // cannons are still too far forward … front wheels over the edge")
+  const portXs = [0.3, 0.41, 0.52, 0.63, 0.74].map((f) => x0 + Math.round(L * f));
 
   // bulwark fence at each deck's own edge (waist AND quarterdeck), with
   // embrasures for the guns and gaps where the companion stairs land

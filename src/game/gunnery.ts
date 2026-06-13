@@ -12,12 +12,15 @@ import type { Ship } from "./ship";
 // Whole-gun scale: round 7 sized the battery up ("a bit smaller than I think
 // they would be in real life") — the visual scales its gun group by this and
 // the firing solution scales the same offsets, so they can never drift apart.
-export const GUN_SCALE = 1.25;
+// Round 8: "still smaller than realistic" — 1.6 puts the barrel near 2.3 m,
+// honest for a 6-pounder.
+export const GUN_SCALE = 1.6;
 
 export const BARREL_INBOARD = 2.6; // voxels the carriage sits inboard of the port cell
 /** Extra meters inboard of that: round 7 had the carriage so far outboard
- *  "their front wheels are actually off of the ship". */
-export const GUN_INBOARD_M = 0.2;
+ *  "their front wheels are actually off of the ship"; round 8 still saw
+ *  wheels over the edge with the bigger guns — pulled well inboard. */
+export const GUN_INBOARD_M = 0.55;
 
 // The gun's true geometry IN ITS OWN MODEL SPACE — gunnery owns these
 // numbers and the procedural gun model in shipVisual is BUILT from them
@@ -35,6 +38,13 @@ export const BORE_UP = BORE_UP_B * GUN_SCALE;
 export const TRUNNION_OUT = TRUNNION_OUT_B * GUN_SCALE;
 export const TIP_FROM_TRUNNION = TIP_FROM_TRUNNION_B * GUN_SCALE;
 export const BARREL_PIVOT_UP = BARREL_PIVOT_UP_B * GUN_SCALE;
+
+/** Shared by the projectile spawn AND the aim-arc preview — one constant so
+ *  the line and the ball can never disagree. Round 8 raised it from 55
+ *  ("the cannonballs should be faster and more powerful, have a further
+ *  range") — 72 m/s nearly doubles flat-trajectory reach. */
+export const MUZZLE_SPEED = 72; // m/s
+export const BALL_DRAG = 0.006;
 
 export interface MuzzleOut {
   pos: THREE.Vector3;

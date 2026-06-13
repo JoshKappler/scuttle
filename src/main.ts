@@ -14,7 +14,7 @@ import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
 import { Ramming } from "./game/ramming";
-import { muzzleWorld } from "./game/gunnery";
+import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld, velocityAtPoint } from "./game/gunnery";
 import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
@@ -42,6 +42,9 @@ async function main() {
 
   const skySetup = createSky();
   skySetup.addTo(scene);
+  // image-based skylight: PBR materials get ambient from the actual sky dome
+  // (round 8: shade must read as shade, not a void)
+  skySetup.bakeEnvironment(renderer, scene);
 
   const ocean = createOcean(waves, skySetup.sunDir);
   scene.add(ocean.mesh);
@@ -80,7 +83,7 @@ async function main() {
   const controls = new PlayerControls(renderer.domElement);
 
   const effects = new Effects();
-  scene.add(effects.points);
+  scene.add(effects.group); // both particle layers + pooled flash lights
   const cannons = new Cannons(scene, effects);
   const debris = new DebrisManager(physics, scene);
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
@@ -337,10 +340,24 @@ async function main() {
     sloop.localToWorld([(fp.minX + fp.maxX) / 2, 2, fp.zC], holeCenter);
     ocean.updateCutaway(holeCenter, holeFwd.x, holeFwd.z, cutPlane);
   };
-  // fullscreen (round 7): F or the brass corner button
+  // fullscreen (round 7/8): F or the brass corner button. The request can be
+  // REFUSED (browser policy, missing user-activation edge cases) — surface
+  // the reason as a toast instead of silently doing nothing, and re-grab
+  // pointer lock after the transition (Chrome drops it on the way in).
   const toggleFullscreen = () => {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void document.documentElement.requestFullscreen();
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+      return;
+    }
+    const hadLock = document.pointerLockElement !== null;
+    document.documentElement
+      .requestFullscreen({ navigationUI: "hide" })
+      .then(() => {
+        if (hadLock) renderer.domElement.requestPointerLock();
+      })
+      .catch((err: Error) => {
+        boarding.message = `fullscreen refused: ${err.message}`;
+      });
   };
   document.getElementById("fs-btn")!.addEventListener("click", toggleFullscreen);
 
@@ -493,7 +510,7 @@ async function main() {
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
   // the aiming side (playtest: "all four cannons … should show their
   // trajectory as well and articulate")
-  const ARC_PTS = 48;
+  const ARC_PTS = 64; // 72 m/s balls fly further — the preview reaches with them
   const gunsPerSide = Math.max(
     sloop.build.cannonPorts.filter((p) => p.side === 1).length,
     sloop.build.cannonPorts.filter((p) => p.side === -1).length,
@@ -531,6 +548,7 @@ async function main() {
   }
 
   const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
+  const arcCarry = new THREE.Vector3();
   function updateAimArc(): void {
     // the WHOLE broadside, wherever you stand — looking across a side while
     // holding RMB lays every gun on it (playtest round 6: "regardless of
@@ -551,12 +569,14 @@ async function main() {
         continue;
       }
       arc.line.visible = true;
-      // arc starts at the barrel TIP and runs barrel-true. Inherited ship
-      // velocity is OUT of both the prediction and the ball (round 7, third
-      // strike: the physically-honest lead read as "veers much further right
-      // than the gun actually shoots" — the line now shows exactly the bore)
+      // arc starts at the barrel TIP with EXACTLY the ball's initial state:
+      // muzzle velocity along the bore PLUS the ship's velocity at the
+      // muzzle (round 8: "the cannonballs … fire with the ship's velocity
+      // vector taken into account … But I also need the outline trajectory
+      // to be consistent with that"). Same constants, same integrator as
+      // cannons.ts — the line IS the shot.
       muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
-      const v = arcMuzzle.dir.clone().multiplyScalar(55);
+      const v = arcMuzzle.dir.clone().multiplyScalar(MUZZLE_SPEED).add(velocityAtPoint(sloop, arcMuzzle.pos, arcCarry));
       const p = arcMuzzle.pos.clone();
       const step = 0.06;
       for (let i = 0; i < ARC_PTS; i++) {
@@ -564,9 +584,9 @@ async function main() {
         arc.pos[i * 3 + 1] = p.y;
         arc.pos[i * 3 + 2] = p.z;
         const sp = v.length();
-        v.x += -0.006 * sp * v.x * step;
-        v.y += (-9.81 - 0.006 * sp * v.y) * step;
-        v.z += -0.006 * sp * v.z * step;
+        v.x += -BALL_DRAG * sp * v.x * step;
+        v.y += (-9.81 - BALL_DRAG * sp * v.y) * step;
+        v.z += -BALL_DRAG * sp * v.z * step;
         p.addScaledVector(v, step);
         if (p.y < surfaceHeight(waves, p.x, p.z, world.simTime)) {
           for (let j = i + 1; j < ARC_PTS; j++) {

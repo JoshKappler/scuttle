@@ -12,6 +12,12 @@ export interface SkySetup {
   sunLight: THREE.DirectionalLight;
   fillLight: THREE.HemisphereLight;
   addTo(scene: THREE.Scene): void;
+  /** Bake the sky dome into a PMREM and set it as the scene's environment.
+   *  Hemisphere/directional lights alone leave PBR materials BLACK anywhere
+   *  the analytic lights don't reach (round 8: "shadows are still crazy dark
+   *  … there should be some level of ambient lighting") — image-based light
+   *  from the actual sky is what fills shade the way the real sky does. */
+  bakeEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Scene): void;
 }
 
 export function createSky(): SkySetup {
@@ -43,10 +49,14 @@ export function createSky(): SkySetup {
   sunLight.shadow.camera.top = ext;
   sunLight.shadow.camera.bottom = -ext;
   sunLight.shadow.bias = -0.0005;
+  // shadows ATTENUATE the sun rather than erase it — skylight still reaches
+  // shadowed ground in life (round 8: "any part not directly in the sun")
+  sunLight.shadow.intensity = 0.82;
 
   // sky bounce carries the shade: at 0.55 anything out of the sun read as
-  // pitch black (round 7) — real overcast-side light is a big soft source
-  const fillLight = new THREE.HemisphereLight(0xbfd8e2, 0x1c3a44, 0.95);
+  // pitch black (round 7); 0.95 still wasn't ambient enough (round 8) —
+  // raised again, with the ground bounce brightened toward lit-sea teal
+  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 1.3);
 
   return {
     sky,
@@ -58,6 +68,16 @@ export function createSky(): SkySetup {
       scene.add(sunLight);
       scene.add(sunLight.target);
       scene.add(fillLight);
+    },
+    bakeEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      const env = new THREE.Scene();
+      env.add(sky); // borrow the dome (re-parents it)
+      const rt = pmrem.fromScene(env, 0.04);
+      scene.add(sky); // give it back
+      scene.environment = rt.texture;
+      scene.environmentIntensity = 0.5; // fill, not wash-out
+      pmrem.dispose();
     },
   };
 }

@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { G, VOXEL_SIZE } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
-import { muzzleWorld, type MuzzleOut } from "./gunnery";
+import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld, velocityAtPoint, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
 
 /**
@@ -10,15 +10,14 @@ import type { Ship } from "./ship";
  * integrated manually (quadratic drag + gravity) — not rapier bodies — and
  * ray-march against target ships' voxel grids for impact detection.
  */
-const MUZZLE_SPEED = 55; // m/s
-const BALL_DRAG = 0.006;
 const MAX_BALLS = 64;
 // no stagger: every loaded gun fires the tick you click. Staggered barrels
 // launched later balls from a muzzle that had MOVED since the preview was
 // drawn — "it's not really firing along where the trajectory line is"
 // (playtest round 6: "fire all simultaneously with the left click")
 const STAGGER = 0;
-const BLAST_RADIUS_VOX = 1.7;
+// round 8: "faster and more powerful" — bigger bite per ball
+const BLAST_RADIUS_VOX = 2.1;
 
 interface Ball {
   alive: boolean;
@@ -131,11 +130,17 @@ export class Cannons {
       if (shot.delay > 0) continue;
       this.pendingShots.splice(s, 1);
       // the ball leaves the actual barrel tip, along the actual barrel axis,
-      // BARREL-TRUE: no inherited ship velocity. Physically honest carry
-      // tilted every shot off the visible bore at speed, and three playtests
-      // running read it as broken aim (round 7). Arcade beats Newton here.
+      // PLUS the ship's velocity at the muzzle. Round 7 stripped the carry
+      // because the preview didn't show it; round 8 put it back the right way
+      // around — "I do absolutely want the cannonballs to fire with the
+      // ship's velocity vector taken into account … But I also need the
+      // outline trajectory to be consistent with that." The aim arc now
+      // integrates from the SAME initial velocity, so line ≡ ball, underway
+      // or becalmed. (Without carry, broadsides visibly lagged the ship.)
       const m = muzzleWorld(shot.owner, shot.portIndex, shot.elevation, shot.traverse, this.tmpMuzzle);
-      this.launch(m.pos, m.dir);
+      velocityAtPoint(shot.owner, m.pos, this.tmpV);
+      this.launch(m.pos, m.dir, this.tmpV);
+      this.effects.muzzleFlash(m.pos, m.dir);
       this.effects.muzzleSmoke(m.pos, m.dir);
     }
 
@@ -191,10 +196,13 @@ export class Cannons {
           const removed = ship.applyDamage(hit.cell, BLAST_RADIUS_VOX);
           if (removed > 0) {
             const normal = this.tmpDir.copy(b.vel).normalize().negate();
-            this.effects.splinters(hit.world, normal);
-            // momentum transfer (6 kg ball)
+            // full drama: splinter storm + sparks + smoke + flash (round 8:
+            // "a more dramatic collection of effects when the cannonballs
+            // hit the other ship")
+            this.effects.impactBurst(hit.world, normal);
+            // momentum transfer (9 kg ball — round 8: "more powerful")
             ship.body.applyImpulseAtPoint(
-              { x: b.vel.x * 6, y: b.vel.y * 6, z: b.vel.z * 6 },
+              { x: b.vel.x * 9, y: b.vel.y * 9, z: b.vel.z * 9 },
               { x: hit.world.x, y: hit.world.y, z: hit.world.z },
               true,
             );
@@ -206,14 +214,14 @@ export class Cannons {
     }
   }
 
-  private launch(pos: THREE.Vector3, dir: THREE.Vector3): void {
+  private launch(pos: THREE.Vector3, dir: THREE.Vector3, baseVel: THREE.Vector3): void {
     const b = this.balls.find((x) => !x.alive);
     if (!b) return;
     b.alive = true;
     b.age = 0;
     b.pos.copy(pos);
     b.prev.copy(pos);
-    b.vel.copy(dir).multiplyScalar(MUZZLE_SPEED);
+    b.vel.copy(dir).multiplyScalar(MUZZLE_SPEED).add(baseVel);
     b.mesh.visible = true;
     b.mesh.position.copy(pos);
   }

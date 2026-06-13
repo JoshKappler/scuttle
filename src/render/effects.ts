@@ -1,11 +1,16 @@
 import * as THREE from "three";
 
 /**
- * One pooled particle system for all transient effects: muzzle smoke, water
- * splashes, wood splinters. CPU-integrated points — cheap and plenty for the
- * particle counts involved.
+ * Pooled particle systems for all transient effects. Two layers:
+ *  - `points`: normal-blended motes (smoke, splinters, spray, blood)
+ *  - `fire`: additive-blended hot stuff (muzzle flame, sparks, embers)
+ * plus a small pool of PointLights for muzzle/impact flashes. The lights are
+ * pre-added at intensity 0 — adding a light at runtime recompiles every
+ * shader in the scene, which is a guaranteed hitch mid-broadside.
  */
 const MAX = 1200;
+const MAX_FIRE = 480;
+const FLASH_POOL = 5;
 
 interface Particle {
   life: number; // remaining s
@@ -17,30 +22,84 @@ interface Particle {
   drag: number;
 }
 
+interface Layer {
+  geo: THREE.BufferGeometry;
+  positions: Float32Array;
+  colors: Float32Array;
+  particles: (Particle | null)[];
+  cursor: number;
+  max: number;
+}
+
+function makeLayer(max: number, size: number, additive: boolean): { layer: Layer; points: THREE.Points } {
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(max * 3);
+  const colors = new Float32Array(max * 3);
+  positions.fill(-5000); // park dead particles far below the world
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.PointsMaterial({
+    size,
+    vertexColors: true,
+    transparent: true,
+    opacity: additive ? 1 : 0.85,
+    depthWrite: false,
+    sizeAttenuation: true,
+    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+  });
+  const points = new THREE.Points(geo, mat);
+  points.frustumCulled = false;
+  return {
+    layer: { geo, positions, colors, particles: new Array(max).fill(null), cursor: 0, max },
+    points,
+  };
+}
+
 export class Effects {
+  /** Add THIS to the scene — contains both particle layers and the lights. */
+  readonly group = new THREE.Group();
+  /** Kept for back-compat with existing scene.add(effects.points) callers. */
   readonly points: THREE.Points;
-  private geo: THREE.BufferGeometry;
-  private positions = new Float32Array(MAX * 3);
-  private colors = new Float32Array(MAX * 3);
-  private particles: (Particle | null)[] = new Array(MAX).fill(null);
-  private cursor = 0;
+
+  private smoke: Layer;
+  private fire: Layer;
+  private flashes: { light: THREE.PointLight; life: number; maxLife: number; peak: number }[] = [];
 
   constructor() {
-    this.geo = new THREE.BufferGeometry();
-    this.geo.setAttribute("position", new THREE.BufferAttribute(this.positions, 3));
-    this.geo.setAttribute("color", new THREE.BufferAttribute(this.colors, 3));
-    const mat = new THREE.PointsMaterial({
-      size: 0.55,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.85,
-      depthWrite: false,
-      sizeAttenuation: true,
-    });
-    this.points = new THREE.Points(this.geo, mat);
-    this.points.frustumCulled = false;
-    // park dead particles far below the world
-    this.positions.fill(-5000);
+    const s = makeLayer(MAX, 0.55, false);
+    this.smoke = s.layer;
+    this.points = s.points;
+    this.group.add(s.points);
+    const f = makeLayer(MAX_FIRE, 0.85, true);
+    this.fire = f.layer;
+    this.group.add(f.points);
+    for (let i = 0; i < FLASH_POOL; i++) {
+      const light = new THREE.PointLight(0xffb05a, 0, 34, 2);
+      this.group.add(light);
+      this.flashes.push({ light, life: 0, maxLife: 1, peak: 0 });
+    }
+  }
+
+  private spawnInto(
+    L: Layer,
+    x: number,
+    y: number,
+    z: number,
+    v: [number, number, number],
+    life: number,
+    color: [number, number, number],
+    gravity: number,
+    drag: number,
+  ): void {
+    const i = L.cursor;
+    L.cursor = (L.cursor + 1) % L.max;
+    L.particles[i] = { life, maxLife: life, vx: v[0], vy: v[1], vz: v[2], gravity, drag };
+    L.positions[i * 3] = x;
+    L.positions[i * 3 + 1] = y;
+    L.positions[i * 3 + 2] = z;
+    L.colors[i * 3] = color[0];
+    L.colors[i * 3 + 1] = color[1];
+    L.colors[i * 3 + 2] = color[2];
   }
 
   private spawn(
@@ -53,15 +112,105 @@ export class Effects {
     gravity: number,
     drag: number,
   ): void {
-    const i = this.cursor;
-    this.cursor = (this.cursor + 1) % MAX;
-    this.particles[i] = { life, maxLife: life, vx: v[0], vy: v[1], vz: v[2], gravity, drag };
-    this.positions[i * 3] = x;
-    this.positions[i * 3 + 1] = y;
-    this.positions[i * 3 + 2] = z;
-    this.colors[i * 3] = color[0];
-    this.colors[i * 3 + 1] = color[1];
-    this.colors[i * 3 + 2] = color[2];
+    this.spawnInto(this.smoke, x, y, z, v, life, color, gravity, drag);
+  }
+
+  /** Short light pop (muzzle blast, ball strike). */
+  flash(p: THREE.Vector3, peak = 70, life = 0.12, color = 0xffb05a): void {
+    let best = this.flashes[0];
+    for (const f of this.flashes) if (f.life < best.life) best = f;
+    best.life = life;
+    best.maxLife = life;
+    best.peak = peak;
+    best.light.color.set(color);
+    best.light.position.copy(p);
+    best.light.intensity = peak;
+  }
+
+  /** Fire and brimstone out the bore (round 8: "a flash of flame and fire
+   *  out the front when they fire"). Pair with muzzleSmoke. */
+  muzzleFlash(p: THREE.Vector3, dir: THREE.Vector3): void {
+    // flame tongue: fast, hot, dies in a tenth of a second
+    for (let i = 0; i < 18; i++) {
+      const s = 13 + Math.random() * 14;
+      this.spawnInto(
+        this.fire,
+        p.x,
+        p.y,
+        p.z,
+        [
+          dir.x * s + (Math.random() - 0.5) * 3.4,
+          dir.y * s + (Math.random() - 0.5) * 3.4,
+          dir.z * s + (Math.random() - 0.5) * 3.4,
+        ],
+        0.07 + Math.random() * 0.12,
+        [1.0, 0.62 + Math.random() * 0.25, 0.22],
+        0,
+        4.5,
+      );
+    }
+    // embers that tumble into the sea
+    for (let i = 0; i < 7; i++) {
+      const s = 5 + Math.random() * 7;
+      this.spawnInto(
+        this.fire,
+        p.x,
+        p.y,
+        p.z,
+        [
+          dir.x * s + (Math.random() - 0.5) * 2.4,
+          dir.y * s + Math.random() * 1.6,
+          dir.z * s + (Math.random() - 0.5) * 2.4,
+        ],
+        0.3 + Math.random() * 0.35,
+        [1.0, 0.45, 0.12],
+        -6,
+        1.2,
+      );
+    }
+    this.flash(p, 85, 0.12);
+  }
+
+  /** The full carnage package where a ball strikes timber (round 8: "a more
+   *  dramatic collection of effects when the cannonballs hit"). */
+  impactBurst(p: THREE.Vector3, normal: THREE.Vector3): void {
+    this.splinters(p, normal);
+    // hot sparks off the strike
+    for (let i = 0; i < 16; i++) {
+      this.spawnInto(
+        this.fire,
+        p.x,
+        p.y,
+        p.z,
+        [
+          normal.x * 6 + (Math.random() - 0.5) * 9,
+          2 + Math.random() * 6,
+          normal.z * 6 + (Math.random() - 0.5) * 9,
+        ],
+        0.3 + Math.random() * 0.3,
+        [1.0, 0.55 + Math.random() * 0.3, 0.16],
+        -5,
+        1.4,
+      );
+    }
+    // lingering dust/smoke rolling off the wound
+    for (let i = 0; i < 12; i++) {
+      this.spawn(
+        p.x,
+        p.y,
+        p.z,
+        [
+          normal.x * 2 + (Math.random() - 0.5) * 2.6,
+          0.8 + Math.random() * 1.6,
+          normal.z * 2 + (Math.random() - 0.5) * 2.6,
+        ],
+        1.3 + Math.random() * 1.1,
+        [0.5, 0.47, 0.43],
+        0.5,
+        2.2,
+      );
+    }
+    this.flash(p, 55, 0.11, 0xffa64a);
   }
 
   muzzleSmoke(p: THREE.Vector3, dir: THREE.Vector3): void {
@@ -102,16 +251,39 @@ export class Effects {
     }
   }
 
+  /** Directional sheet of spray (bow plunging through a sea). */
+  spray(x: number, y: number, z: number, dirX: number, dirZ: number, strength = 1): void {
+    const n = Math.round(10 * strength);
+    for (let i = 0; i < n; i++) {
+      const a = (Math.random() - 0.5) * 1.7;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      const dx = dirX * c - dirZ * s;
+      const dz = dirX * s + dirZ * c;
+      const v = 2.5 + Math.random() * 4 * strength;
+      this.spawn(
+        x + (Math.random() - 0.5) * 1.6,
+        y,
+        z + (Math.random() - 0.5) * 1.6,
+        [dx * v, 2.2 + Math.random() * 3.2 * strength, dz * v],
+        0.6 + Math.random() * 0.5,
+        [0.9, 0.96, 0.97],
+        -9.81,
+        0.5,
+      );
+    }
+  }
+
   splinters(p: THREE.Vector3, normal: THREE.Vector3): void {
-    for (let i = 0; i < 18; i++) {
+    for (let i = 0; i < 26; i++) {
       this.spawn(
         p.x,
         p.y,
         p.z,
         [
-          normal.x * 4 + (Math.random() - 0.5) * 6,
-          2.5 + Math.random() * 4,
-          normal.z * 4 + (Math.random() - 0.5) * 6,
+          normal.x * 4 + (Math.random() - 0.5) * 7,
+          2.5 + Math.random() * 4.5,
+          normal.z * 4 + (Math.random() - 0.5) * 7,
         ],
         0.7 + Math.random() * 0.8,
         [0.32, 0.22, 0.13],
@@ -137,25 +309,36 @@ export class Effects {
     }
   }
 
-  update(dt: number): void {
-    for (let i = 0; i < MAX; i++) {
-      const p = this.particles[i];
+  private updateLayer(L: Layer, dt: number): void {
+    for (let i = 0; i < L.max; i++) {
+      const p = L.particles[i];
       if (!p) continue;
       p.life -= dt;
       if (p.life <= 0) {
-        this.particles[i] = null;
-        this.positions[i * 3 + 1] = -5000;
+        L.particles[i] = null;
+        L.positions[i * 3 + 1] = -5000;
         continue;
       }
       const dragF = Math.max(1 - p.drag * dt, 0);
       p.vx *= dragF;
       p.vy = p.vy * dragF + p.gravity * dt;
       p.vz *= dragF;
-      this.positions[i * 3] += p.vx * dt;
-      this.positions[i * 3 + 1] += p.vy * dt;
-      this.positions[i * 3 + 2] += p.vz * dt;
+      L.positions[i * 3] += p.vx * dt;
+      L.positions[i * 3 + 1] += p.vy * dt;
+      L.positions[i * 3 + 2] += p.vz * dt;
     }
-    this.geo.attributes.position.needsUpdate = true;
-    this.geo.attributes.color.needsUpdate = true;
+    L.geo.attributes.position.needsUpdate = true;
+    L.geo.attributes.color.needsUpdate = true;
+  }
+
+  update(dt: number): void {
+    this.updateLayer(this.smoke, dt);
+    this.updateLayer(this.fire, dt);
+    for (const f of this.flashes) {
+      if (f.life <= 0) continue;
+      f.life -= dt;
+      const k = Math.max(f.life / f.maxLife, 0);
+      f.light.intensity = f.peak * k * k;
+    }
   }
 }

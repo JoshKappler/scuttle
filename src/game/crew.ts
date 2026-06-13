@@ -229,12 +229,13 @@ export class Pirate {
   private atHelm = false;
   private helmRudder = 0;
   private armBones: Record<string, THREE.Object3D> | null = null;
-  /** Arm rotations as the MIXER last wrote them — the helm pose offsets are
-   *  applied against this snapshot, so applying the pose twice between mixer
-   *  updates is idempotent. The old relative `-=` version stacked offsets
-   *  whenever pose ran more often than the mixer: "the captain's arm is
-   *  absolutely spasming and going crazy" (round 7). */
-  private armBase: Record<string, number> | null = null;
+  /** Arm-bone orientations FROZEN when the wheel was taken (snapshotted after
+   *  one mixer update). Round 7 overrode only rotation.x against a per-frame
+   *  base — the idle clip kept playing the other two axes underneath, so the
+   *  arm gesticulated right through the grip ("the total right arm spasm …
+   *  really all the time", round 8). At the helm the mixer now has NO say
+   *  over the arms: frozen grip + rudder lean, nothing else moves them. */
+  private helmGrip: Map<string, THREE.Quaternion> | null = null;
 
   private findArmBones(): Record<string, THREE.Object3D> {
     if (!this.armBones) {
@@ -246,28 +247,26 @@ export class Pirate {
     return this.armBones;
   }
 
-  /** Snapshot the mixer's arm pose. Call right after every mixer update
-   *  while at the helm. */
-  private captureArmBase(): void {
-    if (!this.rig) return;
-    const bones = this.findArmBones();
-    this.armBase ??= {};
-    for (const name of Object.keys(bones)) this.armBase[name] = bones[name].rotation.x;
-  }
-
   /** Helmsman pose: both arms reach forward to the wheel rim and lean with
    *  the set rudder (round 6). Applied ONCE per render frame, after all
-   *  fixed steps, ABSOLUTELY against the captured mixer pose — never
-   *  relative to whatever happens to be in the bones. */
+   *  fixed steps, from the frozen grip — the playing idle clip cannot move
+   *  the arms through it. */
   postPose(): void {
-    if (!this.atHelm || !this.rig || !this.armBase) return;
+    if (!this.atHelm || !this.rig || !this.helmGrip) return;
     const b = this.findArmBones();
-    const base = this.armBase;
     const r = this.helmRudder;
-    if (b.UpperArmL) b.UpperArmL.rotation.x = base.UpperArmL - (1.05 - r * 0.3);
-    if (b.UpperArmR) b.UpperArmR.rotation.x = base.UpperArmR - (1.05 + r * 0.3);
-    if (b.LowerArmL) b.LowerArmL.rotation.x = base.LowerArmL - 0.38;
-    if (b.LowerArmR) b.LowerArmR.rotation.x = base.LowerArmR - 0.38;
+    const lean: Record<string, number> = {
+      UpperArmL: -(1.05 - r * 0.3),
+      UpperArmR: -(1.05 + r * 0.3),
+      LowerArmL: -0.38,
+      LowerArmR: -0.38,
+    };
+    for (const name of Object.keys(b)) {
+      const frozen = this.helmGrip.get(name);
+      if (!frozen) continue;
+      b[name].quaternion.copy(frozen);
+      b[name].rotateX(lean[name] ?? 0);
+    }
   }
 
   /** Move one fixed step. moveX/moveZ are a world-space direction (≤1). */
@@ -281,6 +280,7 @@ export class Pirate {
     sprint = false,
   ): void {
     this.atHelm = false;
+    this.helmGrip = null; // next helm session snapshots a fresh grip
     this.attackTimer = Math.max(this.attackTimer - dt, 0);
     this.kickTimer = Math.max(this.kickTimer - dt, 0);
     this.rig?.update(dt);
@@ -414,7 +414,13 @@ export class Pirate {
     this.tickStamina(dt, false);
     this.setAnim("idle");
     this.rig?.update(dt);
-    if (this.atHelm) this.captureArmBase();
+    // first tick at the wheel: freeze the grip from the just-written mixer
+    // pose, once — postPose owns the arms entirely from here
+    if (this.atHelm && !this.helmGrip && this.rig) {
+      const bones = this.findArmBones();
+      this.helmGrip = new Map();
+      for (const name of Object.keys(bones)) this.helmGrip.set(name, bones[name].quaternion.clone());
+    }
     if (this.fpHide && this.rig?.head) this.rig.head.scale.setScalar(0.001);
   }
 
