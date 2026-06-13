@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { Rng } from "./core/rng";
 import { makeWaves, surfaceHeight } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
+import { SeamMask } from "./render/seamMask";
 import { createOceanField } from "./render/oceanField";
 import { createSky } from "./render/sky";
 import { buildBrig, buildSloop } from "./sim/shipwright";
@@ -99,6 +100,11 @@ async function main() {
     enemy.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
   }
   world.addShip(enemy);
+
+  // stencil seam mask: each frame, paint both hull silhouettes into the
+  // stencil buffer before the ocean draws; the ocean's NotEqual stencil test
+  // then rejects those pixels (no sea on the deck, in the hold, or bow void).
+  const seam = new SeamMask([sloop.visual.group, enemy.visual.group]);
 
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
@@ -801,7 +807,12 @@ async function main() {
 
     oceanField.update(world.simTime);
     ocean.update(world.simTime, camera.position);
-    renderer.render(scene, camera);
+    renderer.autoClear = true;
+    renderer.clear(); // clears color + depth + stencil
+    renderer.autoClear = false;
+    seam.write(renderer, scene, camera); // hull → stencil (no color/depth)
+    renderer.render(scene, camera);      // full scene incl. ocean, stencil-tested
+    renderer.autoClear = true;
 
     updateHud(dt, tr);
   });

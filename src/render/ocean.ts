@@ -441,6 +441,15 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     depthWrite: true,
     side: THREE.DoubleSide, // a submerged camera must see the surface above
     // it, not a missing polygon that cuts straight to the skybox (playtest)
+    // stencil seam mask: the SeamMask pre-pass writes 1 into every hull-
+    // silhouette pixel; the ocean draws only where stencil != 1, so no sea
+    // lands on the deck, in an open hold, or as a void at the curved bow.
+    stencilWrite: true,
+    stencilRef: 1,
+    stencilFunc: THREE.NotEqualStencilFunc,
+    stencilFail: THREE.KeepStencilOp,
+    stencilZFail: THREE.KeepStencilOp,
+    stencilZPass: THREE.KeepStencilOp,
     uniforms: {
       uTime: { value: 0 },
       uWaveA: { value: a },
