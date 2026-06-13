@@ -52,8 +52,13 @@ export class GameWorld {
     }
     for (const ship of this.ships) {
       ship.visual.refresh();
-      ship.visual.updateWater(ship.build.compartments);
+      // syncVisual FIRST: the flood fluid reads the ship group's world
+      // transform to hold its surfaces world-level and clip them to the heeled
+      // hull, so the group must carry the fresh body transform before
+      // updateWater runs. (No camera is available at this seam — the fluid
+      // shades from straight above when none is passed.)
       ship.syncVisual();
+      ship.visual.updateWater(ship.build.compartments, undefined, dt);
     }
   }
 }

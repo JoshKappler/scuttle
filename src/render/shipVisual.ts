@@ -10,6 +10,7 @@ import {
   TRUNNION_OUT_B,
 } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
+import { CompartmentFluid } from "./compartmentFluid";
 import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
 
@@ -37,7 +38,9 @@ export class ShipVisual {
   private hullMaterial: THREE.MeshStandardMaterial;
   private build: ShipBuild;
 
-  private waterMeshes = new Map<number, THREE.Mesh>();
+  /** Real clipped, world-leveled, sloshing flood fluid (round 14): replaced the
+   *  emissive blue compartment cubes. */
+  private fluid: CompartmentFluid;
   /** Sails by mast, for ball-vs-cloth tests and hole decals. */
   readonly sails: SailRecord[] = [];
   private mastRigs: { group: THREE.Group; fallT: number; fallAxis: THREE.Vector3 }[] = [];
@@ -119,34 +122,15 @@ export class ShipVisual {
     };
     this.remeshAll();
     this.addRig();
-    this.addWaterPlanes();
+    // real flood fluid (round 14): clipped, world-leveled, sloshing surfaces per
+    // compartment, parented under the ship group. Replaces the emissive blue
+    // cubes (addWaterPlanes/updateWater) that stayed parallel to the tilted deck.
+    this.fluid = new CompartmentFluid(this.build.compartments);
+    this.group.add(this.fluid.group);
     // NOTE: the old "interior shell" black box that used to hide the ocean
     // inside the hull during cutaway is gone — the ocean itself now gets a
     // hole punched around the ship (ocean.setCutawayHole), so the interior
     // shows real timber and real flood water only.
-  }
-
-  /** One translucent box per compartment, scaled to its fill level. */
-  private addWaterPlanes(): void {
-    // self-lit: the hull interior is in deep shadow during cutaway, and an
-    // unlit water box read as just more darkness (playtest round 4)
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x2e8aa0,
-      emissive: 0x1a5a6a,
-      emissiveIntensity: 0.85,
-      transparent: true,
-      opacity: 0.85,
-      roughness: 0.2,
-      depthWrite: false,
-    });
-    const geo = new THREE.BoxGeometry(1, 1, 1);
-    geo.translate(0, 0.5, 0); // origin at the bottom face
-    for (const c of this.build.compartments) {
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.visible = false;
-      this.group.add(mesh);
-      this.waterMeshes.set(c.id, mesh);
-    }
   }
 
   /** Per-frame rig animation: sail flutter/fill, rudder + wheel answer the
@@ -215,31 +199,15 @@ export class ShipVisual {
     this.hullMaterial.needsUpdate = true;
   }
 
-  /** Reflect current flooding levels. Call once per frame. Water boxes show
-   *  whenever a compartment holds water — through hatches and shot holes,
-   *  not only in cutaway (round 7: "the only time there should be water in
-   *  the boat is when it is flooding … proportionate to how far along in
-   *  the sinking process it is"). */
-  updateWater(compartments: Compartment[]): void {
-    for (const c of compartments) {
-      const mesh = this.waterMeshes.get(c.id);
-      if (!mesh) continue;
-      const fill = c.waterVolume / c.volume;
-      if (fill < 0.01) {
-        mesh.visible = false;
-        continue;
-      }
-      mesh.visible = true;
-      const w = (c.bboxMax[0] + 1 - c.bboxMin[0]) * VOXEL_SIZE;
-      const h = (c.bboxMax[1] + 1 - c.bboxMin[1]) * VOXEL_SIZE;
-      const d = (c.bboxMax[2] + 1 - c.bboxMin[2]) * VOXEL_SIZE;
-      mesh.position.set(
-        ((c.bboxMin[0] + c.bboxMax[0] + 1) / 2) * VOXEL_SIZE,
-        c.bboxMin[1] * VOXEL_SIZE,
-        ((c.bboxMin[2] + c.bboxMax[2] + 1) / 2) * VOXEL_SIZE,
-      );
-      mesh.scale.set(w * 0.98, Math.max(h * fill, 0.02), d * 0.98);
-    }
+  /** Reflect current flooding levels. Call once per frame, AFTER syncVisual()
+   *  so the ship group's transform is current (the fluid reads it to hold the
+   *  surfaces world-level and to clip them to the heeled hull). Water shows
+   *  whenever a compartment holds water — through hatches and shot holes, not
+   *  only in cutaway (round 7: "the only time there should be water in the boat
+   *  is when it is flooding … proportionate to how far along in the sinking
+   *  process it is"). `cameraPos` shades the surface; `dt` advances the slosh. */
+  updateWater(compartments: Compartment[], cameraPos: THREE.Vector3 | undefined, dt: number): void {
+    this.fluid.update(compartments, cameraPos, dt);
   }
 
   /** Tear a ragged shot hole in a sail at the ship-local crossing point. */
