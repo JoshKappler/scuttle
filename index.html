@@ -11,7 +11,12 @@
       #app { width: 100%; height: 100%; }
       #app canvas { display: block; }
       #hud { display: none; }
-      .panel { position: fixed; background: linear-gradient(170deg, rgba(34,24,14,0.86), rgba(18,12,7,0.92)); border: 1px solid rgba(201,162,39,0.55); outline: 1px solid rgba(201,162,39,0.18); outline-offset: 3px; border-radius: 4px; color: #d8c9a3; font: 12px/1.5 Georgia, "Times New Roman", serif; padding: 11px 15px; user-select: none; pointer-events: none; box-shadow: 0 5px 20px rgba(0,0,0,0.55), inset 0 0 22px rgba(0,0,0,0.35); }
+      .panel { position: fixed; background:
+          repeating-linear-gradient(100deg, rgba(255,235,200,0.016) 0 2px, transparent 2px 5px),
+          radial-gradient(ellipse at 30% 0%, rgba(96,66,28,0.30), transparent 60%),
+          linear-gradient(170deg, rgba(38,26,14,0.93), rgba(16,10,5,0.96));
+        border: 2px solid #8a6c2a; outline: 1px solid rgba(201,162,39,0.35); outline-offset: 3px; border-radius: 5px; color: #d8c9a3; font: 12px/1.5 Georgia, "Times New Roman", serif; padding: 14px 16px 12px; user-select: none; pointer-events: none; box-shadow: 0 6px 24px rgba(0,0,0,0.65), inset 0 0 26px rgba(0,0,0,0.45), inset 0 1px 0 rgba(232,212,160,0.14); }
+      .plate { position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: linear-gradient(180deg, #4a3414, #281a08); border: 1px solid #c9a227; border-radius: 3px; padding: 1px 12px; font: 700 10px/1.5 Georgia, serif; font-variant: small-caps; letter-spacing: 0.16em; color: #e8d49e; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.6); }
       #ship-panel { left: 14px; bottom: 14px; min-width: 215px; }
       #ship-panel .speed { font: 700 30px/1 Georgia, serif; color: #efe3c2; }
       #ship-panel .speed small { font-size: 13px; color: #b59d6b; font-style: italic; }
@@ -21,6 +26,7 @@
       .bar > div { height: 100%; background: linear-gradient(180deg, #b08d3c, #8a6c2a); width: 0%; transition: width 0.2s; }
       .bar.flood > div { background: linear-gradient(180deg, #3f7e9e, #2c5871); }
       .bar.hp > div { background: linear-gradient(180deg, #a8392c, #7c2a20); }
+      .bar.stam > div { background: linear-gradient(180deg, #74a368, #44663a); }
       .bar.rudder { position: relative; overflow: visible; }
       .bar.rudder::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: rgba(216,201,163,0.55); }
       .bar.rudder > div { position: absolute; top: -2px; width: 9px; height: 11px; left: 50%; transform: translateX(-50%); background: #d8b24a; border: 1px solid #6b521c; border-radius: 2px; transition: left 0.1s linear; }
@@ -29,8 +35,8 @@
       #gun-status.ready { color: #93b56b; }
       #gun-sub { color: #a8895c; font-size: 11px; margin-top: 4px; font-style: italic; }
       #gold-panel { right: 14px; top: 14px; font: 700 18px Georgia, serif; color: #d8b24a; }
-      #compass { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); width: 98px; height: 98px; pointer-events: none; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.5)); }
-      #compass .ring { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(38,28,16,0.78) 52%, rgba(20,14,8,0.92)); border: 2px solid rgba(201,162,39,0.65); box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), inset 0 0 16px rgba(0,0,0,0.55); }
+      #compass { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); width: 104px; height: 104px; pointer-events: none; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.55)); }
+      #compass .ring { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(44,32,17,0.85) 48%, rgba(20,14,8,0.95)); border: 3px solid #b08d3c; box-shadow: 0 0 0 1px #5e4516, inset 0 0 0 2px rgba(0,0,0,0.65), inset 0 0 0 3px rgba(201,162,39,0.4), inset 0 0 18px rgba(0,0,0,0.6); }
       #compass .rose { position: absolute; inset: 7px; border-radius: 50%; transition: transform 0.1s linear; }
       #compass .rose .n { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); color: #d8b24a; font: 700 14px Georgia, serif; }
       #compass .rose .pt { position: absolute; color: #cdbb91; font: 700 11px Georgia, serif; }
@@ -52,12 +58,24 @@
       #hints { position: fixed; bottom: 4px; left: 50%; transform: translateX(-50%); color: rgba(216,201,163,0.6); font: 11px Georgia, serif; font-variant: small-caps; letter-spacing: 0.04em; pointer-events: none; white-space: pre; }
       #banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: #efe3c2; font: 700 44px/1.3 Georgia, serif; letter-spacing: 0.06em; text-shadow: 0 2px 18px #000; background: radial-gradient(ellipse at center, rgba(20,14,6,0.3), rgba(12,8,4,0.82)); user-select: none; }
       #banner small { font: italic 400 16px Georgia, serif; color: #b59d6b; }
+      /* spyglass (round 7): circular brass-rimmed viewport, raised with a
+         little flourish; the wheel works the draw-tube (FOV) while it's up */
+      #spyglass { position: fixed; inset: 0; pointer-events: none; opacity: 0; display: grid; place-items: center; transition: opacity 0.13s ease-out; z-index: 5; }
+      #spyglass.up { opacity: 1; }
+      #spyglass .mask { position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, transparent 0, transparent 35.6vmin, rgba(7,4,2,0.988) 36.4vmin); }
+      #spyglass .lens { position: relative; width: 72vmin; height: 72vmin; border-radius: 50%; transform: scale(1.22); transition: transform 0.19s cubic-bezier(0.2, 1.4, 0.4, 1); box-shadow: inset 0 0 12vmin rgba(0,0,0,0.78), inset 0 0 2.6vmin rgba(18,40,48,0.55), 0 0 0 1.1vmin #221709, 0 0 0 1.8vmin #c9a227, 0 0 0 2.1vmin #5e4516, 0 1vmin 4vmin rgba(0,0,0,0.9); }
+      #spyglass.up .lens { transform: scale(1); }
+      #spyglass .lens::before { content: ""; position: absolute; inset: 0; border-radius: 50%; box-shadow: inset 0.5vmin 0 1.4vmin rgba(111,211,227,0.16), inset -0.5vmin 0 1.4vmin rgba(227,150,60,0.14); }
+      #spyglass .lens::after { content: ""; position: absolute; inset: 11%; border-radius: 50%; border: 1px solid rgba(216,201,163,0.12); }
+      #fs-btn { position: fixed; top: 14px; left: 14px; width: 36px; height: 36px; display: grid; place-items: center; background: linear-gradient(170deg, rgba(38,26,14,0.93), rgba(16,10,5,0.96)); border: 2px solid #8a6c2a; border-radius: 5px; color: #d8b24a; font: 700 17px Georgia, serif; cursor: pointer; pointer-events: auto; user-select: none; box-shadow: 0 4px 14px rgba(0,0,0,0.55); }
+      #fs-btn:hover { color: #efe3c2; border-color: #c9a227; }
     </style>
   </head>
   <body>
     <div id="app"></div>
     <div id="hud"></div>
     <div id="ship-panel" class="panel">
+      <div class="plate">Helm &amp; Hull</div>
       <div class="speed"><span id="spd">0.0</span> <small>kn</small></div>
       <div class="row"><span class="lbl">Sails</span><div class="bar"><div id="sails-bar"></div></div></div>
       <div class="row"><span class="lbl">Rudder</span><div class="bar rudder"><div id="rudder-ind"></div></div></div>
@@ -68,13 +86,17 @@
       </div>
       <div class="row"><span class="lbl">Crew</span><span id="crew-line">planks 8 · pump off</span></div>
       <div class="row" id="hp-row" style="display:none"><span class="lbl">Health</span><div class="bar hp"><div id="hp-bar"></div></div></div>
+      <div class="row" id="stam-row" style="display:none"><span class="lbl">Wind</span><div class="bar stam"><div id="stam-bar"></div></div></div>
     </div>
     <div id="gun-panel" class="panel">
+      <div class="plate">Gunnery</div>
       <div id="gun-status">READY</div>
-      <div class="bar" style="margin-top:6px"><div id="gun-bar" style="background:#e3b341"></div></div>
+      <div class="bar" style="margin-top:6px"><div id="gun-bar"></div></div>
       <div id="gun-sub">elevation 4.0°</div>
     </div>
     <div id="gold-panel" class="panel">⛀ <span id="gold">0</span></div>
+    <div id="fs-btn" title="fullscreen (F)">⛶</div>
+    <div id="spyglass"><div class="mask"></div><div class="lens"></div></div>
     <div id="compass">
       <div class="ring"></div>
       <div class="rose" id="rose">

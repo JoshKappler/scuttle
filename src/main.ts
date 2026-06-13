@@ -337,6 +337,13 @@ async function main() {
     sloop.localToWorld([(fp.minX + fp.maxX) / 2, 2, fp.zC], holeCenter);
     ocean.updateCutaway(holeCenter, holeFwd.x, holeFwd.z, cutPlane);
   };
+  // fullscreen (round 7): F or the brass corner button
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen();
+  };
+  document.getElementById("fs-btn")!.addEventListener("click", toggleFullscreen);
+
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
     if (e.code === "KeyV" && boarding.player) {
@@ -344,6 +351,7 @@ async function main() {
       boarding.player.setFirstPerson(firstPerson);
       controls.syncFirstPerson(firstPerson);
     }
+    if (e.code === "KeyF") toggleFullscreen();
     if (e.code === "KeyX") {
       cutaway = !cutaway;
       for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
@@ -379,6 +387,9 @@ async function main() {
     crewLine: $("crew-line"),
     hpRow: $("hp-row"),
     hpBar: $("hp-bar"),
+    stamRow: $("stam-row"),
+    stamBar: $("stam-bar"),
+    spyglass: $("spyglass"),
     gunStatus: $("gun-status"),
     gunBar: $("gun-bar"),
     gunSub: $("gun-sub"),
@@ -467,11 +478,13 @@ async function main() {
 
     hudEls.hpRow.style.display = onFoot ? "flex" : "none";
     if (onFoot) hudEls.hpBar.style.width = `${(boarding.playerHp / 5) * 100}%`;
+    hudEls.stamRow.style.display = onFoot ? "flex" : "none";
+    if (onFoot && boarding.player) hudEls.stamBar.style.width = `${boarding.player.stamina * 100}%`;
 
     const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
     hudEls.hints.textContent = onFoot
-      ? `${lockHint}WASD move · Space jump · LMB slash · hold RMB aim guns + LMB fire · C kick · E wheel/grab · V view · G grapple${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : `${lockHint}W/S sails · A/D helm (holds where set) · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plank · P pump · G grapple · X cutaway`;
+      ? `${lockHint}WASD move · Shift sprint · Space jump · LMB slash · hold RMB aim + LMB fire · C kick · E wheel/grab · V view · F fullscreen${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
+      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass (wheel zooms) · R plank · P pump · G grapple · F fullscreen`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
@@ -651,12 +664,14 @@ async function main() {
       controls.updateCamera(camera, new THREE.Vector3(c0.x, c0.y + Math.max(deckLift, 2.5), c0.z));
     }
 
-    // spyglass zoom (Q) — wheel works the draw-tube while it's up
+    // spyglass zoom (Q) — wheel works the draw-tube while it's up; the brass
+    // viewport overlay raises with it (round 7)
     const targetFov = controls.spyglass ? controls.spyFov : 60;
     if (Math.abs(camera.fov - targetFov) > 0.1) {
       camera.fov += (targetFov - camera.fov) * 0.18;
       camera.updateProjectionMatrix();
     }
+    hudEls.spyglass.classList.toggle("up", controls.spyglass);
 
     // submerged camera: the sea closes over the lens — teal murk + dense fog
     // instead of a clean cut to the skybox (playtest round 4)
