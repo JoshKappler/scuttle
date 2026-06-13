@@ -76,7 +76,7 @@ export function createSky(): SkySetup {
       const rt = pmrem.fromScene(env, 0.04);
       scene.add(sky); // give it back
       scene.environment = rt.texture;
-      scene.environmentIntensity = 0.5; // fill, not wash-out
+      scene.environmentIntensity = 0.72; // fill, not wash-out
       pmrem.dispose();
     },
   };

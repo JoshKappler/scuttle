@@ -69,14 +69,21 @@ async function main() {
   ocean.setFootprint(sloopBuild.lengthM / 2 + 1.2, sloopBuild.beamM / 2 + 1.0);
 
   // enemy captain: the old, smaller sloop — kept as the easier opponent
-  // (round 6) — spawns upwind and runs down on you
+  // (round 6) — spawns upwind, ALREADY POINTED AT YOU, and runs down on you
+  // (round 8: 250 m + a random heading meant a minute of "running away"
+  // before first contact)
   const enemyBuild = buildSloop();
   const enemyVisual = new ShipVisual(enemyBuild);
   const enemy = new Ship(physics, enemyBuild, enemyVisual, {
-    x: -9 - waves[0].dirX * 250,
+    x: -9 - waves[0].dirX * 160,
     y: 0.2,
-    z: -3 - waves[0].dirZ * 250,
+    z: -3 - waves[0].dirZ * 160,
   });
+  {
+    const etr = enemy.body.translation();
+    const ea = -Math.atan2(-3 - etr.z, -9 - etr.x);
+    enemy.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
+  }
   world.addShip(enemy);
 
   // wind blows with the dominant swell

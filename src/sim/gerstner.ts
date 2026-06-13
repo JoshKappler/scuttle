@@ -30,7 +30,10 @@ export interface Wave {
  */
 export function makeWaves(rng: Rng, count = 16): Wave[] {
   const primary = rng.range(0, Math.PI * 2);
-  const L_MAX = 90; // m — long ocean swell
+  // 70 m, not 90: the 90 m swell's phase speed (~23 kn) matched the brig's
+  // full-sail speed and she'd LOCK ONTO a wave back, parked bow-up for
+  // minutes (real surfing, bad game feel). At 70 m she overtakes the sea.
+  const L_MAX = 70; // m — long ocean swell
   const L_MIN = 3.5; // m — wind chop
   const waves: Wave[] = [];
   for (let i = 0; i < count; i++) {

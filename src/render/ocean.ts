@@ -172,7 +172,9 @@ void main() {
     float ridge = exp(-pow((abs(across) - (hB + 0.4)) / 1.5, 2.0));
     float span = smoothstep(-hL * 0.35, hL * 0.55, along) * (1.0 - smoothstep(hL * 0.8, hL * 1.1, along));
     p.y += sF * 0.5 * ridge * span;
-    crest += sF * (1.1 * exp(-bd2 / 5.5) + 0.65 * ridge * span);
+    // the GEOMETRY is the show now — foam only laces it (the first cut
+    // painted the whole bow quarter white)
+    crest += sF * (0.45 * exp(-bd2 / 5.5) + 0.28 * ridge * span);
   }
 
   vWorldPos = p;
@@ -289,13 +291,15 @@ void main() {
   float sss = pow(max(dot(V, -L), 0.0), 3.0) * smoothstep(0.3, 1.0, vCrest / uAmpTotal);
   col += vec3(0.05, 0.18, 0.16) * sss;
 
-  // crest foam + whitecaps, broken up by noise
+  // crest foam + whitecaps, broken up by noise. A 16-wave sum spends most of
+  // its time near the middle of its range, so the thresholds sit HIGH — only
+  // genuine crest coincidences whiten (the first cut boiled the whole sea)
   float foamNoise = noise(vWorldPos.xz * 0.9 + uTime * 0.15) * 0.6
                   + noise(vWorldPos.xz * 3.1 - uTime * 0.1) * 0.4;
   float crestF = vCrest / uAmpTotal;
-  float foam = smoothstep(0.5, 0.85, crestF) * smoothstep(0.35, 0.72, foamNoise);
+  float foam = smoothstep(0.62, 0.95, crestF) * smoothstep(0.42, 0.78, foamNoise);
   // hard whitecaps right at breaking crests (steep + high)
-  float cap = smoothstep(0.72, 0.92, crestF) * smoothstep(0.97, 0.88, N.y);
+  float cap = smoothstep(0.8, 1.0, crestF) * smoothstep(0.97, 0.88, N.y);
   float flat_ = smoothstep(0.94, 1.0, N.y);
 
   // ship wash: (a) churned white along the forward hull flanks where the
@@ -349,7 +353,7 @@ void main() {
   wash *= 0.5 + 0.5 * noise(vWorldPos.xz * 1.6 + uTime * 0.45);
 
   col = mix(col, vec3(0.92, 0.96, 0.95),
-            clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.7, 0.0, 0.93));
+            clamp(foam * (1.0 - flat_ * 0.4) * 0.85 + cap * 0.9 + wash * 0.55, 0.0, 0.93));
 
   // exponential-squared fog toward horizon
   float dist = length(uCameraPos - vWorldPos);
@@ -425,7 +429,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3): Ocean {
       const sz = centerZ - fwdZ * (halfL + 0.8);
       const last = trail[trail.length - 1];
       if (speed > 1.5 && (!last || Math.hypot(sx - last.x, sz - last.z) > 2.4)) {
-        trail.push({ x: sx, z: sz, t: time, w: Math.min(speed / 6, 1.1) });
+        trail.push({ x: sx, z: sz, t: time, w: Math.min(speed / 8, 0.9) });
       }
       while (trail.length > 31 || (trail.length > 0 && time - trail[0].t > 16)) trail.shift();
 
