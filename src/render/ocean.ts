@@ -69,7 +69,7 @@ export interface Ocean {
    *  collar/bow mounds cross-fade down where it is active. Pass the field texture, its
    *  world-space window size (m) and its current snapped origin (window min-corner XZ)
    *  each frame. Call with on=false to disable (falls back to the analytic mounds). */
-  setDynamicField(tex: THREE.Texture | null, windowSize: number, originX: number, originZ: number, on: boolean): void;
+  setDynamicField(tex: THREE.Texture | null, windowSize: number, originX: number, originZ: number, on: boolean, scale?: number): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -137,6 +137,7 @@ uniform sampler2D uDynDisp; // R = dynamic-wave height (m)
 uniform vec2 uDynOrigin; // window min-corner world XZ
 uniform float uDynWindow; // window size (m)
 uniform float uDynOn; // 1 when the dynamic-wave field is live, else 0
+uniform float uDynScale; // dev-tunable strength of the field's surface displacement
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -217,7 +218,7 @@ void main() {
     if (duv.x > 0.0 && duv.x < 1.0 && duv.y > 0.0 && duv.y < 1.0) {
       vec2 dEdge = min(duv, 1.0 - duv);
       dynMix = smoothstep(0.0, 0.04, min(dEdge.x, dEdge.y));
-      float dynH = texture2D(uDynDisp, duv).r;
+      float dynH = texture2D(uDynDisp, duv).r * uDynScale;
       p.y += dynH * dynMix;
       crest += max(dynH, 0.0) * dynMix;
     }
@@ -684,6 +685,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uDynOrigin: { value: new THREE.Vector2() },
       uDynWindow: { value: 1 },
       uDynOn: { value: 0 },
+      uDynScale: { value: 1 },
     },
   });
 
@@ -736,11 +738,12 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       (mat.uniforms.uProfileInvRot.value as THREE.Matrix3).copy(invRot);
       (mat.uniforms.uProfileTrans.value as THREE.Vector3).copy(trans);
     },
-    setDynamicField(tex, windowSize, originX, originZ, on) {
+    setDynamicField(tex, windowSize, originX, originZ, on, scale = 1) {
       if (tex) mat.uniforms.uDynDisp.value = tex;
       mat.uniforms.uDynWindow.value = windowSize;
       (mat.uniforms.uDynOrigin.value as THREE.Vector2).set(originX, originZ);
       mat.uniforms.uDynOn.value = on && tex ? 1 : 0;
+      mat.uniforms.uDynScale.value = scale;
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

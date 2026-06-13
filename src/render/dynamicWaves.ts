@@ -80,6 +80,10 @@ export interface DynamicWaves {
    *  the window on `cameraPos`, stamping each live ship in `ships`, and frothing the
    *  surface at any `landings` (GPU-spray splash-downs) recorded this frame. */
   update(dt: number, cameraPos: THREE.Vector3, ships: DynShip[], landings?: FoamStamp[]): void;
+  /** Live dev-panel control: field velocity damping (1/s, higher kills the fast
+   *  jagged ripples), ship-stamp impulse scale, and foam-stamp scale (0 = no
+   *  white spatter). */
+  setTunables(damping: number, inject: number, foam: number): void;
   /** The height/velocity/foam texture the ocean mesh samples (R = height). */
   readonly texture: THREE.Texture;
   /** The window's world-space size (m) — uv = (worldXZ − origin) / window. */
@@ -210,6 +214,8 @@ uniform sampler2D uField;     // sim output to add onto
 uniform vec2  uOrigin;        // window min-corner world XZ
 uniform float uWindow;        // window size (m)
 uniform float uDt;
+uniform float uInjectScale;   // dev-tunable ship-stamp impulse strength
+uniform float uFoamScale;     // dev-tunable foam-stamp strength (0 = no white spatter)
 
 uniform sampler2D uProfile[MAXSHIP]; // RG = keelYLocal, deckYLocal per column
 uniform mat3  uInvRot[MAXSHIP];      // world→local rotation
@@ -295,9 +301,10 @@ void main() {
 
   vec4 f = texture2D(uField, vUv);
   // inject into velocity (G); seed a little foam (B) where we push hard so the
-  // ocean fragment can lace whitewater onto the disturbance.
-  f.g += add * uDt * 4.5;
-  f.b = max(f.b, max(abs(add) * 0.12, landFoam));
+  // ocean fragment can lace whitewater onto the disturbance. Both scaled by the
+  // dev knobs — foam at 0 removes the "constant spattering of white marks".
+  f.g += add * uDt * 4.5 * uInjectScale;
+  f.b = max(f.b, max(abs(add) * 0.12, landFoam) * uFoamScale);
   gl_FragColor = f;
 }
 `;
@@ -349,6 +356,7 @@ export function createDynamicWaves(
     // Inert fallback: keeps the whole game running on a context without float RTs.
     return {
       update() {},
+      setTunables() {},
       texture: dummyTex,
       window: WINDOW,
       origin,
@@ -402,6 +410,8 @@ export function createDynamicWaves(
       uOrigin: { value: new THREE.Vector2() },
       uWindow: { value: WINDOW },
       uDt: { value: 0 },
+      uInjectScale: { value: 1 },
+      uFoamScale: { value: 1 },
       uProfile: { value: Array.from({ length: MAXSHIP }, () => dummyTex) },
       uInvRot: { value: Array.from({ length: MAXSHIP }, () => new THREE.Matrix3()) },
       uTrans: { value: Array.from({ length: MAXSHIP }, () => new THREE.Vector3()) },
@@ -512,6 +522,11 @@ export function createDynamicWaves(
 
   const field: DynamicWaves = {
     update,
+    setTunables(damping, inject, foam) {
+      simPass.mat.uniforms.uDamping.value = damping;
+      injectPass.mat.uniforms.uInjectScale.value = inject;
+      injectPass.mat.uniforms.uFoamScale.value = foam;
+    },
     // after update(), rtA holds the freshest (sim + injection) field.
     get texture() {
       return rtA.texture;

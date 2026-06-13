@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
 import { VOXEL_SIZE, WATER_DENSITY } from "../core/constants";
+import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeProbes, probeForce, submergedFraction, type Probe } from "../sim/buoyancy";
 import { sphereCells } from "../sim/ballistics";
@@ -426,7 +427,7 @@ export class Ship {
       // flooded water is accounted as WEIGHT below (scaling lift AND adding
       // weight would double-count — a full submerged compartment must be
       // net-zero, and weight-only handles partial submersion correctly)
-      const f = probeForce(p, wy, surfaceY, 0) * (1 - this.waterlog);
+      const f = probeForce(p, wy, surfaceY, 0) * (1 - this.waterlog) * TUN.phys.buoyancy;
       totalVolume += p.volume;
       if (f > 0) {
         const sub = submergedFraction(p, wy, surfaceY);
@@ -488,25 +489,24 @@ export class Ship {
       const wet = Math.min(sub * 5, 1);
 
       const fF = -mass * 0.04 * (1 + 0.08 * Math.abs(vF)) * vF * sub;
-      const fL = -mass * 1.7 * vL * sub;
+      const fL = -mass * TUN.phys.lateralDrag * vL * sub;
       // round 14: the round-9 value 4.5 was OVER-critical and sat her flat — the
-      // playtest "she doesn't rise with the waves even close to enough". 2.8 lets
+      // playtest "she doesn't rise with the waves even close to enough". ~2.8 lets
       // vertical velocity TRACK the swell crests (she rides up and over instead of
       // pushing through) while staying damped enough not to porpoise out of the sea.
-      const fY = -mass * 2.8 * vY * wet;
+      const fY = -mass * TUN.phys.heaveDamp * vY * wet;
 
-      // forward + heave drag at the COM. LATERAL resistance belongs to the
-      // keel, and the keel is DEEP — applying it all below the COM is what
-      // banks her in turns and against a beam wind (playtest round 5:
-      // "the boat should have some sense of what G forces are happening")
-      body.addForce({ x: fwd.x * fF, y: fY, z: fwd.z * fF }, true);
-      const keelDepth = 2.2; // m below COM
-      const com = body.worldCom();
-      body.addForceAtPoint(
-        { x: lat.x * fL, y: 0, z: lat.z * fL },
-        { x: com.x, y: com.y - keelDepth, z: com.z },
-        true,
-      );
+      // forward + heave + the FULL lateral resistance now ride at the COM, so a
+      // hard skid no longer pours an unbounded couple into the roll axis. The bank
+      // (the keel grip acting below the COM) is re-added below as a SEPARATE torque
+      // off a CAPPED lateral velocity, so max-speed-hard-over banks her without
+      // ever rolling the rail under (playtest r15: "under max speed and turn the
+      // ship can go completely underwater"). Below the cap this is identical to the
+      // old apply-at-keelDepth couple; above it the heel saturates instead of growing.
+      body.addForce({ x: fwd.x * fF + lat.x * fL, y: fY, z: fwd.z * fF + lat.z * fL }, true);
+      const vLcap = Math.max(-TUN.phys.heelVelCap, Math.min(TUN.phys.heelVelCap, vL));
+      const fLheel = -mass * TUN.phys.lateralDrag * vLcap * sub;
+      const bankT = -TUN.phys.keelDepth * fLheel; // roll about the fore-aft axis
 
       // angular damping decomposed in the SHIP frame: pitch is damped
       // hardest — a real hull's waterplane kills porpoising almost dead.
@@ -518,17 +518,24 @@ export class Ship {
       const fz = fwd.z;
       const wRoll = om.x * fx + om.z * fz; // rate about the fore-aft axis
       const wPitch = om.x * lat.x + om.z * lat.z; // rate about the beam axis
-      const tRoll = -wRoll * wet * 1.2 * ix;
-      // speed trim: a RESTORING moment toward level, saturating at ±4° of
-      // error. Its predecessor was a one-signed bow lift growing with v²
-      // without limit — at full sail she pitched past vertical and looped
-      // (playtest round 5: "almost doing a wheelie … flipped upside down")
-      const trim = wet * vF * vF * mass * 12 * Math.min(Math.max(-pitch, -0.07), 0.07);
-      const tPitch = -wPitch * wet * 4.2 * iz + trim;
+      // r15: pitch/roll damping is LIGHT now. The per-column buoyancy torques
+      // already carry the wave-following (a crest under the bow over-submerges the
+      // bow columns → bow-up torque); the old 4.2×/1.2× inertia damping was so
+      // stiff it froze that response and she "just rose and fell uniformly". Keep
+      // only enough to settle in a wave or two and stop hobby-horsing. The capped
+      // turn-bank couple (bankT) is summed into the roll axis.
+      const tRoll = -wRoll * wet * TUN.phys.rollDamp * ix + bankT;
+      // speed trim: a small RESTORING moment toward level, saturating at ±4° of
+      // error. Its predecessor (×12) flattened her so hard at speed she couldn't
+      // pitch to the swell; small now so she planes a touch level without fighting
+      // the sea. Its ancestor was a one-signed v² bow lift that looped her over
+      // the top (playtest round 5: "almost doing a wheelie … flipped upside down").
+      const trim = wet * vF * vF * mass * TUN.phys.trim * Math.min(Math.max(-pitch, -0.07), 0.07);
+      const tPitch = -wPitch * wet * TUN.phys.pitchDamp * iz + trim;
       body.addTorque(
         {
           x: tRoll * fx + tPitch * lat.x,
-          y: -om.y * wet * 0.7 * iy,
+          y: -om.y * wet * TUN.phys.yawDamp * iy,
           z: tRoll * fz + tPitch * lat.z,
         },
         true,

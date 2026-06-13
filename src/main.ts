@@ -24,6 +24,8 @@ import { CharacterSpike } from "./game/character";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
 import { createSpray } from "./render/spray";
+import { TUN } from "./core/tunables";
+import { createDevPanel } from "./render/devPanel";
 
 async function main() {
   const app = document.getElementById("app")!;
@@ -472,13 +474,23 @@ async function main() {
       return;
     }
     const hadLock = document.pointerLockElement !== null;
-    document.documentElement
-      .requestFullscreen({ navigationUI: "hide" })
+    // THE fix for "F does nothing while sailing" (r15): Chrome REFUSES a
+    // fullscreen request issued while a pointer lock is held — the two can't both
+    // transition in one user gesture. While sailing the canvas IS pointer-locked,
+    // so the request rejected silently every time. Release the lock first, enter
+    // fullscreen, then re-grab the helm. Errors now also hit the console.
+    if (hadLock) document.exitPointerLock();
+    const el = document.documentElement;
+    const req = el.requestFullscreen
+      ? el.requestFullscreen({ navigationUI: "hide" })
+      : Promise.reject(new Error("Fullscreen API unavailable"));
+    req
       .then(() => {
         if (hadLock) renderer.domElement.requestPointerLock();
       })
       .catch((err: Error) => {
         boarding.message = `fullscreen refused: ${err.message}`;
+        console.warn("[fullscreen]", err);
       });
   };
   document.getElementById("fs-btn")!.addEventListener("click", toggleFullscreen);
@@ -908,7 +920,7 @@ async function main() {
     // hull crashing back down off a crest (round 9: "the boat crashing down
     // over a wave to cause a real splash"). `rate` folds in both: the surface
     // rising and the stem dropping, so a hard slam triggers even at rest.
-    if (imm > 0 && rate > 1.2 && (spd > 2.0 || rate > 2.4) && st.cd <= 0 && ship.submergedFrac < 0.5) {
+    if (TUN.spray.enabled && imm > 0 && rate > 1.2 && (spd > 2.0 || rate > 2.4) && st.cd <= 0 && ship.submergedFrac < 0.5) {
       st.cd = 0.2;
       const rot = ship.body.rotation();
       sprayQ.set(rot.x, rot.y, rot.z, rot.w);
@@ -919,7 +931,7 @@ async function main() {
         sprayP.z,
         sprayF.x,
         sprayF.z,
-        Math.min(0.7 + rate * 0.5 + spd * 0.06, 3.0),
+        Math.min(0.7 + rate * 0.5 + spd * 0.06, 3.0) * TUN.spray.bow,
       );
     }
   };
@@ -936,9 +948,10 @@ async function main() {
   // plumes where the crossing trains pile up); the average sea stays dry
   let crestProbeAccum = 0;
   const ambientSpray = (dt: number) => {
+    if (!TUN.spray.enabled || TUN.spray.crest <= 0) return;
     const cam = camera.position;
     const t = world.simTime;
-    crestProbeAccum += dt * 150; // ~probes/sec, frame-rate independent
+    crestProbeAccum += dt * 150 * TUN.spray.crest; // ~probes/sec, frame-rate independent
     let probes = Math.min(Math.floor(crestProbeAccum), 14);
     crestProbeAccum -= probes;
     while (probes-- > 0) {
@@ -957,6 +970,63 @@ async function main() {
       // launch from just above the visual crest (the FFT chop adds ~0.3 m on top)
       effects.crestSpray(x, h + 0.35, z, windX, windZ, force);
     }
+  };
+
+  // r15 DEV PANEL: live knobs for the sea + boat feel the player asked to tune
+  // themselves. Backtick (`) toggles it; sliders write straight into TUN, which
+  // physics + render read every step. A reload resets (TUN is not persisted).
+  const devPanel = createDevPanel([
+    {
+      title: "Buoyancy / Attitude",
+      controls: [
+        { type: "slider", label: "lift ×", obj: TUN.phys, key: "buoyancy", min: 0.5, max: 2, step: 0.05 },
+        { type: "slider", label: "heave damp", obj: TUN.phys, key: "heaveDamp", min: 0.5, max: 6, step: 0.1 },
+        { type: "slider", label: "pitch damp", obj: TUN.phys, key: "pitchDamp", min: 0, max: 4, step: 0.05 },
+        { type: "slider", label: "roll damp", obj: TUN.phys, key: "rollDamp", min: 0, max: 3, step: 0.05 },
+        { type: "slider", label: "trim level", obj: TUN.phys, key: "trim", min: 0, max: 12, step: 0.5 },
+        { type: "slider", label: "keel drag", obj: TUN.phys, key: "lateralDrag", min: 0.5, max: 3, step: 0.1 },
+        { type: "slider", label: "keel depth", obj: TUN.phys, key: "keelDepth", min: 0, max: 3, step: 0.1 },
+        { type: "slider", label: "heel cap", obj: TUN.phys, key: "heelVelCap", min: 2, max: 12, step: 0.5 },
+        { type: "slider", label: "turn bank", obj: TUN.phys, key: "turnHeelArm", min: 0, max: 6, step: 0.1 },
+      ],
+    },
+    {
+      title: "Dynamic Waves (wake)",
+      controls: [
+        { type: "toggle", label: "enabled", obj: TUN.dyn, key: "enabled" },
+        { type: "slider", label: "height", obj: TUN.dyn, key: "heightScale", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "inject", obj: TUN.dyn, key: "inject", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "damping", obj: TUN.dyn, key: "damping", min: 0.2, max: 4, step: 0.1 },
+        { type: "slider", label: "foam", obj: TUN.dyn, key: "foam", min: 0, max: 2, step: 0.05 },
+      ],
+    },
+    {
+      title: "Spray",
+      controls: [
+        { type: "toggle", label: "enabled", obj: TUN.spray, key: "enabled" },
+        { type: "slider", label: "bow", obj: TUN.spray, key: "bow", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "crest", obj: TUN.spray, key: "crest", min: 0, max: 2, step: 0.05 },
+      ],
+    },
+  ]);
+  const _roQ = new THREE.Quaternion();
+  const _roF = new THREE.Vector3();
+  const _roR = new THREE.Vector3();
+  const updateDevReadout = () => {
+    if (!devPanel.open) return;
+    const rot = sloop.body.rotation();
+    _roQ.set(rot.x, rot.y, rot.z, rot.w);
+    _roF.set(1, 0, 0).applyQuaternion(_roQ);
+    _roR.set(0, 0, 1).applyQuaternion(_roQ);
+    const pitchDeg = (Math.asin(Math.min(Math.max(_roF.y, -1), 1)) * 180) / Math.PI;
+    const heelDeg = (Math.asin(Math.min(Math.max(_roR.y, -1), 1)) * 180) / Math.PI;
+    const v = sloop.body.linvel();
+    const kn = Math.hypot(v.x, v.z) * 1.94384;
+    devPanel.setReadout(
+      `pitch ${pitchDeg >= 0 ? "+" : ""}${pitchDeg.toFixed(1)}°  heel ${heelDeg >= 0 ? "+" : ""}${heelDeg.toFixed(1)}°\n` +
+        `submerged ${(sloop.submergedFrac * 100).toFixed(0)}%  waterlog ${(sloop.waterlog * 100).toFixed(0)}%\n` +
+        `speed ${kn.toFixed(1)} kn`,
+    );
   };
 
   renderer.setAnimationLoop(() => {
@@ -1052,10 +1122,28 @@ async function main() {
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
 
     oceanField.update(world.simTime);
-    // P5: advance the dynamic-wave interaction field (off-screen GPU passes) and
-    // bind its texture + snapped window/origin to the ocean BEFORE the main render.
-    dynWaves.update(dt, camera.position, buildDynShips(), spray.drainLandings());
-    ocean.setDynamicField(dynWaves.texture, dynWaves.window, dynWaves.origin.x, dynWaves.origin.y, dynWaves.active);
+    // P5/r15: advance the dynamic-wave interaction field (off-screen GPU passes),
+    // now under the dev knobs, and bind its texture + snapped window/origin to the
+    // ocean BEFORE the main render. Always drain spray landings (so the queue can't
+    // grow unbounded) but only stamp them as foam when foam is dialed up. When the
+    // field is disabled we still tick it (empty ships → it decays to rest) and the
+    // ocean simply ignores it (on=false) for a perfectly clean cascade sea.
+    dynWaves.setTunables(TUN.dyn.damping, TUN.dyn.inject, TUN.dyn.foam);
+    const dynLandings = spray.drainLandings();
+    dynWaves.update(
+      dt,
+      camera.position,
+      TUN.dyn.enabled ? buildDynShips() : [],
+      TUN.dyn.foam > 0 ? dynLandings : undefined,
+    );
+    ocean.setDynamicField(
+      dynWaves.texture,
+      dynWaves.window,
+      dynWaves.origin.x,
+      dynWaves.origin.y,
+      dynWaves.active && TUN.dyn.enabled,
+      TUN.dyn.heightScale,
+    );
     ocean.update(world.simTime, camera.position);
     renderer.autoClear = true;
     renderer.clear(); // clears color + depth + stencil
@@ -1065,6 +1153,7 @@ async function main() {
     renderer.autoClear = true;
 
     updateHud(dt, tr);
+    updateDevReadout();
   });
 }
 

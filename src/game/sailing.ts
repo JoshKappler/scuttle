@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { turnHeelTorque } from "../sim/heel";
+import { TUN } from "../core/tunables";
 import type { Ship } from "./ship";
 
 /**
@@ -118,7 +119,7 @@ export class SailingController {
     // actually doing")
     if (ship.submergedFrac > 0.02) {
       const om = body.angvel();
-      const heelT = turnHeelTorque(this.speed, om.y, mass, SailingController.TURN_HEEL_ARM);
+      const heelT = turnHeelTorque(this.speed, om.y, mass, TUN.phys.turnHeelArm);
       body.addTorque({ x: fwd.x * heelT, y: 0, z: fwd.z * heelT }, true);
     }
 
@@ -130,9 +131,4 @@ export class SailingController {
     const yaw = this.rudder * flow * mass * 0.5 * ship.rudderEff;
     body.addTorque({ x: 0, y: yaw, z: 0 }, true);
   }
-
-  /** COM height above the keel's lateral-force center (m) — heel tuning.
-   *  Verified in-game: ~7° at 22 kn hard over with 3.0; 4.2 lands the
-   *  requested pronounced-but-safe 9–12°. */
-  static TURN_HEEL_ARM = 4.2;
 }
