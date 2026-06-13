@@ -18,17 +18,20 @@ in-browser (Playwright on :5180 + numeric readback) because GLSL bugs pass tsc/u
 
 Also folded in from round-13 cleanup: cannon-debris cap 250, enemy sloop bow-down trim fix.
 
-## In progress
-- **P5 — GPU ship-water interaction** (bow push+spray, side bulge, stern contrail): a
-  Crest/Atlas dynamic-wave injection field (FDTD ping-pong RTs + voxel hull injection,
-  summed onto the ocean surface) + GPU-instanced ballistic spray on a physical bow-crash
-  trigger. Delegated to a focused agent with hard guardrails (add-only to the ocean
-  shader; verify the sea still renders). REVIEW its commit before trusting.
+| P5 | `dc032f0` | **GPU ship-water interaction.** Crest/Atlas dynamic-wave field: 2× RGBA-float ping-pong RTs (R=height, G=velocity, B=foam) over a 256 m camera-window (texel-snapped → no scroll-shimmer), FDTD wave-equation + semi-Lagrangian advection so disturbances TRAIL; each ship's voxel footprint (reusing `buildHullProfile`) stamped as velocity → bow push-up + beam bulge + stern suck. New `spray.ts` = GPU-instanced ballistic droplets on a physical bow-crash trigger (`gerstner.surfaceVelocity`, +2 tests). `ocean.ts` ADD-ONLY: sums the dynamic height after the cascades, cross-fades the analytic collar/bow down (`aMix=1−dynMix`), folds `dynFoam` into the foam mix. I REVIEWED the diff (cascade unroll + P4 profile discard untouched) and verified in-browser: ocean renders 0 program errors, prominent **trailing wake** (curves with the path), bow wave + spray, flank foam, **waterlog 0** (no flood regression), 117 tests. |
 
-## Remaining / TODO
-- **P2 — perf:** swap the O(N²) inner DFT for a butterfly FFT (N=256, log₂N ping-pong
-  passes), verified texel-for-texel against the CPU oracle; add normal MIPMAPS to kill the
-  faint crosshatch still visible at extreme grazing foreground.
+## Verified result
+All SIX user asks delivered: sharp choppy crossing waves (P1), rides the sea (P3), voxel+bob-proof void cut (P4), real flood fluid / no blue cubes (P6), bow-spray/side-bulge/stern-wake (P5), GPU-heavy throughout. From a top-down at 21 kn: choppy crossing sea + a long Kelvin-style wake trailing the hull + bow/flank foam + spray.
+
+## Remaining / TODO (optional polish — core vision delivered)
+- **P2 — perf (low priority; user wants GPU-heavy):** swap the O(N²) inner DFT for a butterfly
+  FFT (N=256, log₂N ping-pong passes), verified texel-for-texel against the CPU oracle; add
+  normal MIPMAPS to kill the faint crosshatch still visible at extreme grazing foreground.
+- **Rudder authority** (pre-existing, flagged by the P5 agent; NOT a flood regression — waterlog
+  stays 0): she's sluggish to answer the helm at sustained sail. Separate gameplay-balance item,
+  out of the ocean-rebuild scope, worth a look.
+- Push the chop MORE dramatic now P3/P4 let her ride + clear bigger seas (raise cascade amps,
+  re-verify no deck-clip). Extend the voxel cut to the enemy. P6 camera-fresnel plumbing.
 - Make the chop MORE dramatic now P3 lets the hull ride bigger seas (raise cascade
   amplitudes once P4's clearance + P3's ride are confirmed together).
 - Extend the voxel cut (P4) to the enemy hull (2nd profile + pose).
