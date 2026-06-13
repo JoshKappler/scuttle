@@ -51,12 +51,13 @@ export function createSky(): SkySetup {
   sunLight.shadow.bias = -0.0005;
   // shadows ATTENUATE the sun rather than erase it — skylight still reaches
   // shadowed ground in life (round 8: "any part not directly in the sun")
-  sunLight.shadow.intensity = 0.82;
+  sunLight.shadow.intensity = 0.85;
 
   // sky bounce carries the shade: at 0.55 anything out of the sun read as
-  // pitch black (round 7); 0.95 still wasn't ambient enough (round 8) —
-  // raised again, with the ground bounce brightened toward lit-sea teal
-  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 1.3);
+  // pitch black (round 7). 1.3 + a strong IBL env then over-lit it and
+  // bleached the dark oak hull to "a light birch" (round 8 v2) — back to a
+  // moderate fill; the gentle IBL env (set in bakeEnvironment) does the rest.
+  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 0.9);
 
   return {
     sky,
@@ -76,7 +77,9 @@ export function createSky(): SkySetup {
       const rt = pmrem.fromScene(env, 0.04);
       scene.add(sky); // give it back
       scene.environment = rt.texture;
-      scene.environmentIntensity = 0.72; // fill, not wash-out
+      // 0.72 bleached the oak to birch (round 8 v2). A gentle 0.28 fills the
+      // shaded flanks so they read as dim wood without washing out the tone.
+      scene.environmentIntensity = 0.28;
       pmrem.dispose();
     },
   };

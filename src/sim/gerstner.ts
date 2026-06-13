@@ -17,11 +17,17 @@ export interface Wave {
 
 /**
  * Generate a seeded wave SPECTRUM (round 8 rebuild): wavelengths log-spaced
- * from ocean swell down to wind chop, amplitudes following a power slope and
- * normalized to a fixed total, directions tight around the wind for the long
+ * from ocean swell down to wind chop, amplitudes set from the swell scale and
+ * falling off toward the chop, directions tight around the wind for the long
  * waves and scattered for the short ones. Four waves read as "the same waves
  * repeating over and over" (round 8); sixteen with scattered directions
  * never visibly repeat.
+ *
+ * Amplitude is keyed to the LONGEST wave (SWELL_AMP), not normalized to a
+ * fixed total — spreading a fixed sum over 16 waves starved the swell to
+ * ~0.27 m and "the ship barely bobs up and down on them" (round 8 v2). The
+ * long waves now keep the height that actually heaves a 500-tonne hull;
+ * shorter components fall off as `(λ/L_MAX)^AMP_FALLOFF` for surface texture.
  *
  * `steepness` here is the per-wave crest-sharpness Q (0..1): the horizontal
  * trochoid displacement is Q·amplitude. The set is generated under a global
@@ -35,6 +41,8 @@ export function makeWaves(rng: Rng, count = 16): Wave[] {
   // minutes (real surfing, bad game feel). At 70 m she overtakes the sea.
   const L_MAX = 70; // m — long ocean swell
   const L_MIN = 3.5; // m — wind chop
+  const SWELL_AMP = 0.62; // m — amplitude of the longest wave (the bob driver)
+  const AMP_FALLOFF = 1.3; // higher → more height concentrated in the swell
   const waves: Wave[] = [];
   for (let i = 0; i < count; i++) {
     const f = count === 1 ? 0 : i / (count - 1);
@@ -45,17 +53,14 @@ export function makeWaves(rng: Rng, count = 16): Wave[] {
     waves.push({
       dirX: Math.cos(angle),
       dirZ: Math.sin(angle),
-      amplitude: Math.pow(wavelength, 0.95), // power slope; normalized below
+      amplitude: SWELL_AMP * Math.pow(wavelength / L_MAX, AMP_FALLOFF),
       wavelength,
       steepness: 0, // filled below under the sharpness budget
       phaseSpeed: 0, // filled below from dispersion
     });
   }
-  const sum = waves.reduce((s, w) => s + w.amplitude, 0);
-  const AMP_SUM = 1.5; // m — Σ amplitudes across the whole set
-  const SHARPNESS = 0.8; // Σ(Q·k·a) budget
+  const SHARPNESS = 0.8; // Σ(Q·k·a) budget — crests can't self-intersect
   for (const w of waves) {
-    w.amplitude *= AMP_SUM / sum;
     const k = (2 * Math.PI) / w.wavelength;
     w.steepness = Math.min(SHARPNESS / (count * k * w.amplitude), 1);
     w.phaseSpeed = Math.sqrt((G * w.wavelength) / (2 * Math.PI));

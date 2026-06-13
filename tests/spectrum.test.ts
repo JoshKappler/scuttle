@@ -11,9 +11,14 @@ describe("wave spectrum (round 8)", () => {
     expect(Math.min(...waves.map((w) => w.wavelength))).toBeLessThan(5);
   });
 
-  it("total amplitude is normalized to the target sea state", () => {
+  it("the long swell keeps real height — enough to heave the hull", () => {
+    const longest = waves.reduce((a, b) => (a.wavelength > b.wavelength ? a : b));
+    // the bob driver must not be starved (round 8 v2: 0.27 m was too small)
+    expect(longest.amplitude).toBeGreaterThan(0.5);
+    // …but the whole sea is still a moderate swell, not a wall of water
     const sum = waves.reduce((s, w) => s + w.amplitude, 0);
-    expect(sum).toBeCloseTo(1.5, 5);
+    expect(sum).toBeGreaterThan(1.5);
+    expect(sum).toBeLessThan(3.5);
   });
 
   it("stays under the global sharpness budget — no self-intersecting crests", () => {
@@ -42,10 +47,11 @@ describe("wave spectrum (round 8)", () => {
   });
 
   it("16-wave inversion still converges (sampled height matches forward point)", () => {
+    const bound = waves.reduce((s, w) => s + w.amplitude, 0) + 1e-6;
     for (let i = 0; i < 40; i++) {
       const h = surfaceHeight(waves, i * 7.3 - 120, i * -5.1 + 60, i * 0.37);
       expect(Number.isFinite(h)).toBe(true);
-      expect(Math.abs(h)).toBeLessThanOrEqual(1.5 + 1e-6);
+      expect(Math.abs(h)).toBeLessThanOrEqual(bound);
     }
   });
 });
