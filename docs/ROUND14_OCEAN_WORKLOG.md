@@ -7,6 +7,43 @@ Driven by an 11-agent research + codebase-map workflow → design at
 `docs/superpowers/specs/2026-06-13-ocean-rebuild-design.md`. Every visual change verified
 in-browser (Playwright on :5180 + numeric readback) because GLSL bugs pass tsc/unit tests.
 
+## Round 15 — playtest fixes (commit `abba186`)
+
+Feedback after r14 hit the water at sea level: voxel cut good, large waves good, but
+(1) constant white spatter, (2) violent jagged surface vibration, (3) broken wake,
+(4) hull "rises and falls uniformly" with no pitch/roll to the water under it AND
+"goes completely underwater under max speed + turn", (5) F-fullscreen dead. Plus the
+headline ask: **"just give me a dev panel where I can adjust these variables myself."**
+
+- **Voxel-buoyancy attitude (`game/ship.ts`, `game/sailing.ts`).** Root cause was NOT
+  the buoyancy model — `stability.test` proves the probe model already has GM>0.15m
+  righting. `ship.ts` was *suppressing* it: pitch damped at `4.2×iz` + a `vF²`
+  trim-to-level term froze the wave-following the per-column torques produce. Slashed
+  pitch/roll damping to 1.3/0.9 and cut trim to 3 → she now pitches/rolls to the swell
+  (measured: pitch ±3°, heel ±9°, oscillating about level; settles to the designed 0.45
+  draft, waterlog 0). The capsize-in-a-turn was three heel sources stacking, the worst an
+  *uncapped* lateral-drag-at-keel couple that grew without bound as she skidded — decoupled
+  the lateral *resistance* (now at COM) from the *bank* couple, which rides off a CAPPED
+  skid velocity. Measured: full sail + hard rudder at 23 kn peaks at **8.3° heel**, never
+  founders (was a knock-down).
+- **Dev panel (`render/devPanel.ts`, `core/tunables.ts`).** Dependency-free slider/checkbox
+  overlay, backtick to toggle, frees the mouse on open, live readout (pitch/heel/submerged/
+  waterlog/speed). Writes into a shared mutable `TUN` that physics + render read every step,
+  so the subjective sea/boat feel is tunable with no reload. Groups: Buoyancy/Attitude,
+  Dynamic Waves (wake), Spray.
+- **Clean ocean (`render/dynamicWaves.ts`, `render/ocean.ts`, `main.ts`).** The spatter was
+  the spray splash-down foam discs + field foam; the jagged shaking was the FDTD injection.
+  New `dynWaves.setTunables(damping, inject, foam)` + ocean `uDynScale`; defaults foam 0,
+  damping 1.8, height 0.45 → clean sea out of the box, wake/spray dialable back up. Spray
+  emission now gated on `TUN.spray`.
+- **F-key (`main.ts`).** Chrome silently rejects `requestFullscreen` issued while pointer
+  lock is held — and you're locked while sailing, so F did nothing. Release the lock first,
+  then request, then re-grab. (Couldn't auto-verify true fullscreen — needs a real gesture
+  Playwright won't forge — but the root cause is addressed and the handler runs clean.)
+
+Verified in-browser: 0 console errors on a fresh load, panel renders + sliders live, all
+the numeric checks above. tsc clean, 117 tests green.
+
 ## Shipped (committed + pushed to main)
 
 | Phase | Commit | What |
