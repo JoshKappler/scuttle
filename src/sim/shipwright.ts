@@ -2,6 +2,7 @@ import { VOXEL_SIZE, VOXEL_VOLUME } from "../core/constants";
 import { createGrid, type VoxelGrid } from "./voxelGrid";
 import { EMPTY, IRON, OAK, PINE, RAM } from "./materials";
 import { findCompartments, type Compartment } from "./compartments";
+import { weldToSingleComponent } from "./weld";
 
 /**
  * Procedural voxel shipwright. Hulls come from analytic curves — plan-view
@@ -213,6 +214,10 @@ export function buildSloop(): ShipBuild {
   for (const hx of hatchXs) {
     hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
   }
+
+  // weld floating internals (diagonal-only ballast tiers etc.) to the main mass so the
+  // hull is ONE 6-connected solid — otherwise findSevered sheds them all on the first hit.
+  weldToSingleComponent(grid);
 
   // compartments + leak audit
   const compartments = findCompartments(grid, deckY);
@@ -495,6 +500,9 @@ export function buildBrig(): ShipBuild {
   const hatchZ = Math.floor(cz);
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
+
+  // weld floating internals to the main mass — ONE 6-connected solid (see weld.ts / buildSloop).
+  weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
