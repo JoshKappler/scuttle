@@ -120,17 +120,16 @@ export class VoxelContact {
     velAtPoint(shipA, point, this.tmpc, this.vA);
     velAtPoint(shipB, point, this.tmpc, this.vB);
 
-    // each hull's APPROACH speed = how fast it drives toward the contact point, measured along its
-    // OWN horizontal COM→point aim (uses ONE com, never a difference of two → no degeneracy at deep
-    // overlap). A still / fleeing hull has approach ≤ 0 → it plows nothing → never retarded, never
-    // flung. The closing speed is just the two approaches added (the gap shrinks at aA + aB).
+    // contact axis ≈ A's horizontal aim at the contact (A→B-ish; built from ONE com, so it stays
+    // stable at deep overlap where a centre-to-centre normal flips). vClose is the RELATIVE closing
+    // speed along it, (vA−vB)·aim — POSITIVE only while the hulls actually converge. (An absolute
+    // per-ship approach would stay >0 for two hulls sailing LOCKED together at a common velocity and
+    // chew them forever; relative closing reads ≈0 there, so the breaking and grinding stop.)
     const dax = point.x - this.comA.x, daz = point.z - this.comA.z, dal = Math.hypot(dax, daz) || 1;
-    const dbx = point.x - this.comB.x, dbz = point.z - this.comB.z, dbl = Math.hypot(dbx, dbz) || 1;
-    const ahx = dax / dal, ahz = daz / dal;   // A's horizontal aim AT the contact
-    const bhx = dbx / dbl, bhz = dbz / dbl;    // B's horizontal aim AT the contact
-    const aA = Math.max(0, this.vA.x * ahx + this.vA.z * ahz);
-    const aB = Math.max(0, this.vB.x * bhx + this.vB.z * bhz);
-    const vClose = aA + aB;
+    const ahx = dax / dal, ahz = daz / dal;
+    const vrx = this.vA.x - this.vB.x, vrz = this.vA.z - this.vB.z; // horizontal relative velocity
+    const vrl = Math.hypot(vrx, vrz);
+    const vClose = vrx * ahx + vrz * ahz; // relative closing speed (>0 = converging)
     // below a sub-voxel graze → no contact response (kills flicker on a glancing touch).
     if (depth < TUN.crush.minDepth) return { overlapCount: ov.aCells.length, depth, force: 0, energy: 0, removedA: 0, removedB: 0, vClose };
 
@@ -178,8 +177,6 @@ export class VoxelContact {
     // sea while a rear-ended one slides more: the "in molasses" feel, fully emergent. Applied at COM
     // HEIGHT so an off-centre hit YAWS them (a PIT) but never ROLLS them. ----
     let force = 0;
-    const vrx = this.vA.x - this.vB.x, vrz = this.vA.z - this.vB.z; // horizontal relative velocity
-    const vrl = Math.hypot(vrx, vrz);
     if (breaking && vrl > 1e-3) {
       const nx = vrx / vrl, nz = vrz / vrl; // A relative to B (robust direction, never flips)
       // inelastic cancel of the relative velocity (transfer = 1 → full common velocity), per step
@@ -189,18 +186,19 @@ export class VoxelContact {
       this.pushAtComHeight(shipB, point, this.comB.y, nx, nz, jmag);   // +μ·vRel on B → common velocity
       force = jmag / dt;
     } else if (residual > 0) {
-      // sub-vBreak but still overlapping → ease the hulls apart GENTLY so they don't sit clipped:
-      // bring their separation speed UP TO `separate` m/s (one-shot, never pulling them together,
-      // capped), along the horizontal line of centres. Equal-and-opposite at the COM (no roll), tiny
-      // so it can't fling. The slow-bump / lodged-after-impact case, not the impact itself.
-      let scx = this.comB.x - this.comA.x, scz = this.comB.z - this.comA.z;
-      const scl = Math.hypot(scx, scz) || 1; scx /= scl; scz /= scl; // A->B, horizontal
-      const sepNow = -((this.vA.x - this.vB.x) * scx + (this.vA.z - this.vB.z) * scz); // >0 = separating
-      const add = Math.min(TUN.crush.separate - sepNow, TUN.crush.separate);
+      // Overlapping but NOT breaking (matched velocity / sub-vBreak / an unbreakable belt) → push the
+      // hulls apart so they can't occupy the same space. Two solids can't interpenetrate, so the
+      // target separation speed RAMPS with how deep they sit — firm when deeply embedded (otherwise
+      // two ships pinned on one line ghost together into a 450-cell mush and the buoyancy goes wild),
+      // gentle for a light bump — capped at maxDvPerStep so it still can't fling. Along A's aim,
+      // equal-and-opposite at the COM (no roll). One-shot: never pulls them together (add ≤ 0 if
+      // they're already separating faster than the target).
+      const sepTarget = Math.min(TUN.crush.separate * (1 + depth * 4), TUN.crush.maxDvPerStep);
+      const add = Math.min(sepTarget + vClose, sepTarget); // sepNow = −vClose; bring it UP TO sepTarget
       if (add > 0) {
         const jSep = mu * add;
-        this.imp.set(-scx * jSep, 0, -scz * jSep); shipA.body.applyImpulse(this.imp, true);
-        this.imp.set(scx * jSep, 0, scz * jSep); shipB.body.applyImpulse(this.imp, true);
+        this.imp.set(-ahx * jSep, 0, -ahz * jSep); shipA.body.applyImpulse(this.imp, true); // A away from B
+        this.imp.set(ahx * jSep, 0, ahz * jSep); shipB.body.applyImpulse(this.imp, true);   // B away from A
         force = jSep / dt;
       }
     }
