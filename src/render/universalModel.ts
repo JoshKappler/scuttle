@@ -106,6 +106,26 @@ function buildNaturalWalk(walk: THREE.AnimationClip, idle: THREE.AnimationClip):
   return out;
 }
 
+/** Push every vertex out along its normal — "puffs up" a garment so a slightly
+ *  larger body underneath stops poking through it (our buff Superhero base vs the
+ *  regular-fit cloth the outfit was modelled for). */
+function inflateAlongNormals(geo: THREE.BufferGeometry, amount: number): void {
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const nor = geo.attributes.normal as THREE.BufferAttribute | undefined;
+  if (!nor) return;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setXYZ(
+      i,
+      pos.getX(i) + nor.getX(i) * amount,
+      pos.getY(i) + nor.getY(i) * amount,
+      pos.getZ(i) + nor.getZ(i) * amount,
+    );
+  }
+  pos.needsUpdate = true;
+}
+const OUTFIT_INFLATE = 0.03; // bind-pose puff on the soft garments (tune vs poke-through)
+const NO_INFLATE = /(pauldron|bracer|boots|feet)/i; // rigid armour already fits
+
 /** Bind a Quaternius outfit's skinned garments onto an already-cloned base rig.
  *  The outfit shares the 65-bone Universal skeleton, so we rebuild each garment's
  *  skeleton from the BASE's bones (matched by name) and parent it alongside the
@@ -131,6 +151,10 @@ function attachOutfit(inner: THREE.Group, scene: THREE.Group, hideHood: boolean)
     if (hideHood && /hood/i.test(sm.name)) continue;
     const remapped = sm.skeleton.bones.map((b) => boneByName.get(b.name) ?? b);
     sm.bind(new THREE.Skeleton(remapped, sm.skeleton.boneInverses), sm.bindMatrix);
+    if (!NO_INFLATE.test(sm.name)) {
+      sm.geometry = sm.geometry.clone(); // own copy — don't puff the shared source
+      inflateAlongNormals(sm.geometry, OUTFIT_INFLATE);
+    }
     sm.position.copy(base.position);
     sm.quaternion.copy(base.quaternion);
     sm.scale.copy(base.scale);
