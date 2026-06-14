@@ -13,6 +13,10 @@ const MAX = 1600;
 const MAX_FIRE = 700;
 const FLASH_POOL = 6;
 
+// reused launch vectors for the per-voxel waterline fizz (r18) — no per-call allocation
+const _fizzP = new THREE.Vector3();
+const _fizzV = new THREE.Vector3();
+
 /** Soft round particle sprite (radial gradient → transparent). Without it
  *  THREE.Points draws hard SQUARES — "the particles … are basically just a
  *  scatter of white squares" (round 10). Built once, shared by both layers. */
@@ -344,6 +348,32 @@ export class Effects {
           0.6,
         );
       }
+    }
+  }
+
+  /** r18: a light fizz of spray straight up off ONE hull voxel sitting at the waterline —
+   *  the subtle "every waterline voxel throws a little water" layer. Much smaller and
+   *  gentler than bowWave; the caller stipples many of these along the whole hull line. */
+  waterlineFizz(x: number, y: number, z: number, strength = 1): void {
+    const s = Math.min(strength, 1);
+    if (this.gpuSpray) {
+      _fizzP.set(x, y, z);
+      _fizzV.set((Math.random() - 0.5) * 0.5, 1.0 + Math.random() * 1.1 * s, (Math.random() - 0.5) * 0.5);
+      this.gpuSpray.emit(_fizzP, _fizzV, 1, 0.4, 0.12 + 0.05 * s, this._simTime);
+      return;
+    }
+    // CPU fallback: a couple of small motes
+    for (let i = 0; i < 2; i++) {
+      this.spawn(
+        x,
+        y,
+        z,
+        [(Math.random() - 0.5) * 0.6, 1.1 + Math.random() * 1.2 * s, (Math.random() - 0.5) * 0.6],
+        0.4 + Math.random() * 0.3,
+        [0.92, 0.96, 0.97],
+        -9.81,
+        0.5,
+      );
     }
   }
 

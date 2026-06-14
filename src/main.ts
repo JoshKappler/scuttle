@@ -293,14 +293,15 @@ async function main() {
     onFoot = !atWheel;
 
     if (atWheel) controls.updateSailing(sailing, dt);
-    // man overboard! the crew backs the sails so she slows and waits while
-    // you swim for the stern ladder (round 6: "your imaginary crew should
-    // throttle down all the way so you at least have the chance to climb up")
+    // man overboard! the crew drops the sheets — throttle goes straight to ZERO
+    // so she loses way and waits while you swim for the stern ladder. (r18: the
+    // old gradual sail-back read as a "lost at sea" mechanic; the player wants a
+    // hard cut to 0 throttle the instant you go over the side.)
     if (boarding.player && boarding.player.swimming) {
-      sailing.sailSet = Math.max(sailing.sailSet - dt * 0.5, 0);
+      sailing.sailSet = 0;
       if (!manOverboard) {
         manOverboard = true;
-        boarding.message = "MAN OVERBOARD — the crew backs the sails!";
+        boarding.message = "MAN OVERBOARD — sails dropped, she loses way!";
       }
     } else {
       manOverboard = false;
@@ -923,41 +924,53 @@ async function main() {
   // bow spray (round 8: "adding splashes when it's breaking through waves"):
   // when the stem plunges into a rising face with way on, throw white water
   const sprayState = [
-    { imm: 0, cd: 0 },
-    { imm: 0, cd: 0 },
+    { cd: 0, fizzCd: 0 },
+    { cd: 0, fizzCd: 0 },
   ];
-  const sprayP = new THREE.Vector3();
   const sprayQ = new THREE.Quaternion();
   const sprayF = new THREE.Vector3();
   const checkBowSpray = (slot: 0 | 1, ship: Ship, dt: number) => {
     const st = sprayState[slot];
     st.cd -= dt;
+    st.fizzCd -= dt;
     if (!TUN.spray.enabled) return;
     const v = ship.body.linvel();
     const spd = Math.hypot(v.x, v.z);
-    // r17: bow spray is CONSTANT and SPEED-BASED, not crest-timed. The old code gated on
-    // the immersion RATE (surface rising / stem dropping) with a 0.2 s cooldown, so it cut
-    // in and out as the bow rode the wave faces ("cuts in and out — should be constant").
-    // Now it streams a steady sheet off the cutwater whenever she has way on and the stem
-    // is in the water; strength scales with speed (the bow wave).
-    if (spd < 2.5 || st.cd > 0 || ship.submergedFrac > 0.55) return;
+    // r18: spray is fully VOXEL-DRIVEN, not a forced outline. ship.bowSpray is the frontmost
+    // column STILL IN THE WATER (the stem at the waterline), recomputed each physics step in
+    // the buoyancy pass — as the bow lifts clear, the origin retreats to the next wet column,
+    // so the sheet rides the real cutwater and never blinks out in mid-air. We emit ONE
+    // bowWave there (it already peels port AND starboard off that single stem), which kills
+    // the old two-shoulder double image ("two spray animations spaced a couple meters apart").
+    if (spd < 2.0 || ship.submergedFrac > 0.6) return;
     const rot = ship.body.rotation();
     sprayQ.set(rot.x, rot.y, rot.z, rot.w);
     sprayF.set(1, 0, 0).applyQuaternion(sprayQ);
-    const fp = ship.build.footprint;
-    const strength = Math.min(0.5 + spd * 0.12, 2.4) * TUN.spray.bow;
-    // emit from BOTH cutwater shoulders (port + starboard of the stem) so the spray reads
-    // as a sheet peeling off the whole bow voxel-face, not one jet on the centreline.
-    let emitted = false;
-    for (const dz of [-1.6, 1.6]) {
-      ship.localToWorld([fp.maxX - 1.5, ship.comLocal[1] + 0.4, fp.zC + dz], sprayP);
-      const surf = surfaceHeight(waves, sprayP.x, sprayP.z, world.simTime);
-      if (surf - sprayP.y > -0.35) {
-        effects.bowWave(sprayP.x, surf + 0.1, sprayP.z, sprayF.x, sprayF.z, strength);
-        emitted = true;
-      }
+    if (st.cd <= 0 && ship.bowSpray.wet) {
+      const b = ship.bowSpray;
+      const strength = Math.min(0.5 + spd * 0.12, 2.4) * TUN.spray.bow;
+      effects.bowWave(b.x, b.y + 0.1, b.z, sprayF.x, sprayF.z, strength);
+      st.cd = 0.05; // ~20 Hz → a continuous sheet, not bursts
     }
-    if (emitted) st.cd = 0.06; // ~16 Hz → reads as a continuous sheet, not bursts
+    // SUBTLE per-voxel waterline fizz: a few small puffs off random columns that are cutting
+    // the surface (the whole hull line), speed-scaled and low-strength so it reads as a light
+    // fizz, not a storm. This is the seed of real chop/wave creation later — for now cosmetic.
+    if (st.fizzCd <= 0 && ship.waterlineN > 0) {
+      const fizzStr = Math.min(spd * 0.05, 0.7) * TUN.spray.bow;
+      if (fizzStr > 0.02) {
+        const k = Math.min(6, ship.waterlineN);
+        for (let i = 0; i < k; i++) {
+          const idx = ((Math.random() * ship.waterlineN) | 0) * 3;
+          effects.waterlineFizz(
+            ship.waterline[idx],
+            ship.waterline[idx + 1] + 0.05,
+            ship.waterline[idx + 2],
+            fizzStr,
+          );
+        }
+      }
+      st.fizzCd = 0.08;
+    }
   };
 
   // r16: the ambient open-water crest spray was REMOVED. It probed a ring around
@@ -1037,8 +1050,15 @@ async function main() {
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")
     boarding.player?.postPose();
-    const bearNow = aimBearing(); // traverse input is screen-relative (broadside only)
-    controls.aimSideSign = typeof bearNow === "number" ? bearNow : 1;
+    const bearNow = aimBearing();
+    // r18: traverse must be SCREEN-RELATIVE for EVERY battery (mouse-right swings the muzzle
+    // to screen-right), not just the broadside. With aimBearing's look dirs, screenRight =
+    // cross(look,up): a broadside bears out ±z so aimSideSign = the side (±1, as before); a
+    // fore chaser (look +x) has screenRight +z so it needs aimSideSign −1, an aft chaser
+    // (look −x) has screenRight −z so it needs +1. The old hardcoded 1 left the BOW gun
+    // inverted. (Signs derived against the real barrelDirLocal+input map and checked by
+    // re-deriving the known-good broadside ±1 — see the aim-sign oracle.)
+    controls.aimSideSign = bearNow === "fore" ? -1 : bearNow === "aft" ? 1 : bearNow;
     updateAimArc();
     sloopVisual.animate(
       world.simTime,

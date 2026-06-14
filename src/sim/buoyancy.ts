@@ -110,6 +110,10 @@ export interface VoxelColumn {
   area: number;
   /** ship-local center Y (m) of each displacing cell, ascending keel→deck. */
   cellY: number[];
+  /** r18: on the OUTSIDE of the footprint (lacks a column neighbour on ≥1 of ±x/±z), where
+   *  the hull skin meets the sea. Only edge columns throw waterline spray — interior columns
+   *  sit under the deck, so their "waterline" is inside the ship. Computed once at build. */
+  edge: boolean;
 }
 
 /** Build per-(x,z) columns of displacing cells. A cell displaces if it is solid OR
@@ -122,6 +126,8 @@ export function makeVoxelColumns(grid: VoxelGrid, compartments: Compartment[]): 
   const idx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
 
   const cols: VoxelColumn[] = [];
+  const colXZ: number[] = []; // parallel to cols: x*nz+z, for edge detection below
+  const present = new Set<number>();
   for (let x = 0; x < nx; x++) {
     for (let z = 0; z < nz; z++) {
       let lo = -1;
@@ -140,13 +146,25 @@ export function makeVoxelColumns(grid: VoxelGrid, compartments: Compartment[]): 
         }
       }
       if (cellY.length === 0) continue;
+      present.add(x * nz + z);
+      colXZ.push(x * nz + z);
       cols.push({
         x: (x + 0.5) * VOXEL_SIZE,
         z: (z + 0.5) * VOXEL_SIZE,
         area: VOXEL_SIZE * VOXEL_SIZE,
         cellY,
+        edge: false,
       });
     }
+  }
+  // r18: flag the footprint-boundary columns (the hull skin at the waterline). A column is an
+  // edge if any 4-neighbour (x,z) has no column — including grid-edge neighbours (out of range
+  // counts as absent). Keys are x*nz+z (unique within bounds, so no boundary aliasing).
+  const has = (x: number, z: number) => x >= 0 && x < nx && z >= 0 && z < nz && present.has(x * nz + z);
+  for (let i = 0; i < cols.length; i++) {
+    const x = Math.floor(colXZ[i] / nz);
+    const z = colXZ[i] % nz;
+    cols[i].edge = !has(x + 1, z) || !has(x - 1, z) || !has(x, z + 1) || !has(x, z - 1);
   }
   return cols;
 }

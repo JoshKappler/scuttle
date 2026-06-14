@@ -32,6 +32,18 @@ export class Ship {
    *  step from the wet voxels. The real arm the old `turnHeelArm` magic number faked. */
   heelArm = 0;
 
+  /** r18 VOXEL-DRIVEN SPRAY. Refreshed every physics step from the wet columns so spray
+   *  rides the real hull, not a mechanical outline.
+   *  `bowSpray` = the frontmost column still IN the water (the stem at the waterline), world
+   *  XYZ at the surface; as the bow lifts clear it retreats to the next wet column. `wet` is
+   *  false only when nothing touches the sea.
+   *  `waterline` = flat [wx, surfaceY, wz, …] of every column CUTTING the surface (length is
+   *  reused across steps; only the first `waterlineN` triples are live), for the subtle
+   *  per-voxel fizz all along the hull. */
+  readonly bowSpray = { x: 0, y: 0, z: 0, wet: false };
+  readonly waterline: number[] = [];
+  waterlineN = 0;
+
   /** Fired when damage severs hull sections; receiver spawns debris bodies. */
   onSevered?: (islands: Island[]) => void;
   /** Fired when a mast goes by the board (foot shot out or trunk smashed). */
@@ -456,6 +468,8 @@ export class Ship {
     let sxx = 0; // Σ area·rx·rx     (second moments)
     let szz = 0; // Σ area·rz·rz
     let sxz = 0; // Σ area·rx·rz
+    let bowMaxX = -Infinity; // r18: frontmost wet column → voxel bow-spray origin
+    this.waterlineN = 0;
     for (const col of this.columns) {
       // column anchor (its lowest cell) → world; sample the surface once here
       const aw = this.tmpV.set(col.x, col.cellY[0], col.z).applyQuaternion(this.tmpQ);
@@ -496,6 +510,27 @@ export class Ship {
         sxx += col.area * rx * rx;
         szz += col.area * rz * rz;
         sxz += col.area * rx * rz;
+        // r18: the frontmost (max local-x) wet column is the stem at the waterline — bow
+        // spray emits there and RIDES it as the bow bobs, instead of floating in mid-air.
+        if (col.x > bowMaxX) {
+          bowMaxX = col.x;
+          this.bowSpray.x = wx;
+          this.bowSpray.y = surfaceY;
+          this.bowSpray.z = wz;
+        }
+      }
+      // every EDGE column (hull skin) actually CUTTING the surface feeds the subtle waterline
+      // fizz — interior columns straddle too but their waterline is inside the hull.
+      if (straddles && col.edge) {
+        const o = this.waterlineN * 3;
+        if (o < this.waterline.length) {
+          this.waterline[o] = wx;
+          this.waterline[o + 1] = surfaceY;
+          this.waterline[o + 2] = wz;
+        } else {
+          this.waterline.push(wx, surfaceY, wz);
+        }
+        this.waterlineN++;
       }
     }
     // flooded water is accounted as WEIGHT below (not as a lift cut) — scaling lift
@@ -503,6 +538,7 @@ export class Ship {
     body.addForce({ x: 0, y: netLift, z: 0 }, true);
     body.addTorque({ x: torqueX, y: 0, z: torqueZ }, true);
     this.submergedFrac = totalVolume > 0 ? submergedVolume / totalVolume : 0;
+    this.bowSpray.wet = bowMaxX > -Infinity; // r18: anything in the water this step?
     // live hydrostatic heave stiffness for the critical-damping term in the drag block
     this.heaveStiffness = WATER_DENSITY * G * waterplane * TUN.phys.buoyancy;
     // live turn-heel lever: COM height above the centre of buoyancy (both world Y). This
