@@ -17,7 +17,7 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
-import { Ramming } from "./game/ramming";
+import { CollisionDestruction } from "./game/collisionDestruction";
 import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld } from "./game/gunnery";
 import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
 import { CharacterSpike } from "./game/character";
@@ -229,10 +229,12 @@ async function main() {
   };
 
   // hull-on-hull: meeting with way on carves voxels out of BOTH ships at the
-  // contact point (round 7). No toast, no scripted "ramming event" — it's just
-  // timber coming off where two hulls grind together (round 9: "voxel based
-  // and dynamic … we don't really need any mechanical logic or an alert").
-  const ramming = new Ramming(effects);
+  // contact point. No toast, no scripted "ramming event" — it's just timber
+  // coming off where two hulls grind together (round 9: "voxel based and
+  // dynamic … we don't really need any mechanical logic or an alert"). Task 5:
+  // driven by Rapier's real contact manifold (world.contactPair) and the
+  // energy-budget carve — embedding/tearing emerge from the material model.
+  const collisionDestruction = new CollisionDestruction(physics, effects);
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
   // Steering only happens at the wheel (E to take/leave it); V toggles
   // first person. Third person keeps a bird's-eye orbit on the ship.
@@ -385,7 +387,7 @@ async function main() {
     }
 
     cannons.update(dt, t, waves, [enemy]);
-    ramming.update(dt, [sloop, enemy]);
+    collisionDestruction.update([sloop, enemy]);
     debris.update(dt, t, waves);
     character?.update(dt, controls.cameraYaw());
 
@@ -527,7 +529,7 @@ async function main() {
     controls,
     camera,
     sailing,
-    ramming,
+    collisionDestruction,
     debris,
     oceanField,
     dynWaves,
