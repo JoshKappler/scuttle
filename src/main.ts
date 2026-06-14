@@ -1289,12 +1289,13 @@ async function main() {
         // only to tame extreme-speed gouging. See tunables.ts.
         { type: "slider", label: "break ceil J (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "maxStepEnergy", min: 5e5, max: 120e5, step: 5e5 },
         { type: "slider", label: "break yield", obj: TUN.crush, key: "yield", min: 0, max: 2, step: 0.05 },
-        { type: "slider", label: "break→slow", obj: TUN.crush, key: "carveDamp", min: 0, max: 2, step: 0.05 },
-        // target-nudge cap = transfer × closing speed; the struck ship is brought UP TO this and
-        // no further (so it can't fling). 0.08 = a slight shove; 0 = the target never reacts.
-        { type: "slider", label: "target nudge ×", obj: TUN.crush, key: "transfer", min: 0, max: 0.5, step: 0.01 },
-        // de-penetration separation speed (m/s) for the sub-break / unbreakable case only.
+        // inelastic transfer: 1 = hulls reach a common velocity (honest, epic exchange); lower =
+        // stiffer / more rooted. Water drag (not this) is what keeps a struck ship from sailing off.
+        { type: "slider", label: "transfer (inelastic)", obj: TUN.crush, key: "transfer", min: 0, max: 1, step: 0.05 },
+        // gentle de-penetration separation speed (m/s), sub-break / lodged-together case only.
         { type: "slider", label: "separate m/s", obj: TUN.crush, key: "separate", min: 0, max: 3, step: 0.1 },
+        // per-step relative-Δv cap (smoothing + NaN backstop). Raise for snappier impacts.
+        { type: "slider", label: "max Δv/step", obj: TUN.crush, key: "maxDvPerStep", min: 1, max: 12, step: 0.5 },
         { type: "slider", label: "min depth m", obj: TUN.crush, key: "minDepth", min: 0, max: 0.5, step: 0.01 },
         // cannons share the crush core; this scales their ½mv² into the same joule budget.
         { type: "slider", label: "cannon crush ×", obj: TUN.gun, key: "crushEfficiency", min: 1, max: 120, step: 1 },

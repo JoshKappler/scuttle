@@ -136,21 +136,21 @@ export class VoxelContact {
 
     const mA = Math.max(shipA.body.mass(), 1);
     const mB = Math.max(shipB.body.mass(), 1);
-    const keA = 0.5 * mA * aA * aA;
-    const keB = 0.5 * mB * aB * aB;
+    const mu = (mA * mB) / (mA + mB); // reduced mass — the collision's effective mass
     const gA = shipA.build.grid, gB = shipB.build.grid;
 
-    // BREAK: only when closing faster than vBreak (the wood's give). Budget = each hull's OWN
-    // approach KE (anchored model, NOT reduced mass — so a heavy/fast rammer guts a lighter one),
-    // capped by maxStepEnergy as an anti-vaporize backstop. Spend it on the cheapest contacting
-    // voxels, POOLED cheapest-first across BOTH hulls, so the soft oak in the path breaks before the
-    // dear RAM prow → the path clears (nothing embeds) and the bow only chips. The per-step count is
-    // really bounded by GEOMETRY (only the thin contact layer overlaps); the budget just decides how
-    // far down the toughness sort it reaches.
+    // BREAK: only when closing faster than vBreak (the wood's give). Budget = the collision energy
+    // ½·μ·vClose² (what an inelastic impact dissipates), capped by maxStepEnergy as an anti-vaporize
+    // backstop. Spend it on the cheapest contacting voxels, POOLED cheapest-first across BOTH hulls,
+    // so the soft oak in the path breaks before the dear RAM prow → the path clears (nothing embeds)
+    // and the bow only chips. Per-step count is really bounded by GEOMETRY (only the thin contact
+    // layer overlaps); the budget just decides how far down the toughness sort it reaches. Faster /
+    // heavier closing → bigger μv² → more breaks; and a heavy hull keeps vClose high (it barely
+    // slows) so it guts a lighter one over the whole impact — emergent, with NO "rammer" special case.
     let removedA = 0, removedB = 0, spent = 0;
     const breaking = vClose >= TUN.crush.vBreak;
     if (breaking) {
-      const budget = Math.min((keA + keB) * TUN.crush.yield, TUN.crush.maxStepEnergy);
+      const budget = Math.min(0.5 * mu * vClose * vClose * TUN.crush.yield, TUN.crush.maxStepEnergy);
       const cand: { s: 0 | 1; c: [number, number, number]; e: number }[] = [];
       for (let i = 0; i < ov.aCells.length; i++) { const c = ov.aCells[i]; const m = gA.get(c[0], c[1], c[2]); if (m) cand.push({ s: 0, c, e: breakEnergy(m) }); }
       for (let i = 0; i < ov.bCells.length; i++) { const c = ov.bCells[i]; const m = gB.get(c[0], c[1], c[2]); if (m) cand.push({ s: 1, c, e: breakEnergy(m) }); }
@@ -163,76 +163,54 @@ export class VoxelContact {
     }
     const removed = removedA + removedB;
 
-    // still-solid interpenetration after the carve? (drives only the gentle de-penetration fallback)
+    // still-solid interpenetration after the carve? (drives the gentle de-penetration below)
     let residual = 0;
     for (let i = 0; i < ov.aCells.length; i++) { const a = ov.aCells[i]; if (gA.isSolid(a[0], a[1], a[2])) residual++; }
     for (let i = 0; i < ov.bCells.length; i++) { const b = ov.bCells[i]; if (gB.isSolid(b[0], b[1], b[2])) residual++; }
 
-    // INTRUDER = the harder-driving hull; TARGET = the (more) anchored one. The push direction is the
-    // intruder's aim AT the contact (well-defined — a rammer's COM is never coincident with the
-    // contact). Every per-step Δv is hard-capped at maxDvPerStep, so even a pathological frame can't
-    // launch anything.
-    const bRams = aB >= aA;
-    const intr = bRams ? shipB : shipA, targ = bRams ? shipA : shipB;
-    const mInt = bRams ? mB : mA, mTarg = bRams ? mA : mB;
-    const aTarget = bRams ? aA : aB;
-    const tComY = bRams ? this.comA.y : this.comB.y;
-    const phx = bRams ? bhx : ahx, phz = bRams ? bhz : ahz; // push the target along the ram's travel
-    const cap = TUN.crush.maxDvPerStep;
-
+    // ---- MOMENTUM: ONE rule, NO "rammer" vs "target". An INELASTIC impulse along the relative-
+    // velocity direction drives both hulls toward their COMMON velocity (the faster slows, the slower
+    // speeds up) until their relative motion — and so the breaking — stops. It's symmetric and
+    // SELF-LIMITING: as vRel → 0 the impulse → 0, so it can't accumulate or fling, and using the
+    // velocity direction (not a centre-to-centre normal) means it never flips/spikes at deep overlap.
+    // We do NOT root the struck hull — the keel's own water drag (ship.ts, ~42× stronger sideways
+    // than fore/aft) bleeds the velocity it gains, so a broadsided hull lurches then is held by the
+    // sea while a rear-ended one slides more: the "in molasses" feel, fully emergent. Applied at COM
+    // HEIGHT so an off-centre hit YAWS them (a PIT) but never ROLLS them. ----
     let force = 0;
-    if (breaking && removed > 0 && spent > 0) {
-      // SLOW each hull by the energy IT plowed (its share of the spent break-energy, against its OWN
-      // mass — like driving into sand), applied OPPOSING ITS OWN VELOCITY: this can only ever remove
-      // speed, never add it, regardless of contact geometry, so no glitch can fling a hull. Per-hull
-      // and capped per step. A still target plows nothing (its share ≈ 0) → it isn't touched here.
-      const keSum = keA + keB || 1;
-      const slow = TUN.crush.carveDamp;
-      const dvA = Math.min(cap, aA - Math.sqrt(Math.max(0, aA * aA - (2 * spent * (keA / keSum) * slow) / mA)));
-      const dvB = Math.min(cap, aB - Math.sqrt(Math.max(0, aB * aB - (2 * spent * (keB / keSum) * slow) / mB)));
-      this.slowAlongOwnVel(shipA, mA * dvA);
-      this.slowAlongOwnVel(shipB, mB * dvB);
-      // TARGET NUDGE — only a nearly-anchored target: bring its push-direction speed UP TO (never
-      // beyond) transfer × vClose, hard-capped per step. A "slight shove" + yaw (off-centre → PIT)
-      // that CANNOT accumulate into a fling; the missing momentum goes into the sea. Skipped in a
-      // head-on (both are intruders).
-      if (aTarget < TUN.crush.vBreak) {
-        const tv = targ.body.linvel();
-        let add = TUN.crush.transfer * vClose - (tv.x * phx + tv.z * phz);
-        if (add > 0) this.pushAtComHeight(targ, point, tComY, phx, phz, mTarg * Math.min(add, cap));
-      }
-      force = (mA * dvA + mB * dvB) / dt;
+    const vrx = this.vA.x - this.vB.x, vrz = this.vA.z - this.vB.z; // horizontal relative velocity
+    const vrl = Math.hypot(vrx, vrz);
+    if (breaking && vrl > 1e-3) {
+      const nx = vrx / vrl, nz = vrz / vrl; // A relative to B (robust direction, never flips)
+      // inelastic cancel of the relative velocity (transfer = 1 → full common velocity), per step
+      // capped only as a smoothing / NaN backstop — the impact still completes over a few steps.
+      const jmag = mu * Math.min(vrl * TUN.crush.transfer, TUN.crush.maxDvPerStep);
+      this.pushAtComHeight(shipA, point, this.comA.y, -nx, -nz, jmag); // −μ·vRel on A
+      this.pushAtComHeight(shipB, point, this.comB.y, nx, nz, jmag);   // +μ·vRel on B → common velocity
+      force = jmag / dt;
     } else if (residual > 0) {
-      // NO breaking this step (sub-vBreak, or a genuinely unbreakable belt) but the hulls still
-      // overlap → ease the INTRUDER back OUT along its own aim (reversed) until they part at
-      // `separate` m/s. One-shot, capped, never pulling them together → it can't fling. Pure linear
-      // (no roll), target left anchored. NOT the ram path (a real ram is breaking, branch above).
-      const needed = Math.min(TUN.crush.separate + vClose, TUN.crush.separate * 2, cap);
-      if (needed > 0) {
-        this.imp.set(-phx, 0, -phz).multiplyScalar(mInt * needed);
-        intr.body.applyImpulse(this.imp, true);
-        force = (mInt * needed) / dt;
+      // sub-vBreak but still overlapping → ease the hulls apart GENTLY so they don't sit clipped:
+      // bring their separation speed UP TO `separate` m/s (one-shot, never pulling them together,
+      // capped), along the horizontal line of centres. Equal-and-opposite at the COM (no roll), tiny
+      // so it can't fling. The slow-bump / lodged-after-impact case, not the impact itself.
+      let scx = this.comB.x - this.comA.x, scz = this.comB.z - this.comA.z;
+      const scl = Math.hypot(scx, scz) || 1; scx /= scl; scz /= scl; // A->B, horizontal
+      const sepNow = -((this.vA.x - this.vB.x) * scx + (this.vA.z - this.vB.z) * scz); // >0 = separating
+      const add = Math.min(TUN.crush.separate - sepNow, TUN.crush.separate);
+      if (add > 0) {
+        const jSep = mu * add;
+        this.imp.set(-scx * jSep, 0, -scz * jSep); shipA.body.applyImpulse(this.imp, true);
+        this.imp.set(scx * jSep, 0, scz * jSep); shipB.body.applyImpulse(this.imp, true);
+        force = jSep / dt;
       }
     }
 
     if (this.effects && TUN.crush.fling > 0 && removed > 0) {
-      this.effects.impactDebris(point, this.tmpc.set(phx, 0, phz), Math.min(removed * TUN.crush.fling, 40));
+      const dl = vrl > 1e-3 ? vrl : 1;
+      this.effects.impactDebris(point, this.tmpc.set(vrx / dl, 0, vrz / dl), Math.min(removed * TUN.crush.fling, 40));
     }
 
     return { overlapCount: ov.aCells.length, depth, force, energy: spent, removedA, removedB, vClose };
-  }
-
-  /** SLOW a hull by impulse magnitude `jMag`, applied OPPOSING its own horizontal velocity at the
-   *  COM (pure deceleration — no torque, no roll). Because it always opposes the hull's OWN motion,
-   *  it can only ever remove speed, never add it, whatever the contact geometry — the guarantee that
-   *  a ram can never fling. No-op if the hull is barely moving. */
-  private slowAlongOwnVel(ship: Ship, jMag: number): void {
-    if (jMag <= 0) return;
-    const lv = ship.body.linvel();
-    const sp = Math.hypot(lv.x, lv.z);
-    if (sp < 1e-3) return;
-    this.imp.set((-lv.x / sp) * jMag, 0, (-lv.z / sp) * jMag);
-    ship.body.applyImpulse(this.imp, true);
   }
 
   /** Nudge a hull by impulse magnitude `jMag` along the horizontal direction (dx,0,dz), applied at
