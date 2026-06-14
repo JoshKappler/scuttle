@@ -13,6 +13,7 @@ import { meshChunk } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
 import type { ShipVisual, SailRecord } from "../render/shipVisual";
 import type { Physics } from "./physics";
+import { HullCollider } from "./hullCollider";
 
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
@@ -91,6 +92,8 @@ export class Ship {
 
   private phys: Physics;
   private deckCollider: RAPIER.Collider | null = null;
+  /** SHIP-SHIP / debris contact shape: the real voxel hull, mutated on damage (Task 1). */
+  readonly hull!: HullCollider;
 
   constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }) {
     this.phys = phys;
@@ -141,17 +144,10 @@ export class Ship {
       );
     this.body = world.createRigidBody(desc);
 
-    // coarse hull collider for SHIP-SHIP contact only; zero density — mass
-    // comes from the voxel grid above. Collision group 0x0002 keeps it OUT
-    // of the character controller's world: its flat top stood 1.1 m proud
-    // of the brig's waist deck, and a jump landed you ON it — "able to
-    // levitate a meter or two off the ground and walk on air" (round 7).
-    // Characters walk the deck trimesh; ships and debris still hit this box.
-    const collider = R.ColliderDesc.cuboid(l / 2, (h * 0.7) / 2, w / 2)
-      .setTranslation(l / 2, (h * 0.7) / 2, w / 2)
-      .setDensity(0)
-      .setCollisionGroups(0x0002ffff);
-    world.createCollider(collider, this.body);
+    // SHIP-SHIP / debris contact: the real voxel hull shape (mutated on damage).
+    // Group 0x0002ffff keeps it out of the character world; the deck trimesh
+    // (below) is what characters walk. Replaces the old coarse box (Task 1).
+    this.hull = new HullCollider(phys, this.body, build.grid);
 
     // the mast is solid — you should not be able to walk through it
     // (playtest round 5: "the mast has no physical hitbox")
