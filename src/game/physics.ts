@@ -14,6 +14,10 @@ export interface Physics {
    *  ActiveHooks.FILTER_CONTACT_PAIRS set (we set it on hull colliders), so the common case
    *  (no ships touching) costs nothing. */
   hooks: RAPIER.PhysicsHooks;
+  /** GOTCHA (rapier3d-compat 0.19): the pipeline only wires `hooks` when an EventQueue is ALSO
+   *  passed to world.step — `world.step(undefined, hooks)` silently runs WITHOUT the hooks.
+   *  So we keep a persistent queue and always pass it. We don't read events; it auto-clears. */
+  events: RAPIER.EventQueue;
 }
 
 export async function initPhysics(): Promise<Physics> {
@@ -36,5 +40,8 @@ export async function initPhysics(): Promise<Physics> {
     },
   };
 
-  return { world, RAPIER, shipBodies, hooks };
+  // see Physics.events: required for `hooks` to actually fire in this Rapier build.
+  const events = new RAPIER.EventQueue(true);
+
+  return { world, RAPIER, shipBodies, hooks, events };
 }

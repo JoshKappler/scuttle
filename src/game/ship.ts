@@ -171,7 +171,9 @@ export class Ship {
       const mastCol = R.ColliderDesc.cylinder(m.h / 2, 0.18)
         .setTranslation((m.x + 0.5) * VOXEL_SIZE, deckTop + m.h / 2 - 0.5, (m.z + 0.5) * VOXEL_SIZE)
         .setDensity(0);
-      this.mastColliders.push(world.createCollider(mastCol, this.body));
+      const mc = world.createCollider(mastCol, this.body);
+      mc.setActiveHooks(R.ActiveHooks.FILTER_CONTACT_PAIRS); // ship-vs-ship → deformable, not rigid
+      this.mastColliders.push(mc);
     }
 
     this.mastAlive = build.masts.map(() => true);
@@ -316,6 +318,10 @@ export class Ship {
       R.ColliderDesc.trimesh(new Float32Array(verts), new Uint32Array(idxs)).setDensity(0),
       this.body,
     );
+    // ship-vs-ship is deformable: flag the deck too so the contact hook fires for ANY pair of
+    // ship colliders (deck-deck, deck-hull, …) and filters them out of the rigid solver —
+    // otherwise two decks/superstructures rigidly hold the hulls apart and the crunch starves.
+    this.deckCollider.setActiveHooks(this.phys.RAPIER.ActiveHooks.FILTER_CONTACT_PAIRS);
   }
 
   /** Planks left for breach repairs. */
@@ -391,7 +397,7 @@ export class Ship {
         if (wet > 0) {
           breaches.push({
             compartmentId: c.id,
-            area: wet * VOXEL_SIZE * VOXEL_SIZE,
+            area: wet * VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale,
             depth: depthSum / wet,
           });
         }
@@ -407,7 +413,7 @@ export class Ship {
           p,
         );
         const d = surfaceHeight(waves, p.x, p.z, t) - p.y - COAMING;
-        if (d > 0) breaches.push({ compartmentId: c.id, area: c.hatchArea, depth: d });
+        if (d > 0) breaches.push({ compartmentId: c.id, area: c.hatchArea * TUN.flood.inflowScale, depth: d });
       }
     }
 

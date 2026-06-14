@@ -124,10 +124,10 @@ export class ShipVisual {
     };
     this.remeshAll();
     this.addRig();
-    // real flood fluid (round 14): clipped, world-leveled, sloshing surfaces per
-    // compartment, parented under the ship group. Replaces the emissive blue
-    // cubes (addWaterPlanes/updateWater) that stayed parallel to the tilted deck.
-    this.fluid = new CompartmentFluid(this.build.compartments);
+    // per-voxel flood fluid: water fills the compartment's interior cells (lowest world-Y
+    // first), parented under the ship group. Replaces the round-14 clipped plane the player
+    // saw as "blue rectangles not bound to the inside" — and the older deck-parallel cubes.
+    this.fluid = new CompartmentFluid(this.build.compartments, this.build.grid.dims);
     this.group.add(this.fluid.group);
     // NOTE: the old "interior shell" black box that used to hide the ocean
     // inside the hull during cutaway is gone — the ocean itself now gets a

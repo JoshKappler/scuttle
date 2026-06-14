@@ -29,6 +29,8 @@ export interface Overlap {
   depth: number;
   /** Unit push-out direction (world), oriented from A toward B. */
   axis: [number, number, number];
+  /** World-space centroid of A's overlapping cells — the contact point for force/velocity. */
+  centroid: [number, number, number];
 }
 
 /** Rotate (vx,vy,vz) by unit quaternion (qx,qy,qz,qw); write to out[0..2]. */
@@ -125,5 +127,5 @@ export function voxelOverlap(a: HullView, b: HullView, voxelSize: number): Overl
   const toB = axisIdx === 0 ? bcx - cax : axisIdx === 1 ? bcy - cay : bcz - caz;
   if (toB < 0) axis[axisIdx] = -1;
 
-  return { aCells, bCells, depth, axis };
+  return { aCells, bCells, depth, axis, centroid: [cax, cay, caz] };
 }
