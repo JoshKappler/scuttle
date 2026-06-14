@@ -206,11 +206,14 @@ export class Cannons {
       for (const ship of targets) {
         const hit = this.marchGrid(ship, b.prev, b.pos);
         if (hit) {
-          // poke a hole CLEAN THROUGH: every solid voxel the ball's path grazes vanishes,
-          // all the way out the far side, routed through the shared carveCells primitive →
-          // dust, never a rigid beam. Replaces the old capped isotropic blast.
+          // poke a hole through, but DEPTH IS EMERGENT: the ball spends its kinetic energy
+          // boring along its path through the shared crush() core — a fast ball punches clean
+          // out the far side, a slow one lodges, an iron belt stops it. boreRadiusVox sets only
+          // the candidate-path WIDTH; how far the budget reaches down it is physics, not a cap.
+          // Same primitive as ramming, just smaller + faster. Removed voxels → dust, never beams.
           const dir = this.tmpDir.copy(b.vel).normalize();
-          const removed = ship.carveCells(this.boreCells(ship, hit.world, dir));
+          const ke = 0.5 * TUN.gun.mass * b.vel.lengthSq(); // joules carried by the ball
+          const { removed } = ship.crush(this.boreCells(ship, hit.world, dir), ke * TUN.gun.crushEfficiency);
           if (removed > 0) {
             // debris MATCHES the damage: ~one flying mote per voxel removed, thrown out
             // along the bore (dir negated → points outward). No sparks-and-flash storm.

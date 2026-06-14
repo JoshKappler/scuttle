@@ -107,6 +107,13 @@ export const TUN = {
      *  perf backstop on one ball's bore (set high — the hole should reach the far side). */
     boreRadiusVox: 1,
     maxCellsPerHit: 250,
+    /** Fraction of the ball's ½mv² that goes to boring (crush()). >1 because
+     *  STRENGTH_TO_JOULES is calibrated for RAMMING's megajoule reduced-mass impacts, so a
+     *  ~48 kJ ball needs a multiplier to punch a 3-wide bore through both oak walls; this is
+     *  the knob that decouples cannon penetration from the ram-tuned joule scale. Depth is
+     *  still emergent (a half-speed ball at ¼ KE lodges; an iron belt resists). Tuned live
+     *  at the Task 8 harness / Task 10 sweep alongside STRENGTH_TO_JOULES. */
+    crushEfficiency: 8,
   },
 
   /** Ship-vs-ship destruction — the Teardown-style CAPPED-IMPULSE contact, read by

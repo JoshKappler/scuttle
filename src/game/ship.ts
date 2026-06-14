@@ -5,9 +5,10 @@ import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeVoxelColumns, type VoxelColumn } from "../sim/buoyancy";
 import { planCarve } from "../sim/carve";
+import { planCrush } from "../sim/crush";
 import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
-import { MATERIALS } from "../sim/materials";
+import { MATERIALS, breakEnergy } from "../sim/materials";
 import { segmentBoxHit, segmentMastHit, segmentSailHit } from "../sim/rigDamage";
 import { meshChunk } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
@@ -673,6 +674,28 @@ export class Ship {
     this.registerBreaches(cells);
     this.damageDirty = true; // sever/mass/deck recompute is deferred + throttled (flushDamage)
     return removed;
+  }
+
+  /** The universal destruction entry point: spend `energy` joules removing as many of the
+   *  given candidate cells as it can afford (toughest survive), paying each cell's real
+   *  material break-energy. Routes removal through carveCells (grid + collider + breaches +
+   *  dust). Unlike carve(), the candidate cells are SUPPLIED by the caller — the real
+   *  hull-hull overlap (ramming) or the real bore ray (cannon fire) — so holes land exactly
+   *  where contact happened, and penetration depth is emergent (the budget reaches as far
+   *  down the toughness-sorted candidates as it can pay for). Returns voxels removed +
+   *  leftover energy (the caller spends leftover on push/debris). */
+  crush(cells: [number, number, number][], energy: number): { removed: number; leftover: number } {
+    const grid = this.build.grid;
+    // only solid cells cost energy (empty cells are free at strength 0 and would inflate
+    // the count for nothing) — pre-filter so the budget is spent on real material.
+    const solid = cells.filter(([x, y, z]) => grid.isSolid(x, y, z));
+    const { removed, leftover } = planCrush(
+      solid,
+      ([x, y, z]) => breakEnergy(grid.get(x, y, z)),
+      energy,
+    );
+    const n = this.carveCells(removed);
+    return { removed: n, leftover };
   }
 
   /** Heavy post-damage recompute (shed disconnected islands, rebuild buoyancy columns
