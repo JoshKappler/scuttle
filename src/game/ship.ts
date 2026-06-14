@@ -397,7 +397,7 @@ export class Ship {
         if (wet > 0) {
           breaches.push({
             compartmentId: c.id,
-            area: wet * VOXEL_SIZE * VOXEL_SIZE,
+            area: wet * VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale,
             depth: depthSum / wet,
           });
         }
@@ -413,7 +413,7 @@ export class Ship {
           p,
         );
         const d = surfaceHeight(waves, p.x, p.z, t) - p.y - COAMING;
-        if (d > 0) breaches.push({ compartmentId: c.id, area: c.hatchArea, depth: d });
+        if (d > 0) breaches.push({ compartmentId: c.id, area: c.hatchArea * TUN.flood.inflowScale, depth: d });
       }
     }
 

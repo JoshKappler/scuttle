@@ -3,316 +3,160 @@ import { VOXEL_SIZE } from "../core/constants";
 import type { Compartment } from "../sim/compartments";
 
 /**
- * Real flooded-compartment fluid (round 14, replaces the emissive blue cubes
- * `shipVisual.addWaterPlanes`/`updateWater` used to draw). Per compartment ONE
- * subdivided horizontal plane parented under the ship group; unlike the old
- * boxes — whose tops were Y-scaled in SHIP-LOCAL space and so stayed parallel
- * to the tilted deck — this surface is COUNTER-ROTATED by the inverse of the
- * ship's orientation so it holds WORLD-UP-LEVEL. Flooded water then visibly
- * pools to the listing/trimming low side, because a level plane intersected
- * against the heeled (rotated) compartment box wets the low corner first. The
- * plane is clipped to the real compartment volume by six world-space clipping
- * planes rebuilt from the bbox each frame, and shaded like water (translucent
- * blue-green, fresnel + Beer–Lambert depth darkening) keyed to the ocean
- * palette, rather than as a self-lit slab.
+ * Per-VOXEL flooded-compartment fluid (replaces the round-14 clipped plane, which the
+ * player saw as "weird blue rectangles … not bound to the inside of the ship, not truly
+ * fluid").
+ *
+ * Each compartment's interior air cells are real voxels. The flooded water is the
+ * `round(fill · cellCount)` cells with the LOWEST world-Y — because every cell has equal
+ * volume that is exact volume conservation, and "lowest world-Y" makes the water pool to
+ * the low side when she lists and rise as she floods, all while staying strictly inside
+ * the hull (we only ever fill compartment cells). Rendered as one InstancedMesh of cubes
+ * per compartment (one draw call), so it reads as water filling the hull voxel-by-voxel.
+ *
+ * The mesh lives UNDER the ship group (ShipVisual parents it), so the cubes inherit the
+ * hull's world pose for free; we recompute the wet SET only when the fill or the ship's
+ * attitude actually changes (most frames are a no-op).
  */
 
-const DEEP = new THREE.Color(0x0a3340); // matches ocean.ts uDeepColor
-const SHALLOW = new THREE.Color(0x1a6a72); // matches ocean.ts uShallowColor
+const WATER_COLOR = 0x1a6a72; // EXACTLY ocean.ts uShallowColor, so flood reads as the same sea
 
-interface CompFluid {
-  mesh: THREE.Mesh;
-  mat: THREE.ShaderMaterial;
-  /** Six clip planes (world space), rebuilt each frame from the bbox. */
-  planes: THREE.Plane[];
-  /** Local-space AABB faces (constant): normal + signed distance for the box. */
-  localPlanes: THREE.Plane[];
-  /** Ship-local box extents in meters. */
-  boxMinY: number;
-  boxHeight: number;
-  centerX: number;
-  centerZ: number;
-  /** Slosh oscillator state: small tilt (rad) + rate about the roll & pitch axes. */
-  sloshRoll: number;
-  sloshRollV: number;
-  sloshPitch: number;
-  sloshPitchV: number;
-  /** Previous ship roll/pitch, to drive slosh off the CHANGE in attitude. */
-  prevRoll: number;
-  prevPitch: number;
-  inited: boolean;
+interface CF {
+  n: number;
+  cells: Int32Array; // packed grid index per local instance slot
+  lx: Float32Array;
+  ly: Float32Array;
+  lz: Float32Array;
+  mesh: THREE.InstancedMesh;
+  worldY: Float32Array; // scratch
+  order: Int32Array; // scratch (instance slots sorted by worldY)
+  lastFill: number;
+  lastTiltKey: number;
+  frames: number;
 }
-
-const VERT = /* glsl */ `
-varying vec3 vWorldPos;
-varying vec3 vWorldNormal;
-#include <clipping_planes_pars_vertex>
-void main() {
-  #include <begin_vertex>
-  #include <project_vertex>
-  vec4 wp = modelMatrix * vec4(transformed, 1.0);
-  vWorldPos = wp.xyz;
-  vWorldNormal = normalize(mat3(modelMatrix) * vec3(0.0, 1.0, 0.0));
-  #include <clipping_planes_vertex>
-}
-`;
-
-const FRAG = /* glsl */ `
-precision highp float;
-varying vec3 vWorldPos;
-varying vec3 vWorldNormal;
-uniform vec3 uDeep;
-uniform vec3 uShallow;
-uniform vec3 uCameraPos;
-uniform float uFloorY;     // world Y of the compartment floor
-uniform float uSurfaceY;   // world Y of this surface
-uniform float uOpacity;
-#include <clipping_planes_pars_fragment>
-void main() {
-  #include <clipping_planes_fragment>
-  vec3 V = normalize(uCameraPos - vWorldPos);
-  vec3 N = normalize(vWorldNormal);
-  if (dot(N, V) < 0.0) N = -N; // double-sided: always face the viewer
-  float facing = clamp(dot(N, V), 0.0, 1.0);
-
-  // Beer–Lambert-ish depth darkening: the deeper the water column beneath this
-  // surface point, the darker/greener it reads (light is absorbed on the way
-  // down and back). Shallow film near the floor stays brighter.
-  float depth = max(uSurfaceY - uFloorY, 0.0);
-  float absorb = 1.0 - exp(-depth * 0.85);
-  vec3 base = mix(uShallow, uDeep, absorb);
-  // grazing angles look deeper too (less of the bright floor shows through)
-  base = mix(uShallow, base, mix(0.55, 1.0, 1.0 - facing));
-
-  // fresnel sky-ish lift at glancing angles so the surface reads as water, not
-  // a flat gel; kept subtle so it stays legible through the cutaway.
-  float fres = pow(1.0 - facing, 4.0);
-  vec3 col = mix(base, vec3(0.62, 0.78, 0.82), fres * 0.5);
-
-  float alpha = clamp(uOpacity + fres * 0.25, 0.0, 0.95);
-  gl_FragColor = vec4(col, alpha);
-}
-`;
 
 export class CompartmentFluid {
-  /** Parent for every compartment surface. ShipVisual adds this UNDER its own
-   *  group, so it inherits the ship's world transform automatically; the
-   *  surfaces below counter-rotate against that to hold world-level. */
   readonly group = new THREE.Group();
-  private comps = new Map<number, CompFluid>();
-  private tmpNormalMat = new THREE.Matrix3();
-  private shipPos = new THREE.Vector3();
-  private shipQuat = new THREE.Quaternion();
-  private shipScale = new THREE.Vector3();
-  private invShipQuat = new THREE.Quaternion();
-  private tmpQ2 = new THREE.Quaternion();
-  private tmpEuler = new THREE.Euler(0, 0, 0, "ZYX");
-  private tmpV = new THREE.Vector3();
+  private comps = new Map<number, CF>();
+  private nx: number;
+  private ny: number;
+  private mat: THREE.MeshStandardMaterial;
+  private q = new THREE.Quaternion();
+  private pos = new THREE.Vector3();
+  private scl = new THREE.Vector3();
+  private m4 = new THREE.Matrix4();
 
-  constructor(compartments: Compartment[]) {
+  constructor(compartments: Compartment[], dims: [number, number, number]) {
+    this.nx = dims[0];
+    this.ny = dims[1];
+    // slightly emissive so the water reads inside the dark hold without needing a light to
+    // reach below decks; translucent with depthWrite so the fill occludes itself cleanly
+    // (no transparent-overdraw mush) yet still blends against the hull behind it.
+    this.mat = new THREE.MeshStandardMaterial({
+      color: WATER_COLOR,
+      emissive: new THREE.Color(0x0a3340), // ocean deep tone — just enough self-light to read below decks
+      emissiveIntensity: 0.18,
+      roughness: 0.15, // wet, slightly reflective like the sea surface
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.8,
+      depthWrite: true,
+      side: THREE.DoubleSide,
+    });
     for (const c of compartments) this.add(c);
   }
 
   private add(c: Compartment): void {
-    const minX = c.bboxMin[0] * VOXEL_SIZE;
-    const maxX = (c.bboxMax[0] + 1) * VOXEL_SIZE;
-    const minY = c.bboxMin[1] * VOXEL_SIZE;
-    const maxY = (c.bboxMax[1] + 1) * VOXEL_SIZE;
-    const minZ = c.bboxMin[2] * VOXEL_SIZE;
-    const maxZ = (c.bboxMax[2] + 1) * VOXEL_SIZE;
-    const w = maxX - minX;
-    const d = maxZ - minZ;
-
-    // the plane must still cover the box footprint once it is counter-rotated
-    // off-axis, so size it to the box DIAGONAL (a square big enough that the
-    // level surface always spans the wet region before the clip trims it).
-    const span = Math.hypot(w, d) * 1.5;
-    const geo = new THREE.PlaneGeometry(span, span, 8, 8);
-    geo.rotateX(-Math.PI / 2); // lay flat: normal points +Y
-
-    const mat = new THREE.ShaderMaterial({
-      vertexShader: VERT,
-      fragmentShader: FRAG,
-      uniforms: {
-        uDeep: { value: DEEP.clone() },
-        uShallow: { value: SHALLOW.clone() },
-        uCameraPos: { value: new THREE.Vector3() },
-        uFloorY: { value: 0 },
-        uSurfaceY: { value: 0 },
-        uOpacity: { value: 0.6 },
-      },
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      clipping: true, // compile in the clipping-plane chunks
-    });
-    // six clip planes in world space, bounding the rotated box (rebuilt/frame)
-    mat.clippingPlanes = [
-      new THREE.Plane(),
-      new THREE.Plane(),
-      new THREE.Plane(),
-      new THREE.Plane(),
-      new THREE.Plane(),
-      new THREE.Plane(),
-    ];
-
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.visible = false;
-    mesh.frustumCulled = false; // small, and the clip already bounds it
-    mesh.renderOrder = 3; // draw after opaque hull + ocean
+    const n = c.cells.size;
+    const cells = new Int32Array(n);
+    const lx = new Float32Array(n), ly = new Float32Array(n), lz = new Float32Array(n);
+    const nx = this.nx, ny = this.ny, layer = this.nx * this.ny;
+    let i = 0;
+    for (const p of c.cells) {
+      cells[i] = p;
+      const x = p % nx, y = Math.floor(p / nx) % ny, z = Math.floor(p / layer);
+      lx[i] = (x + 0.5) * VOXEL_SIZE;
+      ly[i] = (y + 0.5) * VOXEL_SIZE;
+      lz[i] = (z + 0.5) * VOXEL_SIZE;
+      i++;
+    }
+    const geo = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
+    const mesh = new THREE.InstancedMesh(geo, this.mat, Math.max(n, 1));
+    mesh.count = 0;
+    mesh.frustumCulled = false;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.renderOrder = 3; // after opaque hull + ocean
     this.group.add(mesh);
-
-    // local-space AABB faces (point inward via negative normals at the max
-    // face): three.js keeps the half-space where distanceToPoint >= 0.
-    const localPlanes = [
-      new THREE.Plane(new THREE.Vector3(1, 0, 0), -minX), // x >= minX
-      new THREE.Plane(new THREE.Vector3(-1, 0, 0), maxX), // x <= maxX
-      new THREE.Plane(new THREE.Vector3(0, 1, 0), -minY), // y >= minY
-      new THREE.Plane(new THREE.Vector3(0, -1, 0), maxY), // y <= maxY
-      new THREE.Plane(new THREE.Vector3(0, 0, 1), -minZ), // z >= minZ
-      new THREE.Plane(new THREE.Vector3(0, 0, -1), maxZ), // z <= maxZ
-    ];
-
     this.comps.set(c.id, {
-      mesh,
-      mat,
-      planes: mat.clippingPlanes,
-      localPlanes,
-      boxMinY: minY,
-      boxHeight: maxY - minY,
-      centerX: (minX + maxX) / 2,
-      centerZ: (minZ + maxZ) / 2,
-      sloshRoll: 0,
-      sloshRollV: 0,
-      sloshPitch: 0,
-      sloshPitchV: 0,
-      prevRoll: 0,
-      prevPitch: 0,
-      inited: false,
+      n, cells, lx, ly, lz, mesh,
+      worldY: new Float32Array(n),
+      order: new Int32Array(n),
+      lastFill: -1,
+      lastTiltKey: 1e9,
+      frames: 99,
     });
   }
 
-  /**
-   * Reflect current flooding. Call once per frame at the seam the old
-   * `updateWater` used, AFTER the ship group's transform is synced (this reads
-   * the parent's world matrix). `cameraPos` (optional) shades the view-dependent
-   * fresnel rim; when absent the surface is shaded as if viewed from straight
-   * above (the common cutaway/inspection angle), which keeps it stable and
-   * readable. `dt` advances the slosh. The depth darkening needs no camera.
-   */
-  update(compartments: Compartment[], cameraPos: THREE.Vector3 | undefined, dt: number): void {
-    // the parent (ship) group already carries the ship's world transform; pull
-    // it so the clip planes (world space) and counter-rotation can use it.
+  /** Reflect current flooding. Called once per frame AFTER the ship group transform is
+   *  synced. `cameraPos`/`dt` are accepted for API compatibility (unused now). */
+  update(compartments: Compartment[], _cameraPos: THREE.Vector3 | undefined, _dt: number): void {
     this.group.updateWorldMatrix(true, false);
-    const shipMatrix = this.group.matrixWorld;
-    shipMatrix.decompose(this.shipPos, this.shipQuat, this.shipScale);
-    const q = this.shipQuat;
-    this.invShipQuat.copy(q).invert();
-    this.tmpNormalMat.getNormalMatrix(shipMatrix);
-
-    // ship roll (about fore-aft +x) and pitch (about beam +z), for slosh + the
-    // counter-rotation. Euler order ZYX: extract independent of yaw(y).
-    this.tmpEuler.setFromQuaternion(q, "ZYX");
-    const shipRoll = this.tmpEuler.x; // bank
-    const shipPitch = this.tmpEuler.z; // trim
-    const clampDt = Math.min(Math.max(dt, 0), 0.05);
+    this.group.matrixWorld.decompose(this.pos, this.q, this.scl);
+    // quantized tilt key: recompute the wet set when the ship rolls/pitches enough that the
+    // pool should slosh to a new low side (the quaternion's x/z carry roll+pitch).
+    const tiltKey = Math.round(this.q.x * 40) * 6151 + Math.round(this.q.z * 40);
 
     for (const c of compartments) {
       const cf = this.comps.get(c.id);
       if (!cf) continue;
       const fill = c.volume > 0 ? c.waterVolume / c.volume : 0;
-      if (fill < 0.01) {
-        cf.mesh.visible = false;
-        cf.inited = false; // reset slosh so a refill doesn't kick from stale state
+      if (fill < 0.005) {
+        if (cf.mesh.count !== 0) cf.mesh.count = 0;
+        cf.lastFill = 0;
         continue;
       }
-      cf.mesh.visible = true;
-
-      // fill→height reconciliation: `fill` is waterVolume / TRUE-cell-volume, so
-      // a brim-full compartment (waterVolume == volume) puts the surface at the
-      // very top of its real cells. Mapping that true fraction onto the bbox
-      // height makes solid cells inside the box raise the level faster than a
-      // naive waterVolume/bboxArea would (the displaced solid has nowhere to
-      // put the water but UP), which is the correct reconciliation.
-      const surfaceLocalY = cf.boxMinY + fill * cf.boxHeight;
-
-      // --- slosh: a small critically-damped 1-DOF tilt per axis, FORCED by the
-      // change in ship attitude (so a roll kicks the pool, then it settles). ---
-      if (!cf.inited) {
-        cf.prevRoll = shipRoll;
-        cf.prevPitch = shipPitch;
-        cf.sloshRoll = 0;
-        cf.sloshRollV = 0;
-        cf.sloshPitch = 0;
-        cf.sloshPitchV = 0;
-        cf.inited = true;
-      }
-      const dRoll = shipRoll - cf.prevRoll;
-      const dPitch = shipPitch - cf.prevPitch;
-      cf.prevRoll = shipRoll;
-      cf.prevPitch = shipPitch;
-
-      // critically-damped spring (ζ=1): ẍ = -ω²x - 2ω·ẋ ; the ship's angular
-      // VELOCITY (Δangle/dt) drives it, so the fluid lags the hull then levels.
-      const omega = 7.0; // rad/s — a quick, stable rock
-      const drive = 14.0; // how hard attitude change kicks the pool
-      const stepSlosh = (x: number, v: number, forcing: number): [number, number] => {
-        const a = -omega * omega * x - 2 * omega * v + forcing;
-        const vNew = v + a * clampDt;
-        const xNew = x + vNew * clampDt; // semi-implicit Euler: stable
-        // hard clamp keeps a pathological dt from ever blowing up the tilt
-        const xC = Math.min(Math.max(xNew, -0.18), 0.18);
-        return [xC, vNew];
-      };
-      const rollForce = clampDt > 1e-6 ? (dRoll / clampDt) * drive : 0;
-      const pitchForce = clampDt > 1e-6 ? (dPitch / clampDt) * drive : 0;
-      [cf.sloshRoll, cf.sloshRollV] = stepSlosh(cf.sloshRoll, cf.sloshRollV, rollForce);
-      [cf.sloshPitch, cf.sloshPitchV] = stepSlosh(cf.sloshPitch, cf.sloshPitchV, pitchForce);
-
-      // world-level orientation + slosh: the desired WORLD quaternion of the
-      // surface is a small tilt (slosh) about the world axes; counter-rotate by
-      // the parent (ship) so groupQuat * localQuat == worldLevelQuat.
-      // worldLevelQuat = rotX(sloshRoll) * rotZ(sloshPitch)
-      this.tmpEuler.set(cf.sloshRoll, 0, cf.sloshPitch, "ZYX");
-      const worldLevel = this.tmpQ2.setFromEuler(this.tmpEuler);
-      // localQuat = inverse(groupQuat) * worldLevel
-      cf.mesh.quaternion.copy(this.invShipQuat).multiply(worldLevel);
-
-      // anchor the surface at the box-center XZ and the reconciled local height.
-      cf.mesh.position.set(cf.centerX, surfaceLocalY, cf.centerZ);
-
-      // world Y of floor + surface for the depth-darkening shader. The ship
-      // rotation tilts the box, so the floor/surface world height under the box
-      // center moves with attitude — apply q (+ ship translate) to each.
-      this.tmpV.set(cf.centerX, cf.boxMinY, cf.centerZ).applyQuaternion(q);
-      cf.mat.uniforms.uFloorY.value = this.shipPos.y + this.tmpV.y;
-      this.tmpV.set(cf.centerX, surfaceLocalY, cf.centerZ).applyQuaternion(q);
-      const surfWorldY = this.shipPos.y + this.tmpV.y;
-      cf.mat.uniforms.uSurfaceY.value = surfWorldY;
-      const camU = cf.mat.uniforms.uCameraPos.value as THREE.Vector3;
-      if (cameraPos) {
-        camU.copy(cameraPos);
-      } else {
-        // no camera available at this seam: shade as if viewed from straight
-        // above the surface centre (V points up → minimal fresnel, deep look).
-        this.tmpV.set(cf.centerX, surfaceLocalY, cf.centerZ).applyQuaternion(q);
-        camU.set(this.shipPos.x + this.tmpV.x, surfWorldY + 30, this.shipPos.z + this.tmpV.z);
-      }
-
-      // rebuild the six world-space clip planes from the (constant) local box
-      // faces through the live ship world matrix, so they track the heeled hull
-      // while the surface above counter-rotates to stay level.
-      for (let i = 0; i < 6; i++) {
-        cf.planes[i].copy(cf.localPlanes[i]).applyMatrix4(shipMatrix, this.tmpNormalMat);
-      }
+      cf.frames++;
+      // recompute only on a meaningful change, and at most ~every 4 frames (cheap when idle)
+      if (cf.frames < 4 || (Math.abs(fill - cf.lastFill) < 0.004 && tiltKey === cf.lastTiltKey)) continue;
+      cf.frames = 0;
+      cf.lastFill = fill;
+      cf.lastTiltKey = tiltKey;
+      this.rebuildWet(cf, fill);
     }
   }
 
-  dispose(): void {
-    for (const cf of this.comps.values()) {
-      cf.mesh.geometry.dispose();
-      cf.mat.dispose();
+  /** Pick the wetCount lowest-world-Y cells and write their instance transforms. */
+  private rebuildWet(cf: CF, fill: number): void {
+    const n = cf.n;
+    const wy = cf.worldY, ord = cf.order;
+    const q = this.q;
+    for (let i = 0; i < n; i++) {
+      // world-Y of the cell centre = (R · localCentre).y. The constant ship-Y offset cancels
+      // when ranking, so we only need the rotated y-component (standard quaternion-rotate).
+      const vx = cf.lx[i], vy = cf.ly[i], vz = cf.lz[i];
+      const tx = 2 * (q.y * vz - q.z * vy);
+      const ty = 2 * (q.z * vx - q.x * vz);
+      const tz = 2 * (q.x * vy - q.y * vx);
+      wy[i] = vy + q.w * ty + (q.z * tx - q.x * tz);
+      ord[i] = i;
     }
+    const order = ord as unknown as { sort(cmp: (a: number, b: number) => number): void };
+    order.sort((a, b) => wy[a] - wy[b]);
+    const wetCount = Math.min(n, Math.max(0, Math.round(fill * n)));
+    const m4 = this.m4;
+    for (let k = 0; k < wetCount; k++) {
+      const i = ord[k];
+      m4.makeTranslation(cf.lx[i], cf.ly[i], cf.lz[i]);
+      cf.mesh.setMatrixAt(k, m4);
+    }
+    cf.mesh.count = wetCount;
+    cf.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  dispose(): void {
+    for (const cf of this.comps.values()) cf.mesh.geometry.dispose();
+    this.mat.dispose();
     this.comps.clear();
   }
 }

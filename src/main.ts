@@ -1223,18 +1223,19 @@ async function main() {
       controls: [
         { type: "button", label: "⚔ Ram Test (T-bone)", onClick: ramTest },
         { type: "toggle", label: "deformable crush", obj: TUN.crush, key: "enabled" },
-        // penalty spring + force cap: fMax is THE "barely shove the target" knob.
-        { type: "slider", label: "stiffness k (×1e6)", obj: TUN.crush as unknown as Record<string, number>, key: "k", min: 0.5e6, max: 20e6, step: 0.5e6 },
-        { type: "slider", label: "force cap fMax (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "fMax", min: 0.5e5, max: 30e5, step: 0.5e5 },
-        // THE "soft, voxel-by-voxel crunch" knob: per-hull per-step carve budget. Low = slow
-        // grind + tough RAM bow survives; high = faster/heavier gouging. See tunables.ts.
-        { type: "slider", label: "step carve J (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "maxStepEnergy", min: 1e5, max: 60e5, step: 1e5 },
-        { type: "slider", label: "carve yield", obj: TUN.crush, key: "yield", min: 0, max: 2, step: 0.05 },
-        { type: "slider", label: "carve→decel", obj: TUN.crush, key: "carveDamp", min: 0, max: 2, step: 0.05 },
+        // anti-vaporize ceiling on the per-step break budget (the every-step rate is set by the
+        // closing KE, not this). Lower only to tame extreme-speed gouging. See tunables.ts.
+        { type: "slider", label: "break ceil J (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "maxStepEnergy", min: 5e5, max: 120e5, step: 5e5 },
+        { type: "slider", label: "break yield", obj: TUN.crush, key: "yield", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "break→slow", obj: TUN.crush, key: "carveDamp", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "vel transfer ×", obj: TUN.crush, key: "transfer", min: 0, max: 1, step: 0.05 },
+        { type: "slider", label: "de-penetrate m/s·m", obj: TUN.crush, key: "separate", min: 0, max: 8, step: 0.5 },
         { type: "slider", label: "min depth m", obj: TUN.crush, key: "minDepth", min: 0, max: 0.5, step: 0.01 },
         // cannons share the crush core; this scales their ½mv² into the same joule budget.
         { type: "slider", label: "cannon crush ×", obj: TUN.gun, key: "crushEfficiency", min: 1, max: 120, step: 1 },
         { type: "slider", label: "ball bore radius", obj: TUN.gun, key: "boreRadiusVox", min: 0, max: 3, step: 1 },
+        // how fast the sea pours through a breach (0.15 ≈ "reduce flood ~85%"); 1 = raw rate.
+        { type: "slider", label: "flood inflow ×", obj: TUN.flood, key: "inflowScale", min: 0, max: 1, step: 0.05 },
       ],
     },
   ]);

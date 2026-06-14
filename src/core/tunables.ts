@@ -116,48 +116,55 @@ export const TUN = {
     crushEfficiency: 40,
   },
 
-  /** Ship-vs-ship DEFORMABLE contact — the rebuild (game/voxelContact.ts). The hull-hull
-   *  pair is out of Rapier's rigid solver (physics.ts); each fixed step we read the real
-   *  voxel overlap and apply a soft, force-capped penalty spring whose over-cap energy CARVES
-   *  both hulls at the contact. The carve shrinks the overlap → bleeds the spring, so the
-   *  rammer decelerates and digs in while the target is barely shoved (fMax bounds the push).
-   *  Mutual "wet-wood crunch", not rigid plow. Replaces TUN.ram (retired in Task 10). */
+  /** Ship-vs-ship DEFORMABLE contact — ONE emergent rule (game/voxelContact.ts). The hull-hull
+   *  pair is out of Rapier's rigid solver (physics.ts); each fixed step, where the two hulls'
+   *  voxels overlap and are CLOSING, the relative closing KE (½μv²) is spent breaking the
+   *  cheapest contacting voxels of both hulls, and the KE that breaking consumes IS the impulse
+   *  μ·Δv exchanged at the contact point (faster ship slows, slower speeds up + off-centre spin
+   *  / PIT). Can't break it → elastic bounce (solid stop). Big-rams-small breaks through; equals
+   *  head-on disintegrate; stops once closing is too slow to break a voxel. Replaces the old
+   *  penalty-spring (k/damping/fMax retired) and TUN.ram. */
   crush: {
     /** master enable — off → ship-vs-ship does nothing (hulls ghost; see physics.ts hook). */
     enabled: true,
-    /** penalty spring stiffness (N per metre of penetration). With substeps + critical
-     *  damping the stability bound is ~ k·(dt/N)²/m_eff ≲ 1; start soft, raise at the harness. */
-    k: 6.0e6,
-    /** damping as a fraction of critical (c = mult·2·√(k·m_eff)). 1 = critically damped (no
-     *  bounce); back off slightly for a little spring-feel. */
-    damping: 0.9,
-    /** force cap (N). THE knob for "barely shove the target": the push can never exceed this,
-     *  so a hard ram's excess energy goes to carving instead of launching the struck ship.
-     *  This cap also bounds the per-step impulse (≤ fMax·dt), which is what makes the contact
-     *  stable in a single pass — no sub-stepping needed. */
-    fMax: 6.0e5,
-    /** per-hull per-step carve budget (J) — THE "soft, voxel-by-voxel crunch" knob. Caps how
-     *  much one fixed step may carve from each hull so a hard ram grinds the hole open across
-     *  many steps instead of vaporizing the whole overlap in one frame. A FIXED budget also
-     *  lets material toughness decide depth: at 1.2e6 the oak a bow strikes (180 kJ/cell) caves
-     *  ~6 cells/step while the RAM bow (1.44 MJ/cell) barely chips — bow-first ramming wins and
-     *  the rammer's prow takes only light damage, emergently. Raise for faster/heavier gouging,
-     *  lower for a slower grind. (At normal sail-ram speeds the physical ½μv² is already below
-     *  this, so the cap mainly tames extreme closing speeds.) */
-    maxStepEnergy: 1.2e6,
-    /** fraction of the over-cap energy that becomes destruction (1 = all). Tunes how readily
-     *  the crunch carves vs. just bounces. */
+    /** per-step break-energy CEILING (J, whole pair) — an anti-vaporize cap for extreme closing
+     *  speeds, NOT the every-step rate. The real budget is the closing KE (½μv²); this only
+     *  clamps it so a freakishly fast hit can't delete a huge slab in one frame. At normal
+     *  sail-ram speeds ½μv² is already below this, so it rarely binds. */
+    maxStepEnergy: 6.0e6,
+    /** fraction of the closing KE available to break voxels (1 = all). Lower → tougher hulls
+     *  (less breaks per hit) and more of the energy goes to the velocity exchange/bounce. */
     yield: 1,
-    /** how strongly the energy SPENT breaking voxels bleeds the closing speed (1 = full
-     *  physical: the rammer loses exactly the KE that went into destruction). This is "the
-     *  ship slows as it digs in, dampened by the destruction." The bled momentum rides off
-     *  with the debris (not reacted onto the struck ship), so the target still barely moves. */
+    /** how strongly the energy SPENT breaking voxels removes closing speed (1 = full physical:
+     *  the relative motion loses exactly the KE that became destruction). This is "the ram slows
+     *  as it digs in"; the lost momentum is the impulse swapped between the hulls. */
     carveDamp: 1,
-    /** dust motes flung per voxel carved at the contact (visual; 0 = none). */
+    /** fraction of the breaking's velocity change that is exchanged between the hulls (0..1).
+     *  KEY "less aggressive" knob: fracturing wood dissipates energy but transmits little
+     *  momentum, so most of the break is lost (to splinters/sound), not flung into the heavy
+     *  hull. 0.2 = a ram slows + the target speeds up GENTLY over many voxels, instead of one
+     *  ship launching the other. Applied at the contact point so a diagonal hit still yaws (PIT). */
+    transfer: 0.2,
+    /** de-penetration speed (m/s of separation per metre of interpenetration, capped at 1 m of
+     *  depth) for an unbroken SOLID contact, so entangled hulls ooze apart instead of staying
+     *  clipped through each other. Applied at the COM (pure linear) so it never ROLLS the hull,
+     *  and never fires while a ram is actively breaking through. Gentle. */
+    separate: 2,
+    /** dust motes flung per voxel broken at the contact (visual; 0 = none). */
     fling: 1,
-    /** minimum penetration (m) before any carving — kills voxel flicker on a grazing touch /
-     *  a calm side-by-side raft (which still gets the gentle spring, just no damage). */
+    /** minimum penetration (m) before any breaking — kills voxel flicker on a grazing touch /
+     *  a calm side-by-side raft (which still gets the gentle bounce, just no damage). */
     minDepth: 0.06,
+  },
+
+  /** Flooding — how fast the sea comes in through a breach. The deterministic floodStep oracle
+   *  (sim/compartments.ts) is UNCHANGED; this scales the breach area game/ship.ts feeds it, so
+   *  the vitest oracle stays exact while the play-feel is tunable. */
+  flood: {
+    /** multiplier on breach inflow (1 = the raw Bernoulli orifice rate). 0.15 ≈ the playtest's
+     *  "reduce flood rates ~85%": a holed hull settles and founders over a minute, not seconds,
+     *  so flooding is a fightable, dramatic process (pumps + plank repairs matter). */
+    inflowScale: 0.15,
   },
 
   /** Fleet — how many hostile ships the FleetManager (game/fleet.ts) keeps sailing
