@@ -114,6 +114,20 @@ git commit -m "spike: voxel-collider perf gate (two hulls grinding) — <PASS/FA
 
 > Task 0 code is throwaway; it is removed in Task 10. Keep it behind `?spike=1` until then.
 
+### ✅ Spike result (recorded 2026-06-13): PASS, decisive
+
+Node run (CPU/WASM `world.step()` — the new collision+carve cost; identical in browser):
+- Two FULL brig hulls = **18,312 voxels each**.
+- **Two hulls grinding + carving: median 0.17 ms / p95 0.47 ms / max 1.96 ms per step** — ~35× under the 16.6 ms frame budget (all-steps median 0.003 ms). No errors, no `unreachable`.
+- `world.contactPair(a,b,(m)=>…)` returns a **readable manifold** on every contact step: `numContacts()>0`, `normal()`, world-space `solverContactPoint(0)`.
+- Contact-force/collision **events are sparse** (7 force / 2 collision over 30 contact steps) — unreliable as a trigger.
+- `combineVoxelStates` is callable but **unnecessary** for two separate hulls (it handles seams between adjacent tiles of ONE surface).
+
+**Refinements forced by the spike (these OVERRIDE the task text below):**
+1. **Task 1 — drop the pairing API.** `HullCollider` needs only `build` + `removeVoxel(x,y,z)` (`setVoxel(...,false)`) + `dispose()`. No `pairWith`/`unpair`/`propagateVoxelChange`/`combineVoxelStates`.
+2. **Task 5 — poll, don't listen.** Each step, for ship pairs in proximity, call `world.contactPair(a.hull.collider, b.hull.collider, (m)=>…)`; if `m.numContacts()>0`, carve both hulls at `m.solverContactPoint(0)` (world) along `m.normal()`, with energy from the bodies' masses + relative normal velocity (§ impact). `drainContactForceEvents` is NOT the trigger.
+3. **Test paths use `tests/<name>.test.ts`** importing `../src/...` (project convention), NOT `src/sim/*.test.ts`. `tests/connectivity.test.ts` already exists (Task 6 extends it).
+
 ---
 
 ## Task 1: HullCollider wrapper + swap the box for voxels

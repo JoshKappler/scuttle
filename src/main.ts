@@ -28,6 +28,12 @@ import { TUN } from "./core/tunables";
 import { createDevPanel } from "./render/devPanel";
 
 async function main() {
+  // THROWAWAY (plan Task 0): ?spike=1 runs the voxel-collider perf gate and bails.
+  if (new URLSearchParams(location.search).has("spike")) {
+    const { runVoxelSpike } = await import("./dev/voxelSpike");
+    await runVoxelSpike();
+    return;
+  }
   const app = document.getElementById("app")!;
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
