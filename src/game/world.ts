@@ -37,6 +37,24 @@ export class GameWorld {
     this.scene.add(ship.visual.group);
   }
 
+  /** Remove a ship: drop it from the sim list, the scene (disposing its visual
+   *  geometry/materials), and the Rapier world (which also frees its colliders).
+   *  Used by the FleetManager for despawn + sunk-wreck cleanup. No-op if absent. */
+  removeShip(ship: Ship): void {
+    const i = this.ships.indexOf(ship);
+    if (i === -1) return;
+    this.ships.splice(i, 1);
+    this.scene.remove(ship.visual.group);
+    ship.visual.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+      if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+      else if (mat) mat.dispose();
+    });
+    this.physics.world.removeRigidBody(ship.body);
+  }
+
   /** Advance simulation by real dt (seconds), in fixed steps (max 5/frame). */
   step(dt: number): void {
     this.accumulator = Math.min(this.accumulator + dt, FIXED_DT * 5);
