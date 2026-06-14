@@ -1,3 +1,4 @@
+// @ts-nocheck -- throwaway spike (removed in Task 10); not part of the typed build.
 // THROWAWAY perf/feasibility spike (plan Task 0). Run in Node via the gated test
 // tests/voxelSpike.test.ts (RUN_SPIKE=1). Removed in Task 10.
 // world.step() is CPU/WASM — identical cost in Node and the browser — so this is
