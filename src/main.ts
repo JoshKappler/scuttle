@@ -115,6 +115,21 @@ async function main() {
   const { IslandField } = await import("./game/islandField");
   const islands = new IslandField(seed, physics, scene);
 
+  // dev/playtest convenience: ?at=harbor drops you in clear water just seaward of
+  // the town dock, so you can look the island over without the opening sail out to
+  // it. The dock anchor faces +x (bearing 0), so seaward is +x; spawn well clear of
+  // the submerged shoal so the hull doesn't start inside the collider.
+  if (new URLSearchParams(location.search).get("at") === "harbor") {
+    const tr = sloop.body.translation();
+    const dock = islands.nearestDock(tr.x, tr.z);
+    if (dock) {
+      sloop.body.setTranslation({ x: dock.x + 54, y: 0.5, z: dock.z }, true);
+      sloop.body.setRotation({ x: 0, y: 1, z: 0, w: 0 }, true); // bow toward the town (-x)
+      sloop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      sloop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    }
+  }
+
   // P4/P5: bake a hull's per-column keel/deck profile from the voxel grid (once)
   // into a float texture. P4 binds the PLAYER's for the voxel-accurate in-hull cut;
   // P5 stamps BOTH ships' profiles into the dynamic-wave field for the interaction
