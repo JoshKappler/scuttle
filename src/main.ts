@@ -15,6 +15,8 @@ import { GameWorld } from "./game/world";
 import { SailingController, type Wind } from "./game/sailing";
 import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
+import { FleetManager, type EnemyUnit } from "./game/fleet";
+import { MAXVIS } from "./core/constants";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
 import { CollisionDestruction } from "./game/collisionDestruction";
@@ -155,29 +157,8 @@ async function main() {
   const sloopProfile = makeProfileTex(sloop.build.grid);
   ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
 
-  // enemy captain: the old, smaller sloop — kept as the easier opponent
-  // (round 6) — spawns upwind, ALREADY POINTED AT YOU, and runs down on you.
-  // 85 m, not 160 (round 10: "very hard to actually line up with the enemy …
-  // just floating off way into the distance") — close enough to engage inside
-  // a minute, and the brain now hunts instead of jockeying off to leeward.
-  const enemyBuild = buildSloop();
-  const enemyVisual = new ShipVisual(enemyBuild);
-  const enemy = new Ship(physics, enemyBuild, enemyVisual, {
-    x: -9 - waves[0].dirX * 85,
-    y: 0.2,
-    z: -3 - waves[0].dirZ * 85,
-  });
-  {
-    const etr = enemy.body.translation();
-    const ea = -Math.atan2(-3 - etr.z, -9 - etr.x);
-    enemy.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
-  }
-  world.addShip(enemy);
-  const enemyProfile = makeProfileTex(enemy.build.grid);
-  // P4: give the enemy hull the SAME voxel-accurate, attitude-aware cut as the
-  // player — previously it fell back to the old flat waterline ellipse (the void
-  // crescents / sea-through-hull on the "old ship").
-  ocean.setHullProfile(1, enemyProfile.tex, enemyProfile.sizeX, enemyProfile.sizeZ);
+  // the hostile fleet is set up below (it needs effects/cannons/debris/boarding);
+  // ocean slot 1's shared enemy profile is bound there too.
 
   // P5: the dynamic-wave INTERACTION field (Crest/Atlas FDTD ping-pong, GPU
   // fragment passes). A 256 m height/velocity sheet re-centred on the camera each
@@ -200,7 +181,7 @@ async function main() {
   // stencil seam mask: each frame, paint both hull silhouettes into the
   // stencil buffer before the ocean draws; the ocean's NotEqual stencil test
   // then rejects those pixels (no sea on the deck, in the hold, or bow void).
-  const seam = new SeamMask([sloop.visual.group, enemy.visual.group]);
+  const seam = new SeamMask([sloop.visual.group]); // hull list refreshed each frame from the fleet
 
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
@@ -216,23 +197,60 @@ async function main() {
   scene.add(spray.object);
   effects.attachSpray(spray);
   const cannons = new Cannons(scene, effects);
-  const debris = new DebrisManager(physics, scene);
+  const debris = new DebrisManager(physics, scene, effects);
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
-  enemy.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, enemy));
 
-  const captain = new AICaptain(enemy, scene, effects);
-  const boarding = new BoardingSystem(physics, scene, effects, sloop, enemy);
+  // ---- the hostile fleet (game/fleet.ts) ----
+  // every enemy is a buildSloop hull → they SHARE one profile texture for the premium
+  // voxel sea-cut; bind it to ocean slot 1 once. Only the live pose changes as the
+  // nearest (premium) enemy swaps.
+  const enemyProfile = makeProfileTex(buildSloop().grid);
+  ocean.setHullProfile(1, enemyProfile.tex, enemyProfile.sizeX, enemyProfile.sizeZ);
 
-  // rig damage feedback (round 7): masts fall, rudders splinter
+  // boarding is forward-declared: the spawn factory's damage callbacks capture it,
+  // but they only fire on later hits, by which time it's assigned (just below).
+  let boarding: BoardingSystem;
+  const spawnEnemy = (): EnemyUnit => {
+    const build = buildSloop();
+    const visual = new ShipVisual(build);
+    // fan upwind around the player so multiple hulls don't stack (the old single
+    // enemy spawned dead upwind at 85 m, bow turned toward you — generalized here).
+    const ang = (Math.random() - 0.5) * Math.PI * 1.2;
+    const dist = 85 + Math.random() * 45;
+    const dx = waves[0].dirX;
+    const dz = waves[0].dirZ;
+    const ox = dx * Math.cos(ang) - dz * Math.sin(ang);
+    const oz = dx * Math.sin(ang) + dz * Math.cos(ang);
+    const pc = sloop.body.translation();
+    const ship = new Ship(physics, build, visual, { x: pc.x - ox * dist, y: 0.2, z: pc.z - oz * dist });
+    const etr = ship.body.translation();
+    const ea = -Math.atan2(pc.z - etr.z, pc.x - etr.x);
+    ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
+    ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
+    ship.onMastFelled = () => (boarding.message = "her mast goes by the board!");
+    ship.onRudderHit = (hp) => {
+      visual.chipRudder(hp / 3);
+      boarding.message = hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!";
+    };
+    const captain = new AICaptain(ship, scene, effects);
+    return { ship, captain };
+  };
+
+  const fleet = new FleetManager({ world, target: sloop, spawn: spawnEnemy });
+  let premiumSlot1: Ship | null = null; // which enemy holds premium ocean slot 1 (trail reset on swap)
+  const salvaged = new WeakSet<Ship>(); // enemies that have paid salvage once
+  let primaryEnemy: Ship | null = null; // nearest living enemy, for the HUD marker
+
+  // seed one enemy so boarding always starts with a valid target (default count 1).
+  fleet.reconcile();
+  boarding = new BoardingSystem(physics, scene, effects, sloop, fleet.enemies[0] ?? sloop);
+
+  // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
+  // equivalents are wired per-spawn in the fleet factory above.
   sloop.onMastFelled = () => (boarding.message = "YOUR MAST GOES BY THE BOARD!");
-  enemy.onMastFelled = () => (boarding.message = "her mast goes by the board!");
   sloop.onRudderHit = (hp) => {
     sloopVisual.chipRudder(hp / 3);
     boarding.message = hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!";
-  };
-  enemy.onRudderHit = (hp) => {
-    enemyVisual.chipRudder(hp / 3);
-    boarding.message = hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!";
   };
 
   // hull-on-hull: meeting with way on carves voxels out of BOTH ships at the
@@ -256,7 +274,6 @@ async function main() {
   // — yours or the prize — no longer freezes the game or demands a reload; the voyage
   // just continues. Only the non-terminal man-overboard + enemy-salvage states remain.
   let manOverboard = false;
-  let enemyScuttled = false; // enemy went down — non-terminal, salvage and sail on
   let plugChannel = 0; // seconds remaining on the current plank repair
 
   const isSunk = (s: Ship) =>
@@ -336,7 +353,18 @@ async function main() {
       manOverboard = false;
     }
     sailing.apply(sloop, wind);
-    captain.update(dt, t, waves, wind, sloop);
+    fleet.updateAI(dt, t, waves, wind);
+    fleet.reconcile();
+    // keep boarding pointed at a live enemy; release the grapple if its target was culled.
+    const liveEnemies = fleet.enemies;
+    boarding.hasTarget = liveEnemies.length > 0;
+    if (boarding.hasTarget && !liveEnemies.includes(boarding.currentEnemy())) {
+      boarding.grappled = false;
+      boarding.setEnemy(fleet.premiumEnemy ?? liveEnemies[0], true);
+    } else if (boarding.hasTarget && !boarding.grappled && !boarding.chestCarried && fleet.premiumEnemy) {
+      boarding.setEnemy(fleet.premiumEnemy);
+    }
+    fleet.boardingTarget = boarding.grappled ? boarding.currentEnemy() : null;
 
     // one action button (round 6): LMB fires the broadside while RMB-aiming
     // — from the wheel, the deck, first or third person, all identically —
@@ -393,18 +421,20 @@ async function main() {
       sloop.pumpOn = !sloop.pumpOn;
     }
 
-    cannons.update(dt, t, waves, [enemy]);
-    collisionDestruction.update([sloop, enemy]);
+    cannons.update(dt, t, waves, fleet.enemies);
+    collisionDestruction.update([sloop, ...fleet.enemies]);
     debris.update(dt, t, waves);
     character?.update(dt, controls.cameraYaw());
 
     // r17: NO end-game. The prize sinking just yields salvage and the run continues; your
     // own ship sinking is survivable too (swim clear, board the enemy, or respawn) — it is
     // never a banner or a freeze. The game only ends when the player reloads.
-    if (isSunk(enemy) && !enemyScuttled) {
-      enemyScuttled = true;
-      boarding.gold += 150; // flotsam — most of it went down with her
-      boarding.message = `SHE'S SCUTTLED — salvaged ${boarding.gold}g from the flotsam. Sail on.`;
+    for (const e of fleet.enemies) {
+      if (isSunk(e) && !salvaged.has(e)) {
+        salvaged.add(e);
+        boarding.gold += 150; // flotsam — most of it went down with her
+        boarding.message = `SHE'S SCUTTLED — salvaged 150g from the flotsam. Sail on.`;
+      }
     }
   };
 
@@ -519,7 +549,7 @@ async function main() {
     if (e.code === "KeyF") toggleFullscreen();
     if (e.code === "KeyX") {
       cutaway = !cutaway;
-      for (const s of [sloop, enemy]) s.visual.setCutaway(cutaway ? cutPlane : null);
+      for (const s of [sloop, ...fleet.enemies]) s.visual.setCutaway(cutaway ? cutPlane : null);
       ocean.setCutaway(cutaway);
       abyss.visible = cutaway;
     }
@@ -528,10 +558,9 @@ async function main() {
   // dev console handle (also used by Playwright-driven verification)
   (window as unknown as Record<string, unknown>).DEBUG = {
     sloop,
-    enemy,
+    fleet,
     world,
     cannons,
-    captain,
     boarding,
     controls,
     camera,
@@ -666,9 +695,14 @@ async function main() {
     const heading = Math.atan2(hdgV.z, hdgV.x); // world yaw of the bow
     hudEls.rose.style.transform = `rotate(${(-heading * 180) / Math.PI}deg)`;
     hudEls.hdg.textContent = `${Math.round(((heading * 180) / Math.PI + 360) % 360)}°`;
-    const et = enemy.body.translation();
-    const enemyBearing = Math.atan2(et.z - tr.z, et.x - tr.x) - heading;
-    hudEls.enemyMarker.style.transform = `rotate(${(enemyBearing * 180) / Math.PI}deg)`;
+    if (primaryEnemy) {
+      const et = primaryEnemy.body.translation();
+      const enemyBearing = Math.atan2(et.z - tr.z, et.x - tr.x) - heading;
+      hudEls.enemyMarker.style.opacity = "1";
+      hudEls.enemyMarker.style.transform = `rotate(${(enemyBearing * 180) / Math.PI}deg)`;
+    } else {
+      hudEls.enemyMarker.style.opacity = "0";
+    }
     const windBearing = Math.atan2(-wind.dirZ, -wind.dirX) - heading;
     hudEls.windMarker.style.transform = `rotate(${(windBearing * 180) / Math.PI}deg)`;
 
@@ -732,7 +766,7 @@ async function main() {
     const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
     hudEls.hints.textContent = onFoot
       ? `${lockHint}WASD move · Shift sprint · Space jump · LMB slash · hold RMB aim + LMB fire · C kick · E wheel/grab · V view · F fullscreen${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass (wheel zooms) · R plank · P pump · G grapple · F fullscreen`;
+      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass (wheel zooms) · R plank · P pump · G grapple · F fullscreen · foes ${fleet.enemies.length}`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
@@ -867,13 +901,13 @@ async function main() {
     while (lo < ny && !g.isSolid(cx, lo, cz)) lo++;
     return { keel: lo * VOXEL_SIZE, deck: (ship.build.deckY + 1) * VOXEL_SIZE };
   };
-  const spans = [hullSpan(sloop), hullSpan(enemy)];
+  const spans = [hullSpan(sloop), hullSpan(fleet.enemies[0] ?? sloop)]; // [player, any-enemy] (all enemies are buildSloop)
   // P4 pose temporaries (avoid per-frame allocation)
   const _poseQuat = new THREE.Quaternion();
   const _poseM4 = new THREE.Matrix4();
   const _poseInvRot = new THREE.Matrix3();
   const _poseTrans = new THREE.Vector3();
-  const feedWake = (slot: 0 | 1, ship: Ship) => {
+  const feedWake = (slot: number, ship: Ship) => {
     const v = ship.body.linvel();
     const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
     const rot = ship.body.rotation();
@@ -906,6 +940,34 @@ async function main() {
     ocean.updateHullPose(slot, _poseInvRot, _poseTrans);
   };
 
+  // cheap-tier feed: collar/bow/flank-wash + analytic-ellipse cut (via uShipC), no
+  // voxel pose, no stern ribbon (ocean.updateShipWake guards the trail to slots < 2).
+  const feedCheap = (slot: number, ship: Ship) => {
+    const v = ship.body.linvel();
+    const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
+    const rot = ship.body.rotation();
+    wakeF.set(1, 0, 0).applyQuaternion(new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w));
+    wakeF.y = 0;
+    wakeF.normalize();
+    const fp = ship.build.footprint;
+    ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
+    const tr = ship.body.translation();
+    const span = spans[1]; // every enemy is a buildSloop
+    ocean.updateShipWake(
+      slot,
+      wakeV.x,
+      wakeV.z,
+      wakeF.x,
+      wakeF.z,
+      speed,
+      ship.build.lengthM / 2,
+      ship.build.beamM / 2,
+      world.simTime,
+      tr.y + span.keel,
+      tr.y + span.deck,
+    );
+  };
+
   // P5: assemble both ships' pose + plan for the dynamic-wave INJECTION pass. Each
   // ship stamps its waterline footprint (the P4 hull profile, posed live) into the
   // GPU field — the bow/side/stern impulses are computed in dynamicWaves.ts. The
@@ -922,8 +984,8 @@ async function main() {
   const _dynM4 = new THREE.Matrix4();
   const _dynFwd = new THREE.Vector3();
   const buildDynShips = (): DynShip[] => {
-    const ships = [sloop, enemy];
-    for (let i = 0; i < 2; i++) {
+    const ships = [sloop, fleet.premiumEnemy].filter(Boolean) as Ship[];
+    for (let i = 0; i < ships.length; i++) {
       const ship = ships[i];
       const d = _dynShips[i];
       const rot = ship.body.rotation();
@@ -947,7 +1009,7 @@ async function main() {
       ship.localToWorld([(fp.minX + fp.maxX) / 2, 0, fp.zC], wakeV);
       d.waterY = surfaceHeight(waves, wakeV.x, wakeV.z, world.simTime);
     }
-    return _dynShips;
+    return _dynShips.slice(0, ships.length);
   };
 
   // bow spray (round 8: "adding splashes when it's breaking through waves"):
@@ -1031,6 +1093,11 @@ async function main() {
         z: vz + qq.w * tz + (qq.x * ty - qq.y * tx),
       };
     };
+    const enemy = fleet.enemies[0];
+    if (!enemy) {
+      boarding.message = "no enemy to ram";
+      return;
+    }
     const p = sloop.body.translation();
     const q = sloop.body.rotation();
     // horizontal bow heading on the water plane
@@ -1101,6 +1168,14 @@ async function main() {
       ],
     },
     {
+      title: "Fleet",
+      controls: [
+        // how many hostile ships to keep sailing against you (0..MAXVIS). Sunk
+        // enemies are auto-replaced. Drag live — they spawn/despawn one per step.
+        { type: "slider", label: "enemies", obj: TUN.fleet, key: "enemyCount", min: 0, max: MAXVIS, step: 1 },
+      ],
+    },
+    {
       title: "Waves / Chop",
       controls: [
         { type: "slider", label: "chop", obj: TUN.chop, key: "strength", min: 0, max: 2, step: 0.05 },
@@ -1142,11 +1217,13 @@ async function main() {
       controls: [
         { type: "button", label: "⚔ Ram Test (T-bone)", onClick: ramTest },
         { type: "button", label: "⚑ ram debug log", onClick: () => { window.__ramDebug = !window.__ramDebug; console.log("[ram] debug", window.__ramDebug ? "ON" : "OFF"); } },
-        { type: "slider", label: "ram dmg ×", obj: TUN.ram, key: "impulseToJoules", min: 0, max: 10, step: 0.25 },
-        { type: "slider", label: "ram crush thresh", obj: TUN.ram, key: "minImpulse", min: 0, max: 400000, step: 5000 },
-        { type: "slider", label: "ram max vox/hit", obj: TUN.ram, key: "maxCellsPerHit", min: 1, max: 40, step: 1 },
-        { type: "slider", label: "ball dmg J", obj: TUN.gun, key: "carveJoules", min: 0, max: 400000, step: 5000 },
-        { type: "slider", label: "ball max vox", obj: TUN.gun, key: "maxCellsPerHit", min: 1, max: 30, step: 1 },
+        { type: "button", label: "⊘ ram destruction on/off", onClick: () => { TUN.ram.enabled = !TUN.ram.enabled; console.log("[ram] destruction", TUN.ram.enabled ? "ON" : "OFF"); } },
+        { type: "slider", label: "ram crush thresh", obj: TUN.ram, key: "minImpulse", min: 0, max: 300000, step: 5000 },
+        { type: "slider", label: "ram dmg ×", obj: TUN.ram, key: "impulseToJoules", min: 0, max: 3, step: 0.05 },
+        { type: "slider", label: "ram max vox/step", obj: TUN.ram, key: "maxCellsPerHit", min: 1, max: 120, step: 1 },
+        { type: "slider", label: "ram drag", obj: TUN.ram, key: "drag", min: 0, max: 20000, step: 250 },
+        { type: "slider", label: "ball bore radius", obj: TUN.gun, key: "boreRadiusVox", min: 0, max: 3, step: 1 },
+        { type: "slider", label: "ball max vox", obj: TUN.gun, key: "maxCellsPerHit", min: 1, max: 400, step: 5 },
       ],
     },
   ]);
@@ -1173,10 +1250,31 @@ async function main() {
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
     world.step(dt);
-    feedWake(0, sloop);
-    feedWake(1, enemy);
+    // ---- per-frame fleet LOD ----
+    fleet.rankLOD(camera.position);
+    const premium = fleet.premiumEnemy;
+    primaryEnemy = premium;
+    if (premium !== premiumSlot1) {
+      ocean.resetTrail(1); // premium enemy swapped — don't lace the ribbon across the jump
+      premiumSlot1 = premium;
+    }
+    feedWake(0, sloop); // slot 0: player (voxel cut + ribbon + pose)
     checkBowSpray(0, sloop, dt);
-    checkBowSpray(1, enemy, dt);
+    if (premium) {
+      feedWake(1, premium); // slot 1: nearest enemy (premium)
+      checkBowSpray(1, premium, dt);
+    } else {
+      ocean.clearSlot(1);
+    }
+    // cheap slots 2..: the remaining visible enemies (collar/bow/wash/ellipse cut)
+    let cheapSlot = 2;
+    for (const e of fleet.enemies) {
+      if (e === premium) continue;
+      if (cheapSlot >= MAXVIS) break;
+      feedCheap(cheapSlot, e);
+      cheapSlot++;
+    }
+    for (; cheapSlot < MAXVIS; cheapSlot++) ocean.clearSlot(cheapSlot);
     effects.update(dt, world.simTime);
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")
@@ -1199,7 +1297,9 @@ async function main() {
         ? { bearing: aimBearing(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
         : null,
     );
-    enemyVisual.animate(world.simTime, captain.sailing.rudder, captain.sailing.sailSet);
+    for (const u of fleet.units) {
+      u.ship.visual.animate(world.simTime, u.captain.sailing.rudder, u.captain.sailing.sailSet);
+    }
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
@@ -1309,6 +1409,7 @@ async function main() {
     renderer.autoClear = true;
     renderer.clear(); // clears color + depth + stencil
     renderer.autoClear = false;
+    seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group)]);
     seam.write(renderer, scene, camera); // hull → stencil (no color/depth)
     renderer.render(scene, camera);      // full scene incl. ocean, stencil-tested
     renderer.autoClear = true;
