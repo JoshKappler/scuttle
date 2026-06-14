@@ -128,7 +128,7 @@ export function bugrimovReady(): boolean {
   return loadOk;
 }
 
-export function createBugrimovRig(_name: BugrimovName = "captain", heightM = 1.8): PirateRig | null {
+export function createBugrimovRig(_name: BugrimovName = "captain", heightM = 2.4): PirateRig | null {
   if (!gltf) return null;
 
   const inner = cloneSkeleton(gltf.scene) as THREE.Group;

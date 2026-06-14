@@ -100,9 +100,9 @@ async function main() {
 
   const physics = await initPhysics();
   // rigged character pack — loaded up front so every Pirate can be built
-  // synchronously. Default is the Quaternius captain; ?char=bug loads the
-  // Bugrimov semi-realistic pirate, ?char=kk the KayKit rogue. Whichever is
-  // chosen falls back to Quaternius if it fails to load.
+  // synchronously. Default is the Bugrimov semi-realistic pirate; ?char=q the
+  // Quaternius captain, ?char=kk the KayKit rogue. Whichever is chosen falls
+  // back to Quaternius if it fails to load.
   let charOk = false;
   const charPack = characterPack();
   if (charPack === "kaykit") {

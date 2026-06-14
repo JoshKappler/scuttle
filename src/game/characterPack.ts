@@ -1,11 +1,9 @@
 /**
  * Which on-foot character pack to use.
  *
- * Default is the Quaternius pirate (the look we're keeping for now). KayKit
- * ("Adventurers", CC0) was prototyped for its modular limbs + 76 melee clips
- * but its chibi proportions read as a "cartoon pill", so it's parked behind
- * `?char=kk` (or `?char=kaykit`) for reference only while we pick a better
- * model.
+ * Default is the Bugrimov semi-realistic pirate (`?char=bug`). The legacy
+ * Quaternius captain is `?char=q`; the KayKit rogue (too chibi — "cartoon
+ * pill") is parked at `?char=kk` for reference only.
  *
  * Resolved once per page load and cached so crew.ts and main.ts always agree.
  */
@@ -15,7 +13,7 @@ let cached: CharPack | null = null;
 
 export function characterPack(): CharPack {
   if (cached) return cached;
-  let pack: CharPack = "quaternius";
+  let pack: CharPack = "bugrimov";
   try {
     const q = new URLSearchParams(location.search).get("char");
     if (q === "kaykit" || q === "kk") pack = "kaykit";
