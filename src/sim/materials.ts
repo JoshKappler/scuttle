@@ -12,6 +12,7 @@ export const GRASS = 8;
 export const DIRT = 9;
 export const PALMWOOD = 10;
 export const FOLIAGE = 11;
+export const ROOFTILE = 12; // terracotta — warm tiled roofs for the town
 
 export interface Material {
   name: string;
@@ -44,5 +45,6 @@ export const MATERIALS: Record<number, Material> = {
   [GRASS]: { name: "grass", density: 1500, color: [0.15, 0.33, 0.12], strength: 1 },
   [DIRT]: { name: "dirt", density: 1500, color: [0.2, 0.13, 0.07], strength: 1 },
   [PALMWOOD]: { name: "palmwood", density: 350, color: [0.2, 0.12, 0.05], strength: 2 },
-  [FOLIAGE]: { name: "foliage", density: 100, color: [0.1, 0.3, 0.1], strength: 1 },
+  [FOLIAGE]: { name: "foliage", density: 100, color: [0.09, 0.34, 0.11], strength: 1 },
+  [ROOFTILE]: { name: "rooftile", density: 1900, color: [0.42, 0.13, 0.07], strength: 4 },
 };

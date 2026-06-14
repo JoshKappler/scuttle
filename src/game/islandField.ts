@@ -20,6 +20,7 @@ export interface IslandPlacement {
   radiusM: number; // plan-view collision radius in metres (for spacing)
   peakVox: number;
   ruggedness: number;
+  landBias: number; // how much of the grid is land (low = small messy islet)
 }
 
 const LAGOON_M = 150; // clear water around spawn
@@ -50,21 +51,32 @@ export function planIslandPlacements(seed: string): IslandPlacement[] {
     radiusM: HARBOR_R * M_PER_VOX,
     peakVox: 26,
     ruggedness: 0.3,
+    landBias: 0.42,
   });
 
-  // scatter wild islands via rejection sampling (spacing + lagoon)
-  const wanted = 6;
+  // scatter wild islands via rejection sampling (spacing + lagoon). Sizes are drawn
+  // from spread buckets so the field has tiny islets AND big landmasses, not a row
+  // of same-size discs.
+  const buckets = [
+    [30, 50], // islets
+    [50, 80],
+    [80, 110],
+    [110, 145], // big islands
+  ];
+  const wanted = 8;
   let tries = 0;
-  while (out.filter((p) => p.kind === "wild").length < wanted && tries < 600) {
+  let made = 0;
+  while (made < wanted && tries < 900) {
     tries++;
     const a = rng.range(0, Math.PI * 2);
-    const d = rng.range(LAGOON_M + 80, FIELD_M);
+    const d = rng.range(LAGOON_M + 60, FIELD_M);
     const x = Math.cos(a) * d;
     const z = Math.sin(a) * d;
-    const radiusVox = rng.int(55, 105); // ~110–210 m across at 1 m/voxel
+    const [rlo, rhi] = buckets[made % buckets.length]; // cycle buckets → guaranteed spread
+    const radiusVox = rng.int(rlo, rhi);
     const radiusM = radiusVox * M_PER_VOX;
     if (Math.hypot(x, z) < LAGOON_M + radiusM) continue;
-    if (out.some((p) => Math.hypot(p.x - x, p.z - z) < p.radiusM + radiusM + 40)) continue;
+    if (out.some((p) => Math.hypot(p.x - x, p.z - z) < p.radiusM + radiusM + 50)) continue;
     out.push({
       kind: "wild",
       seed: rng.int(1, 1e9),
@@ -72,9 +84,11 @@ export function planIslandPlacements(seed: string): IslandPlacement[] {
       z,
       radiusVox,
       radiusM,
-      peakVox: rng.int(28, 52), // tall, varied — but not spike-tall
-      ruggedness: rng.range(0.35, 0.72),
+      peakVox: rng.int(Math.round(radiusVox * 0.4), Math.round(radiusVox * 0.7)), // taller when bigger
+      ruggedness: rng.range(0.35, 0.75),
+      landBias: rng.range(0.0, 0.32), // varies how much of the disc is land
     });
+    made++;
   }
   return out;
 }
@@ -108,6 +122,7 @@ export class IslandField {
               radiusVox: p.radiusVox,
               peakVox: p.peakVox,
               ruggedness: p.ruggedness,
+              landBias: p.landBias,
             });
 
       // sit the grid so its waterline row lands at world y≈0

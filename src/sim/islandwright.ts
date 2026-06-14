@@ -1,7 +1,7 @@
 import { createNoise2D, type NoiseFunction2D } from "simplex-noise";
 import { createGrid, type VoxelGrid } from "./voxelGrid";
 import { Rng } from "../core/rng";
-import { DARKROCK, DIRT, EMPTY, FOLIAGE, GRASS, OAK, PALMWOOD, PINE, ROCK, SAND } from "./materials";
+import { DARKROCK, DIRT, EMPTY, FOLIAGE, GRASS, OAK, PALMWOOD, PINE, ROCK, ROOFTILE, SAND } from "./materials";
 
 /**
  * Procedural voxel islandwright — the terrain analogue of sim/shipwright.ts.
@@ -16,9 +16,10 @@ import { DARKROCK, DIRT, EMPTY, FOLIAGE, GRASS, OAK, PALMWOOD, PINE, ROCK, SAND 
  */
 export interface IslandOpts {
   seed: number;
-  radiusVox: number; // plan-view island radius in voxels (the coastline wobbles inside this)
+  radiusVox: number; // grid half-extent in voxels; the actual coastline is noise-defined inside it
   peakVox: number; // rough max terrain height above the seabed in voxels
   ruggedness: number; // 0..1 — smooth rolling (0) → jagged ridges + sheer cliffs (1)
+  landBias?: number; // -0.2..0.5 — how much of the area is land (low = small messy islet, high = full)
   marginVox?: number; // open-water voxels ringing the land (default 6); harbor uses more for its pier
 }
 
@@ -74,45 +75,63 @@ function ridged(noise: NoiseFunction2D, x: number, z: number, octaves: number): 
   return sum / norm;
 }
 
-/** Build the per-column height field (voxel rows above SEABED_Y; 0 = open sea). */
+/**
+ * Build the per-column height field (voxel rows above SEABED_Y; 0 = open sea).
+ *
+ * The landmass is NOISE-defined, not circle-defined: the radial distance itself
+ * is heavily domain-warped, so the falloff that bounds the island is an irregular
+ * warped blob — bays, spits and lobes — rather than a disc with a fuzzy rim. A
+ * separate relief pass (rolling fBm + ridged cliffs) sets the height on top, kept
+ * low at the coast so beaches ring the land. `landBias` shifts the sea-level
+ * threshold so islands range from small messy islets to full landmasses.
+ */
 function makeHeightField(o: IslandOpts, nx: number, nz: number): Int16Array {
   const rng = new Rng(`isle-${o.seed}`);
   const rand = () => rng.next();
-  const elev = createNoise2D(rand);
-  const warp = createNoise2D(rand);
-  const ridge = createNoise2D(rand);
+  const cont = createNoise2D(rand); // continental shape
+  const warpA = createNoise2D(rand);
+  const warpB = createNoise2D(rand);
+  const detail = createNoise2D(rand); // relief base
+  const ridge = createNoise2D(rand); // ridged cliffs
 
   const cx = nx / 2;
   const cz = nz / 2;
-  const F = 2.6 / o.radiusVox; // a few big lobes across the island
-  const warpAmp = o.radiusVox * 0.4; // domain-warp distance → breaks radial symmetry
+  const R = o.radiusVox;
+  const Fc = 2.0 / R; // continent feature frequency (big lobes)
+  const Fw = 1.25 / R; // warp frequency — low, so warps are big sweeps not fuzz
+  const warpAmp = R * 0.62; // strong warp → genuinely non-circular outline
   const rug = o.ruggedness;
+  const landBias = o.landBias ?? 0.22;
 
   const hgt = new Int16Array(nx * nz);
   for (let x = 0; x < nx; x++) {
     for (let z = 0; z < nz; z++) {
-      const dx = (x - cx) / o.radiusVox;
-      const dz = (z - cz) / o.radiusVox;
-      const d = Math.sqrt(dx * dx + dz * dz);
-      if (d >= 0.99) continue; // hard sea ring at the rim (keeps the grid edge open water)
+      const dx = (x - cx) / R;
+      const dz = (z - cz) / R;
+      if (dx * dx + dz * dz >= 1.0) continue; // hard sea-ring backstop at the grid rim
 
-      // domain warp the sample point so nothing reads as a clean circle/dome
-      const wx = x + warpAmp * warp(x * F * 0.7, z * F * 0.7);
-      const wz = z + warpAmp * warp(x * F * 0.7 + 41, z * F * 0.7 + 17);
+      // warp the sample point, then measure distance from the WARPED point — the
+      // bounding falloff becomes an irregular blob instead of a circle
+      const wx = x + warpAmp * warpA(x * Fw, z * Fw);
+      const wz = z + warpAmp * warpB(x * Fw + 31, z * Fw + 19);
+      const dwx = (wx - cx) / R;
+      const dwz = (wz - cz) / R;
+      const dw = Math.sqrt(dwx * dwx + dwz * dwz);
 
-      const base = 0.5 + 0.5 * fbm(elev, wx * F, wz * F, 4); // [0,1] rolling landform
-      const rg = ridged(ridge, wx * F * 1.1, wz * F * 1.1, 3); // [0,1] broad ridge lines
-      // base shape dominates so islands read as terrain; ridges add cliffs + relief
-      // (not a pure spike field) — the steeper the result, the more rock cliff shows
-      let land = base * (1 - rug * 0.35) + rg * (rug * 0.5);
+      const shape = 0.5 + 0.5 * fbm(cont, wx * Fc, wz * Fc, 3); // [0,1] continent
+      const mask = shape + landBias - smoothstep(0.4, 0.95, dw) * 1.4; // >0.18 → land
+      if (mask <= 0.18) continue; // sea — the coastline follows the noise (messy blob)
 
-      // soft radial falloff — but the COASTLINE is where `land` crosses sea level,
-      // so it follows the noise (bays, spits, inlets) instead of a circle
-      land -= smoothstep(0.32, 1.0, d) * 1.15;
-      if (land <= 0.16) continue; // sea
-
-      const e = Math.min(land - 0.16, 1.1);
-      hgt[x + z * nx] = 1 + Math.floor(e * o.peakVox * 0.85);
+      // relief: rolling base + ridged cliffs, scaled DOWN toward the coast so the
+      // shore is a low beach and the height builds inland
+      const base = 0.5 + 0.5 * fbm(detail, wx * Fc * 1.5 + 7, wz * Fc * 1.5 + 5, 4);
+      const rg = ridged(ridge, wx * Fc * 1.1, wz * Fc * 1.1, 3);
+      const relief = base * (1 - rug * 0.4) + rg * (rug * 0.55);
+      const inland = smoothstep(0.16, 0.55, mask); // 0 at the shoreline → 1 deep inland
+      // height tapers to ~0 at the coast (a low beach ring) and builds inland; where
+      // the coast is steep this rises fast → rocky shore cliffs
+      const e = Math.min(relief * inland, 1.1);
+      hgt[x + z * nx] = 1 + Math.floor(e * o.peakVox * 0.9);
     }
   }
   return hgt;
@@ -175,8 +194,16 @@ function topSolid(grid: VoxelGrid, x: number, z: number): number {
  * the future docking interaction.
  */
 export function buildHarborIsland(opts: { seed: number }): IslandModel {
-  // small island + a wide water ring so the pier has somewhere to go
-  const model = buildIsland({ seed: opts.seed, radiusVox: 50, peakVox: 18, ruggedness: 0.3, marginVox: 40 });
+  // small island + a wide water ring so the pier has somewhere to go; high landBias
+  // keeps the centre solid land for the town clearing
+  const model = buildIsland({
+    seed: opts.seed,
+    radiusVox: 50,
+    peakVox: 18,
+    ruggedness: 0.32,
+    landBias: 0.42,
+    marginVox: 40,
+  });
   const { grid, meta } = model;
   const [nx, ny, nz] = grid.dims;
   const cx = Math.floor(nx / 2);
@@ -222,6 +249,9 @@ export function buildHarborIsland(opts: { seed: number }): IslandModel {
   ];
   for (const lot of lots) stampBuilding(grid, lot, shelfY, rng);
 
+  // a lighthouse/watch-tower landmark beside the pier head, on the seaward shelf edge
+  stampLighthouse(grid, cx + townR - 12, cz + 9, shelfY, 24);
+
   return model;
 }
 
@@ -249,20 +279,44 @@ function stampBuilding(
         if (isDoor || isWindow) continue;
         grid.set(x0 + dx, floorY + dy, z0 + dz, corner ? OAK : PINE);
       }
-  // pitched roof: shrinking PINE rings stepping up toward the ridge
+  // pitched terracotta roof: shrinking ROOFTILE rings stepping up toward the ridge
   for (let r = 0; r <= Math.ceil(Math.min(w, d) / 2); r++) {
     const ry = floorY + h + 1 + r;
     for (let dx = r; dx < w - r; dx++)
       for (let dz = r; dz < d - r; dz++)
         if (dx === r || dx === w - 1 - r || dz === r || dz === d - 1 - r)
-          grid.set(x0 + dx, ry, z0 + dz, PINE);
+          grid.set(x0 + dx, ry, z0 + dz, ROOFTILE);
   }
   void rng; // reserved for future per-building variation
 }
 
-/** Stamp a deterministic handful of palms (PALMWOOD trunk + FOLIAGE canopy) onto
- *  grass columns, so the whole island stays a single voxel mesh. Collects the grass
- *  surface first, then plants on it — so palms reliably appear wherever grass does. */
+/** A square watch-tower / lighthouse: a tall OAK+ROCK shaft with a railed wooden
+ *  lantern room and a terracotta cap — the harbor's landmark (refs: dock tower). */
+function stampLighthouse(grid: VoxelGrid, x0: number, z0: number, baseY: number, h: number): void {
+  const s = 5; // footprint side
+  for (let dy = 1; dy <= h; dy++) {
+    for (let dx = 0; dx < s; dx++)
+      for (let dz = 0; dz < s; dz++) {
+        const edge = dx === 0 || dx === s - 1 || dz === 0 || dz === s - 1;
+        if (!edge) continue;
+        const corner = (dx === 0 || dx === s - 1) && (dz === 0 || dz === s - 1);
+        // open the lantern room near the top (railing only) so the light shows
+        const lantern = dy > h - 3 && !corner && dy !== h - 2;
+        if (lantern) continue;
+        grid.set(x0 + dx, baseY + dy, z0 + dz, dy <= 3 ? ROCK : corner ? OAK : PINE);
+      }
+  }
+  // terracotta pyramid cap
+  for (let r = 0; r <= 2; r++) {
+    const ry = baseY + h + 1 + r;
+    for (let dx = r; dx < s - r; dx++)
+      for (let dz = r; dz < s - r; dz++) grid.set(x0 + dx, ry, z0 + dz, ROOFTILE);
+  }
+}
+
+/** Vegetate the island: dense leafy palms + low FOLIAGE bushes on the grass, so
+ *  it reads as a lush jungle isle and stays a single voxel mesh. Collects the grass
+ *  surface first, then plants on it — so greenery reliably appears wherever grass does. */
 function scatterPalms(grid: VoxelGrid, o: IslandOpts, hgt: Int16Array): void {
   const [nx, ny, nz] = grid.dims;
   const grass: { x: number; z: number; topY: number }[] = [];
@@ -274,21 +328,39 @@ function scatterPalms(grid: VoxelGrid, o: IslandOpts, hgt: Int16Array): void {
       if (topY < ny && grid.get(x, topY, z) === GRASS) grass.push({ x, z, topY });
     }
   if (grass.length === 0) return;
+  const rng = new Rng(`flora-${o.seed}`);
 
-  const rng = new Rng(`palms-${o.seed}`);
-  const want = Math.min(grass.length, Math.round(o.radiusVox / 2.5));
-  for (let i = 0; i < want; i++) {
+  const leaf = (px: number, pz: number, py: number) => {
+    if (px > 0 && px < nx && pz > 0 && pz < nz && py > 0 && py < ny && grid.get(px, py, pz) === EMPTY)
+      grid.set(px, py, pz, FOLIAGE);
+  };
+
+  // leafy palms — a two-tier canopy on a tall trunk
+  const palms = Math.min(grass.length, Math.round(o.radiusVox / 1.4));
+  for (let i = 0; i < palms; i++) {
     const { x, z, topY } = grass[rng.int(0, grass.length)];
-    const trunk = rng.int(6, 12);
+    const trunk = rng.int(7, 14);
     for (let t = 1; t <= trunk && topY + t < ny; t++) grid.set(x, topY + t, z, PALMWOOD);
     const cy = topY + trunk;
-    for (let dx = -3; dx <= 3; dx++) // a drooping frond canopy
+    for (let dx = -3; dx <= 3; dx++) // wide lower frond ring
       for (let dz = -3; dz <= 3; dz++) {
         if (Math.abs(dx) + Math.abs(dz) > 3) continue;
-        const px = x + dx;
-        const pz = z + dz;
-        if (px > 0 && px < nx && pz > 0 && pz < nz && cy < ny && grid.get(px, cy, pz) === EMPTY)
-          grid.set(px, cy, pz, FOLIAGE);
+        leaf(x + dx, z + dz, cy);
       }
+    for (let dx = -2; dx <= 2; dx++) // crown
+      for (let dz = -2; dz <= 2; dz++) {
+        if (Math.abs(dx) + Math.abs(dz) > 2) continue;
+        leaf(x + dx, z + dz, cy + 1);
+      }
+    leaf(x, z, cy + 2);
+  }
+
+  // low bushes carpeting the grass between the palms
+  const bushes = Math.round(grass.length / 6);
+  for (let i = 0; i < bushes; i++) {
+    const { x, z, topY } = grass[rng.int(0, grass.length)];
+    leaf(x, z + 0, topY + 1);
+    if (rng.next() < 0.6) leaf(x + (rng.next() < 0.5 ? 1 : -1), z, topY + 1);
+    if (rng.next() < 0.4) leaf(x, z + (rng.next() < 0.5 ? 1 : -1), topY + 1);
   }
 }
