@@ -1281,13 +1281,18 @@ async function main() {
       controls: [
         { type: "button", label: "⚔ Ram Test (T-bone)", onClick: ramTest },
         { type: "toggle", label: "deformable crush", obj: TUN.crush, key: "enabled" },
-        // anti-vaporize ceiling on the per-step break budget (the every-step rate is set by the
-        // closing KE, not this). Lower only to tame extreme-speed gouging. See tunables.ts.
+        // closing speed (m/s) under which nothing breaks — the wood's "give". ~2 ≈ 4 kn.
+        { type: "slider", label: "break speed m/s", obj: TUN.crush, key: "vBreak", min: 0, max: 8, step: 0.25 },
+        // anti-vaporize ceiling on the per-step break budget (GEOMETRY caps the real rate). Lower
+        // only to tame extreme-speed gouging. See tunables.ts.
         { type: "slider", label: "break ceil J (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "maxStepEnergy", min: 5e5, max: 120e5, step: 5e5 },
         { type: "slider", label: "break yield", obj: TUN.crush, key: "yield", min: 0, max: 2, step: 0.05 },
         { type: "slider", label: "break→slow", obj: TUN.crush, key: "carveDamp", min: 0, max: 2, step: 0.05 },
-        { type: "slider", label: "vel transfer ×", obj: TUN.crush, key: "transfer", min: 0, max: 1, step: 0.05 },
-        { type: "slider", label: "de-penetrate m/s·m", obj: TUN.crush, key: "separate", min: 0, max: 8, step: 0.5 },
+        // target-nudge cap = transfer × closing speed; the struck ship is brought UP TO this and
+        // no further (so it can't fling). 0.08 = a slight shove; 0 = the target never reacts.
+        { type: "slider", label: "target nudge ×", obj: TUN.crush, key: "transfer", min: 0, max: 0.5, step: 0.01 },
+        // de-penetration separation speed (m/s) for the sub-break / unbreakable case only.
+        { type: "slider", label: "separate m/s", obj: TUN.crush, key: "separate", min: 0, max: 3, step: 0.1 },
         { type: "slider", label: "min depth m", obj: TUN.crush, key: "minDepth", min: 0, max: 0.5, step: 0.01 },
         // cannons share the crush core; this scales their ½mv² into the same joule budget.
         { type: "slider", label: "cannon crush ×", obj: TUN.gun, key: "crushEfficiency", min: 1, max: 120, step: 1 },

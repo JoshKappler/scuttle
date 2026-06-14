@@ -112,49 +112,62 @@ export const TUN = {
      *  ~48 kJ ball needs a multiplier to punch a 3-wide bore through both oak walls; this is
      *  the knob that decouples cannon penetration from the ram-tuned joule scale. Depth is
      *  still emergent (a half-speed ball at ¼ KE lodges; an iron belt resists). Tuned live
-     *  at the Task 8 harness / Task 10 sweep alongside STRENGTH_TO_JOULES. */
-    crushEfficiency: 40,
+     *  at the Task 8 harness / Task 10 sweep alongside STRENGTH_TO_JOULES. Dropped 40→13 when
+     *  STRENGTH_TO_JOULES was softened 15000→5000, so a ball still bores ~the same depth. */
+    crushEfficiency: 13,
   },
 
   /** Ship-vs-ship DEFORMABLE contact — ONE emergent rule (game/voxelContact.ts). The hull-hull
-   *  pair is out of Rapier's rigid solver (physics.ts); each fixed step, where the two hulls'
-   *  voxels overlap and are CLOSING, the relative closing KE (½μv²) is spent breaking the
-   *  cheapest contacting voxels of both hulls, and the KE that breaking consumes IS the impulse
-   *  μ·Δv exchanged at the contact point (faster ship slows, slower speeds up + off-centre spin
-   *  / PIT). Can't break it → elastic bounce (solid stop). Big-rams-small breaks through; equals
-   *  head-on disintegrate; stops once closing is too slow to break a voxel. Replaces the old
-   *  penalty-spring (k/damping/fMax retired) and TUN.ram. */
+   *  pair is out of Rapier's rigid solver (physics.ts); each fixed step, where the hulls' voxels
+   *  overlap and CLOSE faster than vBreak, the cheapest contacting voxels of BOTH hulls break on
+   *  a budget of each hull's OWN approach KE (½m·v²). The breaking SAPS the speed of whichever
+   *  hull drove into it (its own mass — like driving into sand), so a still target plows nothing
+   *  and is NOT flung; only a tiny `transfer` fraction is shoved across (a nudge + yaw, the PIT).
+   *  Below vBreak the wood just springs (a capped de-penetration). This deliberately does NOT
+   *  conserve momentum between the hulls — the sea (keel drag in ship.ts) absorbs it — which is
+   *  what stops the old reduced-mass μ·Δv impulse from flinging the lighter ship. Replaces the
+   *  retired penalty-spring (k/damping/fMax) and TUN.ram. */
   crush: {
     /** master enable — off → ship-vs-ship does nothing (hulls ghost; see physics.ts hook). */
     enabled: true,
-    /** per-step break-energy CEILING (J, whole pair) — an anti-vaporize cap for extreme closing
-     *  speeds, NOT the every-step rate. The real budget is the closing KE (½μv²); this only
-     *  clamps it so a freakishly fast hit can't delete a huge slab in one frame. At normal
-     *  sail-ram speeds ½μv² is already below this, so it rarely binds. */
-    maxStepEnergy: 6.0e6,
-    /** fraction of the closing KE available to break voxels (1 = all). Lower → tougher hulls
-     *  (less breaks per hit) and more of the energy goes to the velocity exchange/bounce. */
+    /** per-step break-energy CEILING (J, whole pair) — an anti-vaporize backstop, NOT the
+     *  every-step rate. The real per-step limiter is GEOMETRY (only the voxels actually in the
+     *  thin contact layer can break); this just clamps a pathologically deep overlap (e.g. a
+     *  teleport) from deleting a huge slab in one frame. At sail-ram speeds it never binds. */
+    maxStepEnergy: 5.0e6,
+    /** closing speed (m/s) below which NOTHING breaks — the wood's "give" before it fractures
+     *  ("more than say 4 knots"; 2.0 m/s ≈ 3.9 kn). Under it, a slow bump / side-by-side raft
+     *  just springs apart (capped, gentle) with no damage; over it, the contact face crushes. */
+    vBreak: 2.0,
+    /** fraction of each hull's approach KE made available to break voxels (1 = all). Lower →
+     *  tougher hulls (fewer voxels break per hit, ram penetrates less). */
     yield: 1,
-    /** how strongly the energy SPENT breaking voxels removes closing speed (1 = full physical:
-     *  the relative motion loses exactly the KE that became destruction). This is "the ram slows
-     *  as it digs in"; the lost momentum is the impulse swapped between the hulls. */
-    carveDamp: 1,
-    /** fraction of the breaking's velocity change that is exchanged between the hulls (0..1).
-     *  KEY "less aggressive" knob: fracturing wood dissipates energy but transmits little
-     *  momentum, so most of the break is lost (to splinters/sound), not flung into the heavy
-     *  hull. 0.2 = a ram slows + the target speeds up GENTLY over many voxels, instead of one
-     *  ship launching the other. Applied at the contact point so a diagonal hit still yaws (PIT). */
-    transfer: 0.2,
-    /** de-penetration speed (m/s of separation per metre of interpenetration, capped at 1 m of
-     *  depth) for an unbroken SOLID contact, so entangled hulls ooze apart instead of staying
-     *  clipped through each other. Applied at the COM (pure linear) so it never ROLLS the hull,
-     *  and never fires while a ram is actively breaking through. Gentle. */
-    separate: 2,
+    /** how strongly the energy SPENT breaking removes the BREAKING hull's OWN approach speed
+     *  (1 = exactly the KE that became destruction; >1 = a collision dissipates more than just the
+     *  fracture energy, so the rammer slows harder). Applied PER-HULL and never swapped, so it can
+     *  ONLY ever slow a hull, never fling one. 2 = a ram digs in and stops decisively. */
+    carveDamp: 2,
+    /** TARGET-NUDGE cap, as a fraction of closing speed. A nearly-anchored struck ship is nudged
+     *  UP TO (never beyond, never accumulating) transfer × vClose along the ram's travel — a
+     *  "slight shove" + yaw that physically CANNOT become a fling or roll-away (the rest of the
+     *  momentum goes into the sea). Applied at COM HEIGHT so a corner hit yaws her (the PIT) but
+     *  never rolls her. 0.08 ≈ a light nudge — the user's "at most a slight shove." */
+    transfer: 0.08,
+    /** de-penetration separation speed (m/s) for the sub-vBreak / unbreakable case ONLY: when the
+     *  hulls overlap but nothing is breaking, the INTRUDER is eased back out until they part at this
+     *  speed (one-shot, capped at 2×, never pulling together, the target left anchored). Gentle — a
+     *  slow bump or a side-by-side raft just oozes apart. Never fires while a ram is breaking. */
+    separate: 0.6,
     /** dust motes flung per voxel broken at the contact (visual; 0 = none). */
     fling: 1,
-    /** minimum penetration (m) before any breaking — kills voxel flicker on a grazing touch /
-     *  a calm side-by-side raft (which still gets the gentle bounce, just no damage). */
+    /** minimum penetration (m) before any contact response — kills voxel flicker on a grazing
+     *  touch / a calm side-by-side raft. */
     minDepth: 0.06,
+    /** HARD cap (m/s) on how much ANY single contact step may change a hull's velocity — the
+     *  ultimate anti-fling backstop. Real per-step Δv (retard / nudge / de-pen) is far below this,
+     *  so it never binds in normal play; it only clamps a pathological deep-overlap frame so a
+     *  glitchy impulse can't spike a ship across the sea. Collisions resolve over many steps. */
+    maxDvPerStep: 1.5,
   },
 
   /** Flooding — how fast the sea comes in through a breach. The deterministic floodStep oracle

@@ -9,7 +9,7 @@ _Last verified against code: 2026-06-14 — **post-consolidation**: every active
 ## What's in the build (consolidated 2026-06-14)
 All the parallel dev branches were merged into `main` in one pass:
 - **Per-voxel ship physics** — buoyancy, heel, trim, capsize and sinking all *emerge* from the voxel hull (no hand-tuned attitude levers).
-- **Voxel destruction (one rule)** — cannonballs bore clean holes; hulls deform on contact via a mutual energy-budget crunch; breached compartments flood by Bernoulli and she founders.
+- **Voxel destruction (one rule)** — cannonballs bore clean holes; hulls deform on contact via an *anchored* destructible crunch (a ram slows + carves voxels; the struck hull is holed but never flung — the sea anchors it); breached compartments flood by Bernoulli and she founders.
 - **Hostile fleet** — 0..6 enemies (dev-panel slider), sunk ships auto-replaced.
 - **Voxel archipelago** — seeded islands + cliffs + a harbor town with a dock; solid static collision (hulls ground on the shore).
 - **Plunder economy** — wallet / cargo / upgrades, a dock-triggered port screen, `localStorage` save.
@@ -39,8 +39,8 @@ All the parallel dev branches were merged into `main` in one pass:
 - `phys`: `buoyancy 1.5`, `heaveDamp 0.2` (ONE ζ damps heave+pitch+roll), `yawDamp 0.7`, `lateralDrag 1.7`.
 - `dyn`: dynamic-wave FDTD field (`enabled, heightScale 0.45, inject 0.6, damping 1.8, foam 0`).
 - `chop`: FFT surface detail (`strength 1, choppiness 1.5`). `spray`: bow spray (`enabled, bow 1`).
-- `gun`: cannon ballistics (`muzzleSpeed 150, drag 0.0025, mass 4.3, boreRadiusVox 1, crushEfficiency 40`) — drives BOTH the live ball (`game/cannons.ts`) and the aim-arc preview (`main.ts`), so the rendered trajectory ≡ the real shot.
-- `crush`: ship-vs-ship deformable contact (`enabled, maxStepEnergy, yield, carveDamp, transfer 0.2, separate, fling, minDepth`) — replaces the retired `ram` levers.
+- `gun`: cannon ballistics (`muzzleSpeed 150, drag 0.0025, mass 4.3, boreRadiusVox 1, crushEfficiency 13`) — drives BOTH the live ball (`game/cannons.ts`) and the aim-arc preview (`main.ts`), so the rendered trajectory ≡ the real shot. (`crushEfficiency` dropped 40→13 when wood softened, see `STRENGTH_TO_JOULES`.)
+- `crush`: ship-vs-ship **anchored destructible** contact (`enabled, vBreak 2, maxStepEnergy, yield, carveDamp 2, transfer 0.08, separate 0.6, fling, minDepth, maxDvPerStep 1.5`). NOT momentum-conserving between hulls — the sea anchors them. A ram SLOWS *opposing its own velocity* (so it can only ever decelerate, never fling) and carves voxels on a budget of each hull's own approach KE; the struck hull gets only a nudge capped at `transfer × vClose` (yaw, never roll). Everything is computed from each hull's own COM→contact aim (no centre-to-centre normal — it flipped/spiked at deep overlap). `maxDvPerStep` is the hard per-step anti-fling clamp. Replaces the retired `ram` levers. Wood softened: `sim/materials.ts STRENGTH_TO_JOULES = 5000` (oak 15 kJ/cell).
 - `flood`: `inflowScale 0.15` (≈ −85% breach inflow so a holed hull founders over a minute, fightably). `fleet`: `enemyCount 1` (integer 0..`MAXVIS`=6).
 
 ## Architecture (source-of-truth modules)

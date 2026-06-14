@@ -15,14 +15,17 @@ export const FOLIAGE = 11;
 export const ROOFTILE = 12; // terracotta — warm tiled roofs for the town
 
 /** Joules of impact energy a cell absorbs per point of `strength` before it breaks. WOOD IS
- *  SOFT: breaking one oak cell costs 3×15000 = 45 kJ. This is deliberately low — fracturing
- *  planking takes far less than the force needed to fling/roll a heavy hull, so a ram breaks
- *  voxels readily while the velocity it transfers stays gentle (the contact only passes on a
- *  small fraction of the break — see TUN.crush.transfer). The closing KE (½μv², μ ~10^5 kg)
- *  still far exceeds a cell, so the contact face breaks each step and the ram digs in; the
- *  cheapest (oak) go first so the tougher RAM prow outlasts the oak it strikes — bow-first
- *  ramming wins emergently. Cannons scale via TUN.gun.crushEfficiency. */
-export const STRENGTH_TO_JOULES = 15000;
+ *  SOFT: breaking one oak cell costs 3×5000 = 15 kJ. Deliberately tiny — fracturing planking
+ *  takes FAR less than the force to fling/roll a heavy hull, so the contact rule
+ *  (game/voxelContact.ts) breaks voxels readily while the hull it slows is barely shoved. The
+ *  contact budget is each hull's OWN approach KE (½m·v², m ~10^5 kg), which dwarfs one cell, so
+ *  the contact face breaks every step and the ram digs in; the cheapest (oak) go first so the
+ *  tougher RAM prow outlasts the oak it strikes — bow-first ramming wins emergently. Softer than
+ *  the old 15000 ("voxels need to be much softer and easier to damage"): a ram now holes readily
+ *  and a high-speed ram rips deep, while the speed the breaking sheds is what STOPS the rammer —
+ *  not a momentum kick into the target. Cannons scale via TUN.gun.crushEfficiency (dropped 40→13
+ *  to match this softening, so a ball still bores the same depth). */
+export const STRENGTH_TO_JOULES = 5000;
 
 export interface Material {
   name: string;
