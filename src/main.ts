@@ -108,6 +108,13 @@ async function main() {
   // the cutaway hole in the sea matches the player hull's footprint
   ocean.setFootprint(sloopBuild.lengthM / 2 + 1.2, sloopBuild.beamM / 2 + 1.0);
 
+  // ---- static voxel archipelago (game/islandField.ts) ----
+  // seeded islands & cliffs with solid collision; one harbor island carries the
+  // voxel dock + town. Built once, never remeshed; islands aren't in any ship
+  // list so they never trip the ship-vs-ship destruction code.
+  const { IslandField } = await import("./game/islandField");
+  const islands = new IslandField(seed, physics, scene);
+
   // P4/P5: bake a hull's per-column keel/deck profile from the voxel grid (once)
   // into a float texture. P4 binds the PLAYER's for the voxel-accurate in-hull cut;
   // P5 stamps BOTH ships' profiles into the dynamic-wave field for the interaction
@@ -515,6 +522,7 @@ async function main() {
     oceanField,
     dynWaves,
     spray,
+    islands,
     get character() {
       return character;
     },
