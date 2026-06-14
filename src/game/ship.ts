@@ -651,11 +651,28 @@ export class Ship {
       energy,
       maxCells,
     });
-    if (plan.cells.length === 0) return 0;
-    for (const [x, y, z] of plan.cells) { grid.remove(x, y, z); this.hull.removeVoxel(x, y, z); }
-    this.registerBreaches(plan.cells);
+    return this.carveCells(plan.cells);
+  }
+
+  /** Remove an explicit list of cells — the shared tail of EVERY destruction path
+   *  (energy-budget ram carve, cannon bore-through, future tools): grid + voxel collider
+   *  + breach bookkeeping, then flag the throttled heavy recompute. Destroyed voxels just
+   *  VANISH (callers spawn dust) — they are never regrouped into a rigid body; only a
+   *  fully-disconnected island above a size threshold becomes one (see debris.ts). Returns
+   *  the count actually removed (already-empty cells are skipped). */
+  carveCells(cells: [number, number, number][]): number {
+    const grid = this.build.grid;
+    let removed = 0;
+    for (const [x, y, z] of cells) {
+      if (!grid.isSolid(x, y, z)) continue;
+      grid.remove(x, y, z);
+      this.hull.removeVoxel(x, y, z);
+      removed++;
+    }
+    if (removed === 0) return 0;
+    this.registerBreaches(cells);
     this.damageDirty = true; // sever/mass/deck recompute is deferred + throttled (flushDamage)
-    return plan.cells.length;
+    return removed;
   }
 
   /** Heavy post-damage recompute (shed disconnected islands, rebuild buoyancy columns

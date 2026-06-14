@@ -101,30 +101,43 @@ export const TUN = {
      *  4.3 ≈ 9·(72/150) — preserves the old shove at the new, faster muzzle speed
      *  so the retune doesn't suddenly ram ships ~2× harder. */
     mass: 4.3,
-    /** voxel-carving joules per cannonball hit — routed through the SAME carve()
-     *  primitive as ramming. Sized for a small entry cluster, not a blown-out row. */
-    carveJoules: 110000,
-    /** max voxels one ball removes: a tight, directional bite along the ball's path. */
-    maxCellsPerHit: 8,
+    /** cannon bore: a ball pokes a hole CLEAN THROUGH — every solid voxel its path grazes
+     *  vanishes, all the way out the far side (routed through ship.carveCells). boreRadiusVox
+     *  is the tunnel half-width in voxels (0 = 1 wide, 1 = 3 wide); maxCellsPerHit is just a
+     *  perf backstop on one ball's bore (set high — the hole should reach the far side). */
+    boreRadiusVox: 1,
+    maxCellsPerHit: 250,
   },
 
-  /** Ship-vs-ship ramming destruction — read by game/collisionDestruction.ts each
-   *  contact. Carve energy = impulseToJoules × max(0, contactImpulse − minImpulse): only
-   *  the impulse ABOVE the crush threshold tears voxels out, so a hull resting its weight
-   *  on another, a gentle fender, or two hulls floating side by side destroy NOTHING,
-   *  while a real strike (impulse ≈ closing-speed × reduced-mass) bites hard. Dial live. */
+  /** Ship-vs-ship destruction — the Teardown-style CAPPED-IMPULSE contact, read by
+   *  game/collisionDestruction.ts each step. ONE emergent rule: contact force vs. the
+   *  voxels' strength. Below `minImpulse` the contact is solid (a weight a hull CAN bear,
+   *  a gentle fender, floating side by side → no damage). Above it the contact voxels give
+   *  way: the zone is pulverized to DUST (never a rigid beam — see debris.ts), the carve
+   *  happens BEFORE the solver so the struck hull is barely shoved and the rammer digs into
+   *  the void, and `drag` bleeds the digger's momentum into the destruction (it slows; the
+   *  target doesn't pick the momentum up). Perching emerges as impossible: your own weight
+   *  on a few deck voxels exceeds the threshold → they crush → you fall through. */
   ram: {
-    /** joules of voxel-carving per unit of impulse ABOVE minImpulse (kg·m/s). */
-    impulseToJoules: 2.5,
-    /** crush threshold: contacts at/below this carve nothing (resting weight, gentle
-     *  fenders, floating side by side). Set above a hull's per-step weight impulse so
-     *  only way-on impacts destroy. Raise if hulls chip on mere contact; lower if slow
-     *  rams just bounce. */
-    minImpulse: 100000,
-    /** hard cap on voxels removed from ONE hull per contact-step — keeps each step's
-     *  bite to "single voxels and small groups"; a deep gash emerges over many steps of
-     *  a sustained ram, never a whole row in one frame. */
-    maxCellsPerHit: 10,
+    /** master enable — off → plain rigid hull collisions, no destruction. */
+    enabled: true,
+    /** crush threshold (summed contact impulse, kg·m/s): the ONE gate. Set between a
+     *  gentle nudge and a hull's full weight bearing on a small patch — so weight-on-deck
+     *  crushes through (no perching) but a light touch / side-by-side raft does not.
+     *  Raise if hulls chip on mere contact; lower if slow rams just bounce off. */
+    minImpulse: 40000,
+    /** carve joules per unit of impulse ABOVE the threshold — higher pulverizes a bigger
+     *  crater per step. */
+    impulseToJoules: 0.5,
+    /** max voxels pulverized from ONE hull per contact-step. Generous: a hard ram turns the
+     *  touched zone to dust; the gash deepens every step she stays driven in. Not a "small
+     *  cluster" cap — lots of voxels is wanted, just never welded into a floating body. */
+    maxCellsPerHit: 60,
+    /** destruction drag (kg·m/s of momentum bled per voxel destroyed, from whichever hull
+     *  is driving INTO the contact). This is "the energy goes into the destruction, not into
+     *  shoving the target": the rammer slows as it digs in; the struck ship is barely moved.
+     *  Clamped so it can never reverse a hull's motion. 0 = pure rigid shove. */
+    drag: 4000,
   },
 
   /** Fleet — how many hostile ships the FleetManager (game/fleet.ts) keeps sailing

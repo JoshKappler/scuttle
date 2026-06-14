@@ -87,6 +87,9 @@ export class Cannons {
   private tmpV = new THREE.Vector3();
   private tmpDir = new THREE.Vector3();
   private tmpMuzzle: MuzzleOut = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
+  private tmpQ = new THREE.Quaternion();
+  private tmpLocal = new THREE.Vector3();
+  private tmpLocalDir = new THREE.Vector3();
 
   constructor(
     scene: THREE.Scene,
@@ -203,24 +206,15 @@ export class Cannons {
       for (const ship of targets) {
         const hit = this.marchGrid(ship, b.prev, b.pos);
         if (hit) {
-          // route the ball through the SAME carve() primitive as ramming: a small,
-          // DIRECTIONAL bite along the ball's path (TUN.gun.carveJoules / maxCellsPerHit).
-          // Replaces the old isotropic blast that tore out whole rows. tmpDir is the ball
-          // travel dir (into the hull) for the carve, then negated for the outward normal.
+          // poke a hole CLEAN THROUGH: every solid voxel the ball's path grazes vanishes,
+          // all the way out the far side, routed through the shared carveCells primitive →
+          // dust, never a rigid beam. Replaces the old capped isotropic blast.
           const dir = this.tmpDir.copy(b.vel).normalize();
-          const removed = ship.carve(
-            hit.cell,
-            TUN.gun.carveJoules,
-            [dir.x, dir.y, dir.z],
-            TUN.gun.maxCellsPerHit,
-          );
+          const removed = ship.carveCells(this.boreCells(ship, hit.world, dir));
           if (removed > 0) {
-            const normal = dir.negate();
-            // debris MATCHES the damage: ~one flying timber chunk per voxel
-            // actually removed, thrown out along the impact normal (round 13:
-            // "too much coming off … just the voxels that were actually
-            // removed"). No more generic sparks-and-flash storm.
-            this.effects.impactDebris(hit.world, normal, removed);
+            // debris MATCHES the damage: ~one flying mote per voxel removed, thrown out
+            // along the bore (dir negated → points outward). No sparks-and-flash storm.
+            this.effects.impactDebris(hit.world, dir.negate(), removed);
             // momentum transfer: ball mass × impact velocity. Mass lives in
             // TUN.gun.mass (r18: dropped 9→4.3 so the faster muzzle doesn't shove
             // ships ~2× harder — see TUN.gun). Round 8: "more powerful".
@@ -287,5 +281,55 @@ export class Cannons {
       }
     }
     return null;
+  }
+
+  /** Every solid cell the ball's path grazes, ALL the way through the hull — a clean bore,
+   *  not a capped cluster. Marches the ray in the ship's local voxel frame from the entry
+   *  point, collecting solids within boreRadiusVox of the line, until it has passed out the
+   *  far side (or hit the perf backstop maxCellsPerHit). */
+  private boreCells(ship: Ship, fromWorld: THREE.Vector3, dirWorld: THREE.Vector3): [number, number, number][] {
+    const tr = ship.body.translation();
+    const rot = ship.body.rotation();
+    const inv = this.tmpQ.set(rot.x, rot.y, rot.z, rot.w).invert();
+    // entry point + direction in local VOXEL units
+    const lp = this.tmpLocal
+      .set(fromWorld.x - tr.x, fromWorld.y - tr.y, fromWorld.z - tr.z)
+      .applyQuaternion(inv)
+      .divideScalar(VOXEL_SIZE);
+    const ld = this.tmpLocalDir.copy(dirWorld).applyQuaternion(inv).normalize();
+    const grid = ship.build.grid;
+    const [nx, ny, nz] = grid.dims;
+    const r = Math.max(0, Math.round(TUN.gun.boreRadiusVox));
+    const maxLen = Math.ceil(Math.hypot(nx, ny, nz)) + 2; // grid diagonal, in voxels
+    const cap = TUN.gun.maxCellsPerHit;
+    const seen = new Set<number>();
+    const out: [number, number, number][] = [];
+    let enteredSolid = false;
+    for (let t = 0; t <= maxLen; t += 0.5) {
+      const bx = Math.floor(lp.x + ld.x * t);
+      const by = Math.floor(lp.y + ld.y * t);
+      const bz = Math.floor(lp.z + ld.z * t);
+      // once the ray core has entered the hull and then leaves the grid, the bore is through
+      if (bx < -r || by < -r || bz < -r || bx >= nx + r || by >= ny + r || bz >= nz + r) {
+        if (enteredSolid) break;
+        continue;
+      }
+      let solidHere = false;
+      for (let ox = -r; ox <= r; ox++) {
+        for (let oy = -r; oy <= r; oy++) {
+          for (let oz = -r; oz <= r; oz++) {
+            const x = bx + ox, y = by + oy, z = bz + oz;
+            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) continue;
+            if (!grid.isSolid(x, y, z)) continue;
+            solidHere = true;
+            const key = x + nx * (y + ny * z);
+            if (!seen.has(key)) { seen.add(key); out.push([x, y, z]); }
+          }
+        }
+      }
+      if (solidHere) enteredSolid = true;
+      if (out.length >= cap) break;
+    }
+    return out;
   }
 }

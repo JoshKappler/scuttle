@@ -7,6 +7,7 @@ import { createGrid } from "../sim/voxelGrid";
 import { meshChunk } from "../render/voxelMesher";
 import { CHUNK_SIZE } from "../core/constants";
 import type { Island } from "../sim/connectivity";
+import type { Effects } from "../render/effects";
 import type { Physics } from "./physics";
 import type { Ship } from "./ship";
 
@@ -33,6 +34,10 @@ const LIFETIME = 35; // s — small flotsam
 const WRECK_LIFETIME = 150; // s — or until it founders below 40 m
 /** A severed island at least this many voxels is a wreck, not flotsam. */
 export const WRECK_CELLS = 250;
+/** Only a GENUINELY large disconnected piece — a ship torn in half — becomes a free
+ *  rigid body. Anything smaller is pulverized to DUST, never a "floating beam": the
+ *  player's rule is destroyed material is loose voxels/dust, not regrouped rigid chunks. */
+export const BIG_SEVER = 1200;
 
 /** Wreck lift multiplier vs age: fresh wreckage rides high on entrained air,
  *  then waterlogs. Wood alone needs ≈×0.5 lift to float — dropping well
@@ -47,11 +52,17 @@ export class DebrisManager {
   constructor(
     private physics: Physics,
     private scene: THREE.Scene,
+    // optional so a 2-arg `new DebrisManager(physics, scene)` (e.g. mid-refactor) still
+    // compiles — dust just no-ops without it. Pass it to get pulverization motes.
+    private effects?: Effects,
   ) {}
 
   /** Spawn one debris body from a severed island, in the source ship's frame. */
   spawn(island: Island, ship: Ship): void {
     if (island.cells.length === 0) return;
+    // small/medium chunks are dust, not rigid bodies (no floating beams) — only a hull
+    // torn clean in half (≥ BIG_SEVER) earns a free-floating wreck.
+    if (island.cells.length < BIG_SEVER) { this.dust(island, ship); return; }
     const { world, RAPIER: R } = this.physics;
 
     // island bounds
@@ -146,6 +157,22 @@ export class DebrisManager {
       probes,
       wreck,
     });
+  }
+
+  private dustTmp = new THREE.Vector3();
+  private dustUp = new THREE.Vector3();
+  /** A small/medium disconnected chunk does NOT become a rigid body. Its cells were already
+   *  removed from the hull by flushDamage; here we just throw a burst of dust motes where it
+   *  broke free, so it reads as pulverized (loose voxels), not a detached floating beam. */
+  private dust(island: Island, ship: Ship): void {
+    let sx = 0, sy = 0, sz = 0;
+    for (const c of island.cells) { sx += c.x; sy += c.y; sz += c.z; }
+    const n = island.cells.length;
+    ship.localToWorld(
+      [(sx / n + 0.5) * VOXEL_SIZE, (sy / n + 0.5) * VOXEL_SIZE, (sz / n + 0.5) * VOXEL_SIZE],
+      this.dustTmp,
+    );
+    this.effects?.impactDebris(this.dustTmp, this.dustUp.set(0, 1, 0), Math.min(n, 40));
   }
 
   private tmpQ = new THREE.Quaternion();
