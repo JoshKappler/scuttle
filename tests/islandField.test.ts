@@ -24,4 +24,10 @@ describe("planIslandPlacements", () => {
   it("places several wild islands", () => {
     expect(plan.filter((p) => p.kind === "wild").length).toBeGreaterThanOrEqual(5);
   });
+  it("makes the harbor the biggest island (>=1.5x the largest wild)", () => {
+    const harbor = plan.find((p) => p.kind === "harbor");
+    expect(harbor).toBeDefined();
+    const maxWild = Math.max(...plan.filter((p) => p.kind === "wild").map((p) => p.radiusM));
+    expect(harbor!.radiusM).toBeGreaterThanOrEqual(1.5 * maxWild);
+  });
 });

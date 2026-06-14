@@ -24,10 +24,12 @@ export interface IslandPlacement {
 }
 
 const LAGOON_M = 150; // clear water around spawn
-const FIELD_M = 1200; // archipelago radius (bigger islands need more room)
+const FIELD_M = 1400; // archipelago radius (bigger islands need more room)
 const HARBOR_MIN = 320;
 const HARBOR_MAX = 460;
-const HARBOR_R = 95; // must match buildHarborIsland's radiusVox
+const HARBOR_R = 150; // harbor grid half-extent — the BIGGEST island (see WILD_R_MAX)
+const HARBOR_PEAK = 40;
+const WILD_R_MAX = Math.floor(HARBOR_R / 1.6); // 93 — keeps the harbor ≥1.5× the largest wild island
 
 /**
  * Deterministic archipelago layout for a world seed. Always places one reachable
@@ -49,24 +51,25 @@ export function planIslandPlacements(seed: string): IslandPlacement[] {
     z: Math.sin(ha) * hd,
     radiusVox: HARBOR_R,
     radiusM: HARBOR_R * M_PER_VOX,
-    peakVox: 26,
-    ruggedness: 0.3,
-    landBias: 0.42,
+    peakVox: HARBOR_PEAK,
+    ruggedness: 0.5,
+    landBias: 0.5,
   });
 
   // scatter wild islands via rejection sampling (spacing + lagoon). Sizes are drawn
   // from spread buckets so the field has tiny islets AND big landmasses, not a row
   // of same-size discs.
+  // sizes spread across buckets (all capped below the harbor) so the field has
+  // tiny islets AND big landmasses — but none rivalling the harbor
   const buckets = [
-    [30, 50], // islets
-    [50, 80],
-    [80, 110],
-    [110, 145], // big islands
+    [28, 45], // islets
+    [45, 66],
+    [66, WILD_R_MAX], // largest wild islands (≤ HARBOR_R/1.6)
   ];
   const wanted = 8;
   let tries = 0;
   let made = 0;
-  while (made < wanted && tries < 900) {
+  while (made < wanted && tries < 1500) {
     tries++;
     const a = rng.range(0, Math.PI * 2);
     const d = rng.range(LAGOON_M + 60, FIELD_M);
@@ -84,9 +87,9 @@ export function planIslandPlacements(seed: string): IslandPlacement[] {
       z,
       radiusVox,
       radiusM,
-      peakVox: rng.int(Math.round(radiusVox * 0.4), Math.round(radiusVox * 0.7)), // taller when bigger
-      ruggedness: rng.range(0.35, 0.75),
-      landBias: rng.range(0.0, 0.32), // varies how much of the disc is land
+      peakVox: rng.int(Math.round(radiusVox * 0.32), Math.round(radiusVox * 0.55)), // taller when bigger
+      ruggedness: rng.range(0.4, 0.8),
+      landBias: rng.range(0.0, 0.34), // varies how much of the area is land
     });
     made++;
   }
@@ -116,7 +119,7 @@ export class IslandField {
     for (const p of planIslandPlacements(seed)) {
       const model =
         p.kind === "harbor"
-          ? buildHarborIsland({ seed: p.seed })
+          ? buildHarborIsland({ seed: p.seed, radiusVox: p.radiusVox, peakVox: p.peakVox })
           : buildIsland({
               seed: p.seed,
               radiusVox: p.radiusVox,
