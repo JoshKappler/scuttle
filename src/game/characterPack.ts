@@ -1,10 +1,11 @@
 /**
  * Which on-foot character pack to use.
  *
- * KayKit ("Adventurers", CC0) is the default while we evaluate it against the
- * legacy Quaternius pirate: it ships modular limb meshes (clean first person)
- * and 76 melee clips (stab/slice/chop/block/dodge/hit/death). Add
- * `?char=quaternius` (or `?char=q`) to the URL to A/B the old captain.
+ * Default is the Quaternius pirate (the look we're keeping for now). KayKit
+ * ("Adventurers", CC0) was prototyped for its modular limbs + 76 melee clips
+ * but its chibi proportions read as a "cartoon pill", so it's parked behind
+ * `?char=kk` (or `?char=kaykit`) for reference only while we pick a better
+ * model.
  *
  * Resolved once per page load and cached so crew.ts and main.ts always agree.
  */
@@ -14,11 +15,11 @@ let cached: CharPack | null = null;
 
 export function characterPack(): CharPack {
   if (cached) return cached;
-  let pack: CharPack = "kaykit";
+  let pack: CharPack = "quaternius";
   try {
     const q = new URLSearchParams(location.search).get("char");
-    if (q === "quaternius" || q === "q" || q === "old") pack = "quaternius";
-    else if (q === "kaykit" || q === "kk") pack = "kaykit";
+    if (q === "kaykit" || q === "kk") pack = "kaykit";
+    else if (q === "quaternius" || q === "q" || q === "old") pack = "quaternius";
   } catch {
     // non-browser (vitest): keep the default
   }
