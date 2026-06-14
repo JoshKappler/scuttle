@@ -1,13 +1,13 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
-import { G, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
+import { G, MAX_CARVE_CELLS, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
 import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeVoxelColumns, type VoxelColumn } from "../sim/buoyancy";
-import { sphereCells } from "../sim/ballistics";
+import { planCarve } from "../sim/carve";
 import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
-import { IRON } from "../sim/materials";
+import { MATERIALS } from "../sim/materials";
 import { segmentBoxHit, segmentMastHit, segmentSailHit } from "../sim/rigDamage";
 import { meshChunk } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
@@ -634,41 +634,69 @@ export class Ship {
   }
 
   /**
-   * Remove voxels in a blast radius around a hit cell. Returns the number of
-   * cells destroyed. Mass properties and buoyancy probes are recomputed so
-   * handling and flotation genuinely change with damage.
+   * Spend an energy budget destroying voxels from `cell` along `dir` (the one
+   * destruction primitive — ramming and cannon fire both route here). Removes
+   * cells from the grid AND the voxel collider, registers breaches (incl. the
+   * cut faces of any section that breaks off), sheds disconnected islands as
+   * debris, and recomputes mass + buoyancy + deck. Returns cells destroyed.
    */
+  carve(cell: [number, number, number], energy: number, dir: [number, number, number] | null): number {
+    const grid = this.build.grid;
+    const plan = planCarve({
+      dims: grid.dims,
+      isSolid: (x, y, z) => grid.isSolid(x, y, z),
+      strengthAt: (x, y, z) => MATERIALS[grid.get(x, y, z)]?.strength ?? 0,
+      origin: cell,
+      dir,
+      energy,
+      maxCells: MAX_CARVE_CELLS,
+    });
+    if (plan.cells.length === 0) return 0;
+    for (const [x, y, z] of plan.cells) { grid.remove(x, y, z); this.hull.removeVoxel(x, y, z); }
+    this.registerBreaches(plan.cells);
+
+    // anything no longer connected to the anchor breaks off as debris; its removed
+    // cells are fresh holes too — register them so the stump floods from the cut.
+    const islands = findSevered(grid, this.keelAnchor);
+    if (islands.length > 0) {
+      const islandCells: [number, number, number][] = [];
+      for (const island of islands) {
+        for (const c of island.cells) {
+          grid.remove(c.x, c.y, c.z);
+          this.hull.removeVoxel(c.x, c.y, c.z);
+          islandCells.push([c.x, c.y, c.z]);
+        }
+      }
+      this.registerBreaches(islandCells);
+      this.onSevered?.(islands);
+    }
+
+    // a mast whose step has been blown out goes by the board
+    this.build.masts.forEach((m, mi) => {
+      if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) this.fellMast(mi);
+    });
+
+    this.recomputeMassProperties();
+    this.rebuildDeckCollider();
+    return plan.cells.length;
+  }
+
+  /** Back-compat shim for callers not yet migrated (cannons → Task 9, ramming → Task 5).
+   *  Energy ∝ blast volume to roughly preserve the old sphere-removal feel meanwhile. */
   applyDamage(cell: [number, number, number], radiusVox: number): number {
+    return this.carve(cell, radiusVox * radiusVox * radiusVox * 50000, null);
+  }
+
+  /** Register removed hull cells as breaches: a removed cell adjacent to ONE
+   *  compartment's interior is a hull breach; adjacent to TWO is a bulkhead opening.
+   *  (Extracted verbatim from the old applyDamage breach loop.) */
+  private registerBreaches(cells: [number, number, number][]): void {
     const grid = this.build.grid;
     const [nx, ny] = grid.dims;
     const cidx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
-    let removed = 0;
-    const removedCells: [number, number, number][] = [];
-    for (const [x, y, z] of sphereCells(cell, radiusVox)) {
-      const mat = grid.get(x, y, z);
-      if (mat === 0) continue;
-      if (mat === IRON) {
-        const d = Math.hypot(x - cell[0], y - cell[1], z - cell[2]);
-        if (d > radiusVox * 0.55) continue; // iron shrugs off the blast fringe
-      }
-      grid.remove(x, y, z);
-      removedCells.push([x, y, z]);
-      removed++;
-    }
-    if (removed === 0) return 0;
-
-    // breach registration: a removed cell adjacent to one compartment is a
-    // hull breach for it; adjacent to two compartments, a bulkhead opening
-    for (const [x, y, z] of removedCells) {
+    for (const [x, y, z] of cells) {
       const adj = new Set<number>();
-      for (const [px, py, pz] of [
-        [x - 1, y, z],
-        [x + 1, y, z],
-        [x, y - 1, z],
-        [x, y + 1, z],
-        [x, y, z - 1],
-        [x, y, z + 1],
-      ] as [number, number, number][]) {
+      for (const [px, py, pz] of [[x - 1, y, z], [x + 1, y, z], [x, y - 1, z], [x, y + 1, z], [x, y, z - 1], [x, y, z + 1]] as [number, number, number][]) {
         const comp = this.cellComp.get(cidx(px, py, pz));
         if (comp !== undefined) adj.add(comp);
       }
@@ -677,31 +705,9 @@ export class Ship {
         this.breachCells.get(id)?.push([x, y, z]);
       } else if (adj.size >= 2) {
         const ids = [...adj];
-        for (let i = 0; i < ids.length - 1; i++) {
-          this.openings.push({ a: ids[i], b: ids[i + 1], area: VOXEL_SIZE * VOXEL_SIZE });
-        }
+        for (let i = 0; i < ids.length - 1; i++) this.openings.push({ a: ids[i], b: ids[i + 1], area: VOXEL_SIZE * VOXEL_SIZE });
       }
     }
-
-    // anything no longer connected to the keel breaks off as debris
-    const islands = findSevered(grid, this.keelAnchor);
-    if (islands.length > 0) {
-      for (const island of islands) {
-        for (const c of island.cells) grid.remove(c.x, c.y, c.z);
-      }
-      this.onSevered?.(islands);
-    }
-
-    // a mast whose step has been blown out goes by the board (round 7)
-    this.build.masts.forEach((m, mi) => {
-      if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) {
-        this.fellMast(mi);
-      }
-    });
-
-    this.recomputeMassProperties();
-    this.rebuildDeckCollider();
-    return removed;
   }
 
   /** Refresh rapier mass props + buoyancy probes from the current grid. */
