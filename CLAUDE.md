@@ -1,54 +1,78 @@
 # SCUTTLE — read this first
 
-**SCUTTLE** is a pirate voxel naval roguelite (Three.js + Rapier3D + Vite + TypeScript, vitest tests). The browser build is the demo; the end-vision is a Steam desktop build. It is ~48h old and built fast by many concurrent Claude instances, so the `docs/` tree is full of **dated worklogs and design specs that describe earlier rounds**. They are history, not marching orders.
+**SCUTTLE** is a pirate voxel naval game — a persistent **plunder-tycoon**: sail, fight, ram, board, plunder, make port, upgrade, sail on. Three.js + Rapier3D (compat) + Vite + TypeScript, with a deterministic vitest physics oracle. The browser build is the demo; the end-vision is a Steam desktop build. It was built fast by many concurrent Claude instances, so `docs/` is full of **dated worklogs and design specs from earlier rounds** — history, not marching orders.
 
 > **THE RULE: when a doc disagrees with the code, the code wins.** Verify any file / flag / tunable in the source before relying on it. This file is the current-state index; keep it honest.
 
-_Last verified against code: 2026-06-13 (round 17)._
+_Last verified against code: 2026-06-14 — **post-consolidation**: every active dev branch merged into `main`._
+
+## What's in the build (consolidated 2026-06-14)
+All the parallel dev branches were merged into `main` in one pass:
+- **Per-voxel ship physics** — buoyancy, heel, trim, capsize and sinking all *emerge* from the voxel hull (no hand-tuned attitude levers).
+- **Voxel destruction (one rule)** — cannonballs bore clean holes; hulls deform on contact via a mutual energy-budget crunch; breached compartments flood by Bernoulli and she founders.
+- **Hostile fleet** — 0..6 enemies (dev-panel slider), sunk ships auto-replaced.
+- **Voxel archipelago** — seeded islands + cliffs + a harbor town with a dock; solid static collision (hulls ground on the shore).
+- **Plunder economy** — wallet / cargo / upgrades, a dock-triggered port screen, `localStorage` save.
+- **On-foot character** — Quaternius Universal (default) with clothing; walk/board the deck in 1st or 3rd person.
+- **AAA ocean** — 3-cascade GPU FFT + analytic swell + dynamic-wave FDTD.
 
 ## Run / build / test
-- **Dev:** `npm run dev` → **http://localhost:5173** (Vite default). The "5180" in old worklogs was a typo — it has never been 5180.
-- **Build:** `npm run build` (= `tsc --noEmit && vite build`). **Test:** `npm run test` (= `vitest run`); ~115 tests, keep green before commit.
+- **Dev:** `npm run dev` → **http://localhost:5173** (Vite default). The **desktop shortcut** runs `launch-scuttle.cmd` (= `npm run dev -- --open`) and opens the browser for you.
+- **⚠️ After pulling or switching branches, run `npm install`.** Deps drift between branches (e.g. `simplex-noise`, used by `sim/islandwright.ts`); a stale `node_modules` makes the dev server throw `Failed to resolve import "..."`.
+- **Build:** `npm run build` (= `tsc --noEmit && vite build`). **Test:** `npm run test` (= `vitest run`); 33 files / ~195 tests, keep green before commit.
+- **⚠️ `npm run test` (vitest) does NOT type-check** — it strips types. A red `tsc` hides behind green tests, so **run `npm run build` to catch type errors before merging.**
 - **Dev panel:** backtick `` ` `` toggles it (releases pointer-lock). It live-edits `TUN` in `src/core/tunables.ts`.
 - **In-browser verify (GPU/shaders):** GLSL bugs pass `tsc` + unit tests and fail only at runtime — verify shaders live via Playwright MCP at `:5173` + a readback oracle. Screenshots land in the **projects ROOT** (`projects/<name>.png`), Read them from there.
-- `window.DEBUG` (set in `src/main.ts`) exposes: `sloop, enemy, world, cannons, captain, boarding, controls, camera, sailing, ramming, debris, oceanField, dynWaves, spray, character`. (Old docs say `hulk` — it's `enemy` now.)
+- `window.DEBUG` (set in `src/main.ts`) exposes: `sloop, fleet, world, cannons, boarding, controls, camera, sailing, contact, debris, oceanField, dynWaves, spray, islands, economy, port, TUN, character`. (Old docs say `enemy`/`hulk` — it's the `fleet` now.)
 - **Repo:** `scuttle/` is its own git repo. The parent `projects/` is **not** a repo — never `git init` at root.
+- **Concurrent instances share this ONE working dir.** Safe git = branch-create + push only; never `checkout`/`reset`/`stash`/`rebase` that clobbers a sibling mid-task. There is **NO CI** — verify big merges in your own *detached throwaway worktree* (build + test) and then `git push origin HEAD:main`.
 
-## Tunables (`src/core/tunables.ts` → `TUN`) — NOT read by the deterministic vitest oracle
-- `phys`: `buoyancy 1.5`, `heaveDamp 0.2` (heave/pitch/roll damping ζ), `yawDamp 0.7`, `lateralDrag 1.7`.
-- `dyn`: dynamic-wave FDTD field (`enabled, heightScale, inject, damping, foam`).
+## Controls
+- **Helm (ship):** `W`/`S` sail set, `A`/`D` steer · `T` toggle helm ↔ on-foot.
+- **On foot:** `W`/`A`/`S`/`D` move · `E` interact (also opens the **port** at a dock) · `C` kick · `G` grapple toggle.
+- **Damage control:** `R` plug a breach (costs a plank) · `P` pump toggle.
+- **Camera:** `V` cycles char-3rd / char-1st / ship-3rd person; mouse-wheel zoom in char follow-cam.
+- `F` fullscreen · `X` cutaway clip-plane · `` ` `` dev panel.
+- **URL:** `?char=u|bug|q|kk` picks the on-foot pack (default = Universal). `?spike=char` spawns the deck-walk spike.
+
+## Tunables (`src/core/tunables.ts` → `TUN`) — live dev-panel knobs, NOT read by the vitest oracle
+- `phys`: `buoyancy 1.5`, `heaveDamp 0.2` (ONE ζ damps heave+pitch+roll), `yawDamp 0.7`, `lateralDrag 1.7`.
+- `dyn`: dynamic-wave FDTD field (`enabled, heightScale 0.45, inject 0.6, damping 1.8, foam 0`).
 - `chop`: FFT surface detail (`strength 1, choppiness 1.5`). `spray`: bow spray (`enabled, bow 1`).
-- `gun`: cannon ballistics (`muzzleSpeed 150, drag 0.0025, mass 4.3`) — drives BOTH the live ball (`game/cannons.ts`) and the aim-arc preview (`main.ts`), so the rendered trajectory ≡ the real shot. r18 retune off the round-8 arcade values (72 m/s / 0.006 → ~70 m at 5°); real 6-pdr ≈ 440 m/s / 0.0008. `mass` scales the hit's hull-shove impulse.
+- `gun`: cannon ballistics (`muzzleSpeed 150, drag 0.0025, mass 4.3, boreRadiusVox 1, crushEfficiency 40`) — drives BOTH the live ball (`game/cannons.ts`) and the aim-arc preview (`main.ts`), so the rendered trajectory ≡ the real shot.
+- `crush`: ship-vs-ship deformable contact (`enabled, maxStepEnergy, yield, carveDamp, transfer 0.2, separate, fling, minDepth`) — replaces the retired `ram` levers.
+- `flood`: `inflowScale 0.15` (≈ −85% breach inflow so a holed hull founders over a minute, fightably). `fleet`: `enemyCount 1` (integer 0..`MAXVIS`=6).
 
 ## Architecture (source-of-truth modules)
-- `src/core/` — `constants`, `rng` (deterministic), `tunables`.
-- `src/sim/` — deterministic physics (the test oracle): `buoyancy` (TRUE per-voxel), `compartments`, `connectivity`, `gerstner` (swell), `oceanSpectrum`/`fft`, `shipwright` (hull voxels), `ballistics`, `aiBrain`, `heel`, `materials`, `rigDamage`.
-- `src/game/` — `ship`, `world` (fixed-step loop), `physics` (Rapier), `crew` (+ FP viewmodel), `boarding`, `cannons`, `gunnery`, `player`, `sailing`, `ai`, `ramming`, `debris`, `character`.
-- `src/render/` — ocean: `ocean` + `oceanCascade` + `oceanFFT` + `oceanField` + `dynamicWaves`; plus `shipVisual`, `compartmentFluid`, `pirateModel`, `devPanel`, `voxelMesher`, `spray`, `seamMask`, `sky`, `effects`.
+- `src/core/` — `constants` (`MAXVIS 6`, `FIXED_DT`, `G`, `VOXEL_SIZE`), `rng` (deterministic), `tunables`.
+- `src/sim/` — deterministic physics (the test oracle): `voxelGrid`, `shipwright` (hull voxels) + `weld`, `buoyancy` (TRUE per-voxel), `compartments` + `connectivity` (flooding), `gerstner` (swell), `oceanSpectrum`/`fft`, `ballistics`, `aiBrain`, `heel`, `materials`, `rigDamage`; **destruction:** `carve`, `crush`, `voxelOverlap`, `surfaceSet`; **world:** `islandwright` (islands; uses `simplex-noise`), `economy` (pure wallet/cargo/upgrades).
+- `src/game/` — `ship`, `world` (fixed-step loop; owns `world.contact` = the deformable crunch), `physics` (Rapier + contact hooks), `voxelContact` (ship-vs-ship mutual crush), `hullCollider`, `crew` (+ FP viewmodel), `boarding`, `cannons`, `gunnery`, `player`, `sailing`, `ai`, `fleet` (FleetManager), `debris`, `character` (deck spike) + `characterPack`, `port` (PortController: dock proximity + sell/repair/buy + save), `islandField`.
+- `src/render/` — ocean: `ocean` + `oceanCascade` + `oceanFFT` + `oceanField` + `dynamicWaves`; `shipVisual`, `compartmentFluid`, `voxelMesher`, `islandVisual`, `spray`, `seamMask`, `sky`, `effects`, `devPanel`, `portScreen`; character models: `universalModel` (default), `bugrimovModel`, `kaykitModel`, `pirateModel`.
 - `src/main.ts` — entry / main loop / camera / FP viewmodel / `window.DEBUG`.
 
 ## THE LAW — invariants that must not be broken
-1. **Two-layer ocean / physics determinism.** Physics rides **ONLY** the analytic Gerstner **swell** (λ≥14 m — `sim/gerstner.ts`, `PHYSICS_MIN_WAVELENGTH = 14`, `physicsWaves()`). The visual cascades (`render/oceanCascade.ts`) and FFT are **visual only — the hull never samples them.** This is what keeps physics deterministic for replays. **Never feed cascade/FFT height into physics.**
-2. **Ship attitude is EMERGENT from the per-voxel hull (r17).** Pitch / roll / trim / turn-heel come from real voxel physics, not hand-tuned clamps. The user's stated philosophy: *don't hard-set values — tune mass/density/volume so correct behavior emerges.* Don't reintroduce mechanical levers.
-3. **Leeway drag applies at the COM**, supplying the turn's centripetal pull; the bank is a **separate emergent G-couple**. Gotcha (learned the hard way): moving force-application points casually (e.g. leeway to COM-vs-CB) flips righting and capsizes her under sail.
+1. **Two-layer ocean / physics determinism.** Physics rides **ONLY** the analytic Gerstner **swell** (λ≥14 m — `sim/gerstner.ts`, `PHYSICS_MIN_WAVELENGTH = 14`, `physicsWaves()`). The visual cascades (`render/oceanCascade.ts`) + FFT are **visual only — the hull never samples them.** This keeps physics deterministic for replays. **Never feed cascade/FFT height into physics.**
+2. **Ship attitude is EMERGENT from the per-voxel hull.** Pitch / roll / trim / turn-heel come from real voxel physics, not clamps. Philosophy: *tune mass / density / volume so correct behavior emerges — don't reintroduce mechanical levers.*
+3. **Leeway drag applies at the COM**, supplying the turn's centripetal pull; the bank is a separate emergent G-couple. Gotcha: moving force-application points casually flips righting and capsizes her under sail.
+4. **Destruction is ONE rule.** Cannons, ramming, ship-ship crunch and terrain all emerge from breaking voxels against an energy budget (`sim/crush.ts` + `game/voxelContact.ts`), never preset damage amounts. Judge any change by *"does the rest fall out for free?"*
 
 ## GONE — intentionally removed, do NOT "restore"
-- **Enemy crew** (`game/boarding.ts`) — removed r13 (`ensureCrew` posts `[]`).
-- **LOST-AT-SEA / PRIZE end-game** — removed r17 (commit `0095390`). Sinking is **non-terminal**: the voyage just continues, no banner, no game-over.
-- **The 6 physics levers** (`pitchDamp, rollDamp, trim, keelDepth, heelVelCap, turnHeelArm`) — replaced by per-voxel buoyancy + `heaveDamp` ζ.
-- **The single band-limited 14 m FFT chop tile** — replaced by the 3-cascade Tessendorf ocean (`render/oceanCascade.ts`).
-- **The emissive "blue cube" flood** — replaced by real, world-leveled, sloshing compartment fluid (`render/compartmentFluid.ts`).
+- **Enemy crew** (`game/boarding.ts`) — `ensureCrew` posts `[]`.
+- **LOST-AT-SEA / PRIZE end-game** — sinking is non-terminal; the voyage just continues, no banner.
+- **The 6 physics levers** (`pitchDamp, rollDamp, trim, keelDepth, heelVelCap, turnHeelArm`) — replaced by per-voxel buoyancy + the one `heaveDamp` ζ.
+- **The single band-limited 14 m FFT chop tile** — replaced by the 3-cascade Tessendorf ocean.
+- **The emissive "blue cube" flood** — replaced by real, sloshing compartment fluid (`render/compartmentFluid.ts`).
+- **The rigid-reaction ram path** (`game/ramming.ts`, `collisionDestruction`, `TUN.ram`) — retired for the deformable `voxelContact` crunch (`TUN.crush`, lives in `world.contact`).
+- **The single `enemy`** — replaced by the `fleet` (`DEBUG.fleet`, `FleetManager`).
 
-## Ocean — the resolved story
-The live ocean is the **"Ocean Rebuild" (rounds 14–17**, fully recorded in `docs/ROUND14_OCEAN_WORKLOG.md`): a 3-cascade GPU FFT + analytic swell + dynamic-wave FDTD + voxel-accurate hull void-cut + real flood fluid. **"Water Foundation"** was its shipped phase-1 predecessor; its only permanent legacy is LAW #1 above. **Both ocean design specs are now in `docs/archive/` and lag the code — treat them as history.** (The r15 jitter bug was a `(−1)^(x+y)` checkerboard from a missing fftshift in `render/oceanFFT.ts`; fixed.)
+## Open follow-ups (left deliberately at consolidation)
+- **Wire dock → port:** in `main.ts` the `PortController` has `// dock: islands` commented out; `IslandField.nearestDock` already satisfies the `DockProvider` interface — a one-line wire, left for a pass where the in-game flow can be verified in-browser.
+- **Islands polish:** hulls ground ~1 ship-length offshore on the shoal; the harbor palette / cliff drama are starting values.
+- **Character:** clothing is in; still open — a cutlass on the model, wall-clip collision, mast-climb to a crow's nest.
 
 ## Roadmap / North Star
-`docs/superpowers/specs/2026-06-12-scuttle-design.md`: **M1 floats → M2 sinks → M3 fights back → M4 board her → M5 the run → M6 ship it.**
-- **Shipped:** M1–M3, brig + broadsides + bow/stern chasers, the ocean rebuild, per-voxel physics.
-- **Approved next physics direction:** voxel destruction core — `docs/superpowers/specs/2026-06-13-voxel-destruction-core-design.md` (+ its impl plan). Native Rapier voxel colliders + energy-budget carve (speed²·mass), no preset damage amounts.
-- **In progress (concurrent):** voxel masts/yards/bowsprit — `docs/superpowers/specs/2026-06-13-voxel-masts-design.md` (+ plan). Approved: masts become real hull-grid voxels (destructible, break off as debris), **both ships**, with a ballast re-tune.
-- **M4 (boarding / swim / melee):** a spike ran (`docs/superpowers/notes/char-spike.md`) but has **no implementation plan yet** — write one before building.
+`docs/superpowers/specs/2026-06-12-scuttle-design.md`: **M1 floats → M2 sinks → M3 fights back → M4 board her → M5 the run → M6 ship it.** M1–M4 are substantially in (float / sink / fight, fleet, boarding + on-foot, islands, economy framework); the persistent **plunder-tycoon** loop is the active framing.
 
 ## Doc map (what to trust)
-- **Trust (current):** this file; the code; `docs/ROUND14_OCEAN_WORKLOG.md` (r14–17 deletions w/ commit hashes); `docs/superpowers/specs/2026-06-12-scuttle-design.md` (North Star); the active `voxel-destruction-core` + `voxel-masts` specs/plans; `docs/superpowers/notes/char-spike.md`.
-- **History → `docs/archive/`** (see its README): the round-13 `NIGHT_WORKLOG.md`, `overnight-progress.md` (M1–M2), the `m1`–`m11` plans, and the two ocean design specs. Executed records kept for hard-won findings — not TODO lists.
+- **Trust (current):** this file and the code. The `docs/` specs + worklogs (ocean rebuild, voxel destruction / masts, multi-ship-fleet, voxel-islands, plunder-economy designs) are dated history — good for the *why*, but the code wins on the *what*.
+- **History → `docs/archive/`** (see its README) — executed records kept for hard-won findings, not TODO lists.
