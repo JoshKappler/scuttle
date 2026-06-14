@@ -18,7 +18,7 @@ import { AICaptain } from "./game/ai";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
 import { CollisionDestruction } from "./game/collisionDestruction";
-import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld } from "./game/gunnery";
+import { muzzleWorld } from "./game/gunnery";
 import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
 import { CharacterSpike } from "./game/character";
 import { characterPack } from "./game/characterPack";
@@ -733,8 +733,10 @@ async function main() {
   // trajectory as well and articulate")
   const ARC_PTS = 64; // vertices in the preview polyline
   // integrate the preview at the ball's exact step; record 1 vertex per this
-  // many sim steps → ARC_PTS·ARC_SUB·FIXED_DT ≈ 4.3 s of flight covered
-  const ARC_SUB = 4;
+  // many sim steps → ARC_PTS·ARC_SUB·FIXED_DT ≈ 6.4 s of flight covered. r18: bumped
+  // 4→6 because the faster r18 muzzle (TUN.gun) flies longer, so 4.3 s clipped the arc
+  // short of its splash at normal combat elevations; the flatter shot stays smooth coarser.
+  const ARC_SUB = 6;
   const gunsPerSide = Math.max(
     sloop.build.cannonPorts.filter((p) => p.side === 1).length,
     sloop.build.cannonPorts.filter((p) => p.side === -1).length,
@@ -809,7 +811,10 @@ async function main() {
       // with the ball's OWN step (FIXED_DT)/G/drag, sub-sampled 1 vertex per
       // ARC_SUB steps, so the curve's SHAPE and range match the shot exactly.
       muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
-      const v = arcMuzzle.dir.clone().multiplyScalar(MUZZLE_SPEED);
+      // read the SAME live ballistics the ball uses (TUN.gun) so the preview
+      // tracks the dev-panel sliders in lock-step with the real shot.
+      const drag = TUN.gun.drag;
+      const v = arcMuzzle.dir.clone().multiplyScalar(TUN.gun.muzzleSpeed);
       const p = arcMuzzle.pos.clone();
       let vi = 0;
       for (let stepN = 0; vi < ARC_PTS; stepN++) {
@@ -820,9 +825,9 @@ async function main() {
           vi++;
         }
         const sp = v.length();
-        v.x += -BALL_DRAG * sp * v.x * FIXED_DT;
-        v.y += (-G - BALL_DRAG * sp * v.y) * FIXED_DT;
-        v.z += -BALL_DRAG * sp * v.z * FIXED_DT;
+        v.x += -drag * sp * v.x * FIXED_DT;
+        v.y += (-G - drag * sp * v.y) * FIXED_DT;
+        v.z += -drag * sp * v.z * FIXED_DT;
         p.addScaledVector(v, FIXED_DT);
         if (p.y < surfaceHeight(waves, p.x, p.z, world.simTime)) {
           for (let j = vi; j < ARC_PTS; j++) {
@@ -1001,6 +1006,74 @@ async function main() {
   // r15 DEV PANEL: live knobs for the sea + boat feel the player asked to tune
   // themselves. Backtick (`) toggles it; sliders write straight into TUN, which
   // physics + render read every step. A reload resets (TUN is not persisted).
+  // DEV: T-bone ram test. Place the enemy stationary + perpendicular (flank toward
+  // the player) at the player's float height, then charge the player bow-first into
+  // it. The charge is re-imposed each frame ONLY until first contact (a voxel comes
+  // off either hull), then released so the REAL impact physics play out. Exposed on
+  // window.ramTest for scripted checks; wired to the dev-panel button below.
+  const ramTest = () => {
+    const VS = 0.25;
+    // rotate a vector by a quaternion (v + 2w(q×v) + 2 q×(q×v))
+    const rotV = (qq: { x: number; y: number; z: number; w: number }, vx: number, vy: number, vz: number) => {
+      const tx = 2 * (qq.y * vz - qq.z * vy);
+      const ty = 2 * (qq.z * vx - qq.x * vz);
+      const tz = 2 * (qq.x * vy - qq.y * vx);
+      return {
+        x: vx + qq.w * tx + (qq.y * tz - qq.z * ty),
+        y: vy + qq.w * ty + (qq.z * tx - qq.x * tz),
+        z: vz + qq.w * tz + (qq.x * ty - qq.y * tx),
+      };
+    };
+    const p = sloop.body.translation();
+    const q = sloop.body.rotation();
+    // horizontal bow heading on the water plane
+    let fx = 1 - 2 * (q.y * q.y + q.z * q.z);
+    let fz = 2 * (q.x * q.z - q.y * q.w);
+    const fl = Math.hypot(fx, fz) || 1;
+    fx /= fl;
+    fz /= fl;
+    const DIST = 45;
+    const SPEED = 18;
+    // enemy rotation = player heading turned 90° about world-up → flank faces the bow
+    const s = Math.SQRT1_2;
+    const yw = { x: 0, y: s, z: 0, w: s };
+    const tq = {
+      x: yw.w * q.x + yw.x * q.w + yw.y * q.z - yw.z * q.y,
+      y: yw.w * q.y - yw.x * q.z + yw.y * q.w + yw.z * q.x,
+      z: yw.w * q.z + yw.x * q.y - yw.y * q.x + yw.z * q.w,
+      w: yw.w * q.w - yw.x * q.x - yw.y * q.y - yw.z * q.z,
+    };
+    // bodies are positioned by their grid-CORNER origin; aim by CENTERS instead.
+    // player center (on the water plane) — the charge line runs through it:
+    const pd = sloop.build.grid.dims;
+    const pc = rotV(q, (pd[0] * VS) / 2, (pd[1] * VS) / 2, (pd[2] * VS) / 2);
+    const lineX = p.x + pc.x;
+    const lineZ = p.z + pc.z;
+    // desired enemy center: DIST ahead along the bow heading
+    const tcx = lineX + fx * DIST;
+    const tcz = lineZ + fz * DIST;
+    // place the enemy ORIGIN so its CENTER lands there; keel y = player keel (same float)
+    const ed = enemy.build.grid.dims;
+    const ec = rotV(tq, (ed[0] * VS) / 2, (ed[1] * VS) / 2, (ed[2] * VS) / 2);
+    enemy.body.setTranslation({ x: tcx - ec.x, y: p.y, z: tcz - ec.z }, true);
+    enemy.body.setRotation(tq, true);
+    enemy.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    enemy.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    const baseline = sloop.build.grid.solidCount() + enemy.build.grid.solidCount();
+    let frames = 0;
+    const drive = () => {
+      frames++;
+      const contacted = sloop.build.grid.solidCount() + enemy.build.grid.solidCount() < baseline;
+      if (!contacted && frames < 200) {
+        const v = sloop.body.linvel();
+        sloop.body.setLinvel({ x: fx * SPEED, y: v.y, z: fz * SPEED }, true);
+        requestAnimationFrame(drive);
+      }
+    };
+    requestAnimationFrame(drive);
+  };
+  (window as unknown as Record<string, unknown>).ramTest = ramTest;
+
   const devPanel = createDevPanel([
     {
       // r17: pitch/roll/trim/keel-depth/heel-cap/turn-bank are GONE — attitude is now
@@ -1035,6 +1108,25 @@ async function main() {
       controls: [
         { type: "toggle", label: "enabled", obj: TUN.spray, key: "enabled" },
         { type: "slider", label: "bow", obj: TUN.spray, key: "bow", min: 0, max: 2, step: 0.05 },
+      ],
+    },
+    {
+      title: "Cannons",
+      controls: [
+        // muzzle speed + drag drive BOTH the ball and the aim-arc preview (TUN.gun),
+        // so dragging these re-shapes the visible trajectory live. Sweep the speed up
+        // toward ~440 (real 6-pdr) to feel it flatten into hitscan; mass = the hull-shove.
+        { type: "slider", label: "muzzle m/s", obj: TUN.gun, key: "muzzleSpeed", min: 40, max: 500, step: 5 },
+        { type: "slider", label: "air drag", obj: TUN.gun, key: "drag", min: 0.0005, max: 0.008, step: 0.0005 },
+        { type: "slider", label: "shove kg", obj: TUN.gun, key: "mass", min: 1, max: 12, step: 0.5 },
+      ],
+    },
+    {
+      title: "🔧 Destruction tests",
+      controls: [
+        { type: "button", label: "⚔ Ram Test (T-bone)", onClick: ramTest },
+        { type: "slider", label: "ram dmg ×", obj: TUN.ram, key: "impulseToJoules", min: 0, max: 50, step: 0.5 },
+        { type: "slider", label: "ram min imp", obj: TUN.ram, key: "minImpulse", min: 0, max: 500, step: 10 },
       ],
     },
   ]);

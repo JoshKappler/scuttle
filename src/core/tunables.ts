@@ -81,6 +81,38 @@ export const TUN = {
     /** bow-wave spray strength multiplier. */
     bow: 1.0,
   },
+
+  /** Cannon ballistics — read by game/cannons.ts (the LIVE ball) AND main.ts (the
+   *  aim-arc preview). Both integrate from these same numbers with the same G +
+   *  FIXED_DT, so the rendered trajectory and the real shot can never drift apart
+   *  (the hard-won "line ≡ ball" invariant from playtest rounds 6–8). r18 retuned
+   *  off the round-8 arcade values (72 m/s / 0.006 drag → ~70 m at 5°, ~180 m max)
+   *  toward a weightier, flatter, more ballistic feel: 150 m/s / 0.0025 drag roughly
+   *  TRIPLES range (~250 m at 5°, ~550 m max) while keeping the arc visible and
+   *  leadable. Full age-of-sail realism (a 6-pdr is ~440 m/s / ~0.0008 drag → 1.4–2.4
+   *  km) reads as invisible hitscan at this combat scale — drag the sliders to feel it. */
+  gun: {
+    /** muzzle speed (m/s). Real 6-pounder ≈ 440; 150 keeps the shot watchable. */
+    muzzleSpeed: 150,
+    /** quadratic air drag (per metre): |a_drag| = drag·v². Real ≈ 0.0008; 0.0025
+     *  trims the long high tails without flattening the close-range arc. */
+    drag: 0.0025,
+    /** ball mass (kg) scaling the impact's momentum kick on the target hull.
+     *  4.3 ≈ 9·(72/150) — preserves the old shove at the new, faster muzzle speed
+     *  so the retune doesn't suddenly ram ships ~2× harder. */
+    mass: 4.3,
+  },
+
+  /** Ship-vs-ship ramming destruction — read by game/collisionDestruction.ts each
+   *  contact. Carve energy = impulseToJoules × (Rapier contact impulse), so destruction
+   *  scales with how hard the hulls actually hit, not instantaneous relative velocity
+   *  (which collapses to ~0 once two heavy hulls grind together). Dial live in the panel. */
+  ram: {
+    /** joules of voxel-carving per unit of contact impulse (kg·m/s). */
+    impulseToJoules: 5,
+    /** ignore contacts below this summed impulse (resting weight / gentle fenders). */
+    minImpulse: 50,
+  },
 };
 
 export type Tunables = typeof TUN;
