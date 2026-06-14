@@ -6,6 +6,7 @@ import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeVoxelColumns, type VoxelColumn } from "../sim/buoyancy";
 import { planCarve } from "../sim/carve";
 import { planCrush } from "../sim/crush";
+import { computeSurface, updateSurfaceAfterRemoval, unpackCell } from "../sim/surfaceSet";
 import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
 import { MATERIALS, breakEnergy } from "../sim/materials";
@@ -96,11 +97,19 @@ export class Ship {
   /** SHIP-SHIP / debris contact shape: the real voxel hull, mutated on damage (Task 1). */
   readonly hull!: HullCollider;
 
+  /** Packed keys of every solid cell with an exposed face — the hull's boundary. Maintained
+   *  incrementally as the hull is carved; the deformable contact (voxelContact) tests only
+   *  these against the other hull, never the ~10^4 interior cells. */
+  private surface!: Set<number>;
+  /** Lazily-materialized packed [x,y,z,...] view of `surface`, rebuilt when the set changes. */
+  private surfaceCache: Int32Array | null = null;
+
   constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }) {
     this.phys = phys;
     this.build = build;
     this.visual = visual;
     this.columns = makeVoxelColumns(build.grid, build.compartments);
+    this.surface = computeSurface(build.grid);
 
     // keel anchor: lowest solid cell on the midship centerline
     const [kx, , knz] = build.grid.dims;
@@ -663,17 +672,19 @@ export class Ship {
    *  the count actually removed (already-empty cells are skipped). */
   carveCells(cells: [number, number, number][]): number {
     const grid = this.build.grid;
-    let removed = 0;
+    const gone: [number, number, number][] = [];
     for (const [x, y, z] of cells) {
       if (!grid.isSolid(x, y, z)) continue;
       grid.remove(x, y, z);
       this.hull.removeVoxel(x, y, z);
-      removed++;
+      gone.push([x, y, z]);
     }
-    if (removed === 0) return 0;
+    if (gone.length === 0) return 0;
+    updateSurfaceAfterRemoval(grid, this.surface, gone); // keep the boundary set fresh
+    this.surfaceCache = null;
     this.registerBreaches(cells);
     this.damageDirty = true; // sever/mass/deck recompute is deferred + throttled (flushDamage)
-    return removed;
+    return gone.length;
   }
 
   /** The universal destruction entry point: spend `energy` joules removing as many of the
@@ -696,6 +707,41 @@ export class Ship {
     );
     const n = this.carveCells(removed);
     return { removed: n, leftover };
+  }
+
+  /** Local-frame integer coords of every solid cell with an exposed face, packed
+   *  [x,y,z, x,y,z, ...]. Cached; rebuilt only when the hull is carved. Consumed by
+   *  voxelOverlap as the cheap boundary set for hull-vs-hull overlap tests. */
+  surfaceCells(): Int32Array {
+    if (this.surfaceCache) return this.surfaceCache;
+    const [nx, ny] = this.build.grid.dims;
+    const out = new Int32Array(this.surface.size * 3);
+    let i = 0;
+    for (const key of this.surface) {
+      const [x, y, z] = unpackCell(key, nx, ny);
+      out[i++] = x; out[i++] = y; out[i++] = z;
+    }
+    this.surfaceCache = out;
+    return out;
+  }
+
+  /** World-space AABB of the live hull's grid envelope, written into `out`, for broad-phase
+   *  culling of the deformable contact. Transforms the 8 corners of the local grid box by the
+   *  body pose — a safe (slightly loose) bound as cells carve away. */
+  aabbWorld(out: { min: THREE.Vector3; max: THREE.Vector3 }): { min: THREE.Vector3; max: THREE.Vector3 } {
+    const [nx, ny, nz] = this.build.grid.dims;
+    const ex = nx * VOXEL_SIZE, ey = ny * VOXEL_SIZE, ez = nz * VOXEL_SIZE;
+    const tr = this.body.translation();
+    const rot = this.body.rotation();
+    this.tmpQ.set(rot.x, rot.y, rot.z, rot.w);
+    out.min.set(Infinity, Infinity, Infinity);
+    out.max.set(-Infinity, -Infinity, -Infinity);
+    for (let i = 0; i < 8; i++) {
+      this.tmpV.set(i & 1 ? ex : 0, i & 2 ? ey : 0, i & 4 ? ez : 0).applyQuaternion(this.tmpQ);
+      this.tmpV.x += tr.x; this.tmpV.y += tr.y; this.tmpV.z += tr.z;
+      out.min.min(this.tmpV); out.max.max(this.tmpV);
+    }
+    return out;
   }
 
   /** Heavy post-damage recompute (shed disconnected islands, rebuild buoyancy columns
@@ -724,6 +770,8 @@ export class Ship {
           islandCells.push([c.x, c.y, c.z]);
         }
       }
+      updateSurfaceAfterRemoval(grid, this.surface, islandCells); // shed cells leave the boundary
+      this.surfaceCache = null;
       this.registerBreaches(islandCells);
       this.onSevered?.(islands);
     }
