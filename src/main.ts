@@ -26,6 +26,9 @@ import { Effects } from "./render/effects";
 import { createSpray } from "./render/spray";
 import { TUN } from "./core/tunables";
 import { createDevPanel } from "./render/devPanel";
+import { Economy } from "./sim/economy";
+import { createPortScreen } from "./render/portScreen";
+import { PortController } from "./game/port";
 
 async function main() {
   const app = document.getElementById("app")!;
@@ -196,6 +199,29 @@ async function main() {
   const captain = new AICaptain(enemy, scene, effects);
   const boarding = new BoardingSystem(physics, scene, effects, sloop, enemy);
 
+  // ---- plunder economy (framework): wallet/cargo/upgrades + dock-triggered port + save ----
+  // Wraps the existing boarding.gold (the HUD wallet); the port screen is a JS overlay; the
+  // dock uses a DevDockProvider here and the islands branch's IslandField.nearestDock once merged.
+  const economy = new Economy();
+  const portScreen = createPortScreen({
+    onSell: () => port.sell(),
+    onRepair: () => port.repair(),
+    onBuy: (id) => port.buy(id),
+    onClose: () => port.closePort(),
+  });
+  const port = new PortController({
+    economy,
+    ship: sloop,
+    boarding,
+    ui: portScreen,
+    getPlayerPos: () => {
+      const t = sloop.body.translation();
+      return { x: t.x, z: t.z };
+    },
+    // dock: islands,  // ← wire to IslandField when the dev/voxel-islands branch merges
+  });
+  port.load(); // restore the saved empire (doubloons/cargo/upgrades) and mirror to boarding.gold
+
   // rig damage feedback (round 7): masts fall, rudders splinter
   sloop.onMastFelled = () => (boarding.message = "YOUR MAST GOES BY THE BOARD!");
   enemy.onMastFelled = () => (boarding.message = "her mast goes by the board!");
@@ -236,6 +262,7 @@ async function main() {
 
   world.onFixedStep = (t, dt) => {
     controls.modePressed = false; // legacy T — the wheel gates the helm now
+    port.update(dt); // dock proximity → canDock + "press E — make port" hint
     if (controls.grapplePressed) {
       controls.grapplePressed = false;
       boarding.toggleGrapple();
@@ -285,6 +312,8 @@ async function main() {
             ),
           );
           boarding.message = "you haul yourself up the stern ladder";
+        } else if (port.canDock) {
+          port.tryDock(); // make port — opens the economy screen, banks progress
         } else {
           interact = true;
         }
@@ -374,8 +403,7 @@ async function main() {
     // never a banner or a freeze. The game only ends when the player reloads.
     if (isSunk(enemy) && !enemyScuttled) {
       enemyScuttled = true;
-      boarding.gold += 150; // flotsam — most of it went down with her
-      boarding.message = `SHE'S SCUTTLED — salvaged ${boarding.gold}g from the flotsam. Sail on.`;
+      port.plunder(enemy); // loot → economy → mirrors boarding.gold + toast (replaces the flat +150)
     }
   };
 
@@ -515,6 +543,8 @@ async function main() {
     oceanField,
     dynWaves,
     spray,
+    economy,
+    port,
     get character() {
       return character;
     },
@@ -1019,6 +1049,10 @@ async function main() {
         { type: "toggle", label: "enabled", obj: TUN.spray, key: "enabled" },
         { type: "slider", label: "bow", obj: TUN.spray, key: "bow", min: 0, max: 2, step: 0.05 },
       ],
+    },
+    {
+      title: "Port (dev)",
+      controls: [{ type: "button", label: "Open Port screen", onClick: () => port.openPort() }],
     },
   ]);
   const _roQ = new THREE.Quaternion();
