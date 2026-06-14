@@ -1194,14 +1194,16 @@ async function main() {
     enemy.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     enemy.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     let frames = 0;
-    // keep the way ON through contact so she drives her bow IN (sustained impulse →
-    // sustained carving → embedding/tearing), the way a sail-driven ram would, rather
-    // than coasting to a stop the instant the hulls touch.
+    // Drive up to ram speed ONLY until the bows actually touch, then RELEASE — so the real,
+    // anchored contact physics play out (a sail-driven ram that SLOWS as it carves in), not an
+    // infinite-momentum push held at constant speed through the hull (that bulldozes straight
+    // through and is not representative of play).
     const drive = () => {
       frames++;
+      if (world.contact.debug.overlapCount > 0) return; // contact made → let go, real physics from here
       const v = sloop.body.linvel();
       sloop.body.setLinvel({ x: fx * SPEED, y: v.y, z: fz * SPEED }, true);
-      if (frames < 120) requestAnimationFrame(drive);
+      if (frames < 240) requestAnimationFrame(drive);
     };
     requestAnimationFrame(drive);
   };
