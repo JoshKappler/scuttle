@@ -136,11 +136,17 @@ export class VoxelContact {
       const closingKE = 0.5 * mu * vClose * vClose;
       const absorbable = TUN.crush.fMax * depth; // work the capped spring can do over the overlap
       const E = Math.max(0, closingKE - absorbable) * TUN.crush.yield;
-      if (E > 0) {
-        const rA = shipA.crush(ov.aCells, E / 2);
-        const rB = shipB.crush(ov.bCells, E / 2);
+      // per-hull per-step budget cap: the crunch grinds VOXEL-BY-VOXEL across steps instead of
+      // vaporizing the whole overlap in one frame, and a FIXED budget lets toughness decide
+      // depth (the RAM bow outlasts the oak it strikes). The capped spring keeps the hulls
+      // engaged, so a sustained ram keeps digging the next step. Leftover KE is NOT forced into
+      // carving — it stays as closing motion (the ram keeps coming) and bleeds via the spring.
+      const Ehull = Math.min(E / 2, TUN.crush.maxStepEnergy);
+      if (Ehull > 0) {
+        const rA = shipA.crush(ov.aCells, Ehull);
+        const rB = shipB.crush(ov.bCells, Ehull);
         removedA = rA.removed; removedB = rB.removed;
-        energy = E;
+        energy = (Ehull - rA.leftover) + (Ehull - rB.leftover); // joules actually spent carving
         const removed = removedA + removedB;
         if (this.effects && TUN.crush.fling > 0 && removed > 0) {
           this.effects.impactDebris(point, n, Math.min(removed * TUN.crush.fling, 40));
@@ -153,7 +159,7 @@ export class VoxelContact {
         // ever shave each body's APPROACH speed (clamped ≤ its own approach), never reverse or
         // launch it. Applied at the COM (pure linear bleed; the at-point penalty above already
         // supplies the contact torque/slew).
-        const spent = (E / 2 - rA.leftover) + (E / 2 - rB.leftover);
+        const spent = energy; // joules that actually broke voxels this step (capped budget)
         if (spent > 0) {
           const newClose = Math.sqrt(Math.max(0, vClose * vClose - (2 * spent / mu) * TUN.crush.carveDamp));
           const dVc = vClose - newClose;

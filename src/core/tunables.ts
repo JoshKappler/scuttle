@@ -136,6 +136,15 @@ export const TUN = {
      *  This cap also bounds the per-step impulse (≤ fMax·dt), which is what makes the contact
      *  stable in a single pass — no sub-stepping needed. */
     fMax: 6.0e5,
+    /** per-hull per-step carve budget (J) — THE "soft, voxel-by-voxel crunch" knob. Caps how
+     *  much one fixed step may carve from each hull so a hard ram grinds the hole open across
+     *  many steps instead of vaporizing the whole overlap in one frame. A FIXED budget also
+     *  lets material toughness decide depth: at 1.2e6 the oak a bow strikes (180 kJ/cell) caves
+     *  ~6 cells/step while the RAM bow (1.44 MJ/cell) barely chips — bow-first ramming wins and
+     *  the rammer's prow takes only light damage, emergently. Raise for faster/heavier gouging,
+     *  lower for a slower grind. (At normal sail-ram speeds the physical ½μv² is already below
+     *  this, so the cap mainly tames extreme closing speeds.) */
+    maxStepEnergy: 1.2e6,
     /** fraction of the over-cap energy that becomes destruction (1 = all). Tunes how readily
      *  the crunch carves vs. just bounces. */
     yield: 1,

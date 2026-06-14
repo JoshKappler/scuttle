@@ -575,6 +575,7 @@ async function main() {
     oceanField,
     dynWaves,
     spray,
+    TUN, // live tunables (also lets Playwright tune crush/flood knobs during verification)
     get character() {
       return character;
     },
@@ -1225,6 +1226,9 @@ async function main() {
         // penalty spring + force cap: fMax is THE "barely shove the target" knob.
         { type: "slider", label: "stiffness k (×1e6)", obj: TUN.crush as unknown as Record<string, number>, key: "k", min: 0.5e6, max: 20e6, step: 0.5e6 },
         { type: "slider", label: "force cap fMax (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "fMax", min: 0.5e5, max: 30e5, step: 0.5e5 },
+        // THE "soft, voxel-by-voxel crunch" knob: per-hull per-step carve budget. Low = slow
+        // grind + tough RAM bow survives; high = faster/heavier gouging. See tunables.ts.
+        { type: "slider", label: "step carve J (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "maxStepEnergy", min: 1e5, max: 60e5, step: 1e5 },
         { type: "slider", label: "carve yield", obj: TUN.crush, key: "yield", min: 0, max: 2, step: 0.05 },
         { type: "slider", label: "carve→decel", obj: TUN.crush, key: "carveDamp", min: 0, max: 2, step: 0.05 },
         { type: "slider", label: "min depth m", obj: TUN.crush, key: "minDepth", min: 0, max: 0.5, step: 0.01 },
