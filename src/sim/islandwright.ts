@@ -1,7 +1,7 @@
 import { createGrid, type VoxelGrid } from "./voxelGrid";
 import { Rng } from "../core/rng";
 import { fbm2 } from "./noise";
-import { DARKROCK, DIRT, EMPTY, FOLIAGE, GRASS, PALMWOOD, ROCK, SAND } from "./materials";
+import { DARKROCK, DIRT, EMPTY, FOLIAGE, GRASS, OAK, PALMWOOD, PINE, ROCK, SAND } from "./materials";
 
 /**
  * Procedural voxel islandwright — the terrain analogue of sim/shipwright.ts.
@@ -96,6 +96,95 @@ export function buildIsland(o: IslandOpts): IslandModel {
     grid,
     meta: { waterlineY, radiusVox: o.radiusVox, peakVox: o.peakVox, dock: null },
   };
+}
+
+/**
+ * The harbor island: a flatter, lower landmass with a leveled town shelf, a
+ * voxel pier reaching out over the water on pylons, and a few voxel buildings.
+ * `meta.dock` carries the seaward pier-end anchor (voxel coords) for the future
+ * docking interaction. Deterministic for a seed.
+ */
+export function buildHarborIsland(opts: { seed: number }): IslandModel {
+  // flatter + lower than a wild island so the town sits on gentle ground
+  const model = buildIsland({ seed: opts.seed, radiusVox: 46, peakVox: 20, cliffiness: 0.25 });
+  const { grid, meta } = model;
+  const [nx, ny, nz] = grid.dims;
+  const cx = Math.floor(nx / 2);
+  const cz = Math.floor(nz / 2);
+  const shelfY = meta.waterlineY + 2; // town/dock deck level, a touch above the sea
+
+  // flatten a circular town shelf near the centre: clear above shelfY, fill to it
+  const townR = 16;
+  for (let x = cx - townR; x <= cx + townR; x++)
+    for (let z = cz - townR; z <= cz + townR; z++) {
+      if (x < 1 || z < 1 || x >= nx - 1 || z >= nz - 1) continue;
+      if ((x - cx) ** 2 + (z - cz) ** 2 > townR * townR) continue;
+      for (let y = shelfY + 1; y < ny; y++) grid.remove(x, y, z);
+      for (let y = SEABED_Y; y <= shelfY; y++)
+        if (grid.get(x, y, z) === EMPTY) grid.set(x, y, z, y === shelfY ? DIRT : ROCK);
+    }
+
+  // pier: a 3-wide plank run marching out +x from the shelf edge across the water,
+  // on OAK pylons every 3 m
+  const pierZ = cz;
+  const pierStartX = cx + townR - 2;
+  const pierLen = 26;
+  for (let i = 0; i < pierLen; i++) {
+    const x = pierStartX + i;
+    if (x >= nx - 1) break;
+    for (let dz = -1; dz <= 1; dz++) grid.set(x, shelfY, clampZ(pierZ + dz, nz), PINE); // deck
+    if (i % 3 === 0)
+      for (const dz of [-1, 1])
+        for (let y = SEABED_Y; y < shelfY; y++) grid.set(x, y, clampZ(pierZ + dz, nz), OAK);
+  }
+  meta.dock = { x: pierStartX + pierLen, y: shelfY, z: pierZ, bearing: 0 }; // +x end, faces +x
+
+  // buildings: a tavern + huts + harbormaster's shack around the shelf
+  const rng = new Rng(`town-${opts.seed}`);
+  const lots = [
+    { x: cx - 8, z: cz - 7, w: 7, d: 6, h: 6 }, // tavern (bigger)
+    { x: cx + 4, z: cz - 8, w: 5, d: 5, h: 5 },
+    { x: cx - 9, z: cz + 5, w: 5, d: 5, h: 5 },
+    { x: cx + 6, z: cz + 6, w: 5, d: 4, h: 4 }, // harbormaster's shack
+  ];
+  for (const lot of lots) stampBuilding(grid, lot, shelfY, rng);
+
+  return model;
+}
+
+function clampZ(z: number, nz: number): number {
+  return Math.min(Math.max(z, 0), nz - 1);
+}
+
+/** A hollow voxel hut: OAK corner posts + PINE walls, a doorway, a couple of
+ *  windows, and a stepped-pitch PINE roof. */
+function stampBuilding(
+  grid: VoxelGrid,
+  lot: { x: number; z: number; w: number; d: number; h: number },
+  floorY: number,
+  rng: Rng,
+): void {
+  const { x: x0, z: z0, w, d, h } = lot;
+  for (let dx = 0; dx < w; dx++)
+    for (let dz = 0; dz < d; dz++)
+      for (let dy = 1; dy <= h; dy++) {
+        const edge = dx === 0 || dx === w - 1 || dz === 0 || dz === d - 1;
+        if (!edge) continue;
+        const corner = (dx === 0 || dx === w - 1) && (dz === 0 || dz === d - 1);
+        const isDoor = dz === 0 && dx === ((w / 2) | 0) && dy <= 2;
+        const isWindow = !corner && dy === 3 && (dx + dz) % 2 === 0;
+        if (isDoor || isWindow) continue;
+        grid.set(x0 + dx, floorY + dy, z0 + dz, corner ? OAK : PINE);
+      }
+  // pitched roof: shrinking PINE rings stepping up toward the ridge
+  for (let r = 0; r <= Math.ceil(Math.min(w, d) / 2); r++) {
+    const ry = floorY + h + 1 + r;
+    for (let dx = r; dx < w - r; dx++)
+      for (let dz = r; dz < d - r; dz++)
+        if (dx === r || dx === w - 1 - r || dz === r || dz === d - 1 - r)
+          grid.set(x0 + dx, ry, z0 + dz, PINE);
+  }
+  void rng; // reserved for future per-building variation
 }
 
 /** Stamp a deterministic handful of palms (PALMWOOD trunk + FOLIAGE canopy) onto

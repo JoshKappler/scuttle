@@ -1,6 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { buildIsland } from "../src/sim/islandwright";
-import { EMPTY, SAND, GRASS, ROCK, DARKROCK, PALMWOOD, FOLIAGE } from "../src/sim/materials";
+import { buildIsland, buildHarborIsland } from "../src/sim/islandwright";
+import {
+  EMPTY,
+  SAND,
+  GRASS,
+  ROCK,
+  DARKROCK,
+  PALMWOOD,
+  FOLIAGE,
+  PINE,
+  OAK,
+} from "../src/sim/materials";
 
 const opts = { seed: 42, radiusVox: 40, peakVox: 34, cliffiness: 0.6 };
 
@@ -40,5 +50,28 @@ describe("buildIsland", () => {
     grid.forEachSolid((_x, _y, _z, m) => (counts[m] = (counts[m] ?? 0) + 1));
     expect(counts[PALMWOOD] ?? 0).toBeGreaterThan(0);
     expect(counts[FOLIAGE] ?? 0).toBeGreaterThan(0);
+  });
+});
+
+describe("buildHarborIsland", () => {
+  it("adds a wooden dock above the waterline and exposes a dock anchor", () => {
+    const { grid, meta } = buildHarborIsland({ seed: 5 });
+    expect(meta.dock).not.toBeNull();
+    let plankCount = 0;
+    grid.forEachSolid((_x, y, _z, m) => {
+      if (m === PINE && y > meta.waterlineY) plankCount++;
+    });
+    expect(plankCount).toBeGreaterThan(20); // a real pier, not a stub
+  });
+  it("places at least one building (walls of OAK/PINE above the beach)", () => {
+    const { grid, meta } = buildHarborIsland({ seed: 5 });
+    let walls = 0;
+    grid.forEachSolid((_x, y, _z, m) => {
+      if ((m === OAK || m === PINE) && y > meta.waterlineY + 2) walls++;
+    });
+    expect(walls).toBeGreaterThan(40);
+  });
+  it("is deterministic", () => {
+    expect(buildHarborIsland({ seed: 5 }).grid.data).toEqual(buildHarborIsland({ seed: 5 }).grid.data);
   });
 });
