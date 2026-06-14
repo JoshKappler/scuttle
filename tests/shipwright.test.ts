@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildSloop } from "../src/sim/shipwright";
 import { findCompartments } from "../src/sim/compartments";
 import { WATER_DENSITY } from "../src/core/constants";
+import { RAM } from "../src/sim/materials";
 
 const ship = buildSloop();
 
@@ -16,6 +17,26 @@ describe("shipwright sloop", () => {
         }
       }
     }
+  });
+
+  it("has a reinforced RAM prow but a plain stern (directional bow armor)", () => {
+    // armorBow lays the toughest material (RAM) over the forward hull so a bow-first ram wins
+    // via material cost — the deformable contact never special-cases it. Lock the invariant:
+    // the stem carries RAM, the stern carries none.
+    const { grid } = ship;
+    const [nx, ny, nz] = grid.dims;
+    let stemRam = 0, sternRam = 0;
+    const stemX0 = Math.floor(nx * 0.85); // forward 15%
+    const sternX1 = Math.floor(nx * 0.15); // aft 15%
+    for (let x = 0; x < nx; x++)
+      for (let y = 0; y < ny; y++)
+        for (let z = 0; z < nz; z++) {
+          if (grid.get(x, y, z) !== RAM) continue;
+          if (x >= stemX0) stemRam++;
+          else if (x < sternX1) sternRam++;
+        }
+    expect(stemRam).toBeGreaterThan(0);
+    expect(sternRam).toBe(0);
   });
 
   it("average density is below seawater (it will float)", () => {

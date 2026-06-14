@@ -5,8 +5,14 @@ export const PINE = 2;
 export const IRON = 3;
 export const RAM = 4;
 
-/** Joules of impact energy a cell absorbs per point of `strength` before it breaks. Tuned later in Task 10. */
-export const STRENGTH_TO_JOULES = 6000;
+/** Joules of impact energy a cell absorbs per point of `strength` before it breaks.
+ *  Calibrated against the deformable-contact energy scale: a ship's closing KE is ~½μv²
+ *  (μ = reduced mass ~10^5 kg), so a hard ram carries millions of joules. At 60000, breaking
+ *  one oak cell costs 3×60000 = 180 kJ, so a hard ram gouges ~50–80 voxels (KE ÷ cost) instead
+ *  of pulverizing hundreds — and because the budget can't afford EVERY overlap cell, the
+ *  cheapest (oak) go first and the tough RAM prow survives → bow-first ramming wins emergently.
+ *  Cannons compensate via TUN.gun.crushEfficiency (their ½mv² is ~10^4 J, far below a ram). */
+export const STRENGTH_TO_JOULES = 60000;
 
 export interface Material {
   name: string;
@@ -30,11 +36,13 @@ export const MATERIALS: Record<number, Material> = {
   [OAK]: { name: "oak", density: 430, color: [0.055, 0.032, 0.017], strength: 3 },
   [PINE]: { name: "pine", density: 310, color: [0.1, 0.066, 0.036], strength: 2 },
   [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
-  // Reinforced bow timber — the toughest hull material (strength 14, ~4.6× oak),
-  // laid over the forward shell by armorBow() so a bow-first ram mechanically wins.
-  // Density matched to oak so the OAK→RAM armor swap is mass-neutral: it changes
+  // Reinforced bow timber — the toughest hull material (strength 24, 8× oak, 3× iron),
+  // laid over the forward shell by armorBow() so a bow-first ram mechanically WINS: under the
+  // symmetric-energy crunch the armored prow loses far fewer voxels per joule than the oak it
+  // strikes, so ramming bow-first is a winning tactic — emergent from material cost, no special
+  // collision case. Density matched to oak so the OAK→RAM armor swap is mass-neutral: it changes
   // toughness, never the hull's tuned draft/trim (THE LAW #2 — attitude is emergent).
-  [RAM]: { name: "ram", density: 430, color: [0.04, 0.025, 0.015], strength: 14 },
+  [RAM]: { name: "ram", density: 430, color: [0.04, 0.025, 0.015], strength: 24 },
 };
 
 /** Joules required to break one voxel of the given material (0 for empty/unknown). */

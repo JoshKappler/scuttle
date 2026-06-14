@@ -38,7 +38,7 @@ export interface ShipBuild {
  *  unarmored oak side caves in — the asymmetry falls out of the material cost, with no
  *  special-casing in the collision code. A pure OAK→RAM swap (RAM density = oak), so
  *  draft and the tuned trim are unchanged: toughness only. Bow is at high x on every hull. */
-function armorBow(grid: VoxelGrid, forwardFrac = 0.82): void {
+function armorBow(grid: VoxelGrid, forwardFrac = 0.7): void {
   const [nx, ny, nz] = grid.dims;
   const x0 = Math.floor(nx * forwardFrac);
   for (let x = x0; x < nx; x++) {

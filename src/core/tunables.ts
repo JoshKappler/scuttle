@@ -113,7 +113,7 @@ export const TUN = {
      *  the knob that decouples cannon penetration from the ram-tuned joule scale. Depth is
      *  still emergent (a half-speed ball at ¼ KE lodges; an iron belt resists). Tuned live
      *  at the Task 8 harness / Task 10 sweep alongside STRENGTH_TO_JOULES. */
-    crushEfficiency: 8,
+    crushEfficiency: 40,
   },
 
   /** Ship-vs-ship destruction — the Teardown-style CAPPED-IMPULSE contact, read by
