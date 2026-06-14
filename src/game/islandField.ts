@@ -1,5 +1,9 @@
+import * as THREE from "three";
 import { Rng } from "../core/rng";
 import { VOXEL_SIZE } from "../core/constants";
+import type { Physics } from "./physics";
+import { buildHarborIsland, buildIsland, type IslandModel } from "../sim/islandwright";
+import { IslandVisual } from "../render/islandVisual";
 
 /** Terrain voxels render coarser than ship voxels: 0.25 m × this = 0.5 m cells. */
 export const ISLAND_VOXEL_SCALE = 2;
@@ -71,4 +75,80 @@ export function planIslandPlacements(seed: string): IslandPlacement[] {
     });
   }
   return out;
+}
+
+export interface IslandInstance {
+  placement: IslandPlacement;
+  model: IslandModel;
+  visual: IslandVisual;
+  /** Harbor dock anchor in world space — the hook for the future docking interaction. */
+  dockWorld: THREE.Vector3 | null;
+}
+
+/**
+ * Owns the world's static archipelago: generates each placed island, adds its
+ * visual to the scene, and builds a static Rapier trimesh collider so hulls
+ * ground on beaches and stop at cliffs/the dock. Built once at startup; nothing
+ * here runs per-frame. Islands are absent from every ship list, so they never
+ * trip the ship-vs-ship destruction code.
+ */
+export class IslandField {
+  readonly islands: IslandInstance[] = [];
+
+  constructor(seed: string, physics: Physics, scene: THREE.Scene) {
+    const R = physics.RAPIER;
+    for (const p of planIslandPlacements(seed)) {
+      const model =
+        p.kind === "harbor"
+          ? buildHarborIsland({ seed: p.seed })
+          : buildIsland({
+              seed: p.seed,
+              radiusVox: p.radiusVox,
+              peakVox: p.peakVox,
+              cliffiness: p.cliffiness,
+            });
+
+      // sit the grid so its waterline row lands at world y≈0
+      const worldY = -model.meta.waterlineY * M_PER_VOX;
+      const visual = new IslandVisual(model.grid, { x: p.x, y: worldY, z: p.z }, ISLAND_VOXEL_SCALE);
+      scene.add(visual.group);
+
+      // static trimesh collider (default groups → collides with the ship hull cuboid)
+      if (visual.colliderIndices.length > 0) {
+        const body = physics.world.createRigidBody(
+          R.RigidBodyDesc.fixed().setTranslation(p.x, worldY, p.z),
+        );
+        physics.world.createCollider(
+          R.ColliderDesc.trimesh(visual.colliderVerts, visual.colliderIndices),
+          body,
+        );
+      }
+
+      let dockWorld: THREE.Vector3 | null = null;
+      if (model.meta.dock) {
+        const d = model.meta.dock;
+        dockWorld = new THREE.Vector3(
+          p.x + d.x * M_PER_VOX,
+          worldY + d.y * M_PER_VOX,
+          p.z + d.z * M_PER_VOX,
+        );
+      }
+      this.islands.push({ placement: p, model, visual, dockWorld });
+    }
+  }
+
+  /** Nearest harbor dock anchor to a world point (future docking interaction). */
+  nearestDock(x: number, z: number): THREE.Vector3 | null {
+    let best: THREE.Vector3 | null = null;
+    let bd = Infinity;
+    for (const i of this.islands) {
+      if (!i.dockWorld) continue;
+      const d = Math.hypot(i.dockWorld.x - x, i.dockWorld.z - z);
+      if (d < bd) {
+        bd = d;
+        best = i.dockWorld;
+      }
+    }
+    return best;
+  }
 }
