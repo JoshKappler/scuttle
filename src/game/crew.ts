@@ -184,12 +184,19 @@ export class Pirate {
   private fpBonesFound = false;
   fpArmPose = {
     shoulder: [-0.4, 0, 0] as [number, number, number],
+    // lower[1] (the forearm long axis) is a WRIST ROLL: r18.1 the blade sat 90° clockwise (lying
+    // flat to the right); +π/2 stands it upright. Flip the sign if it ever rolls the wrong way.
     upper: [0.8, 0, 0.15] as [number, number, number],
-    lower: [0.5, 0, 0] as [number, number, number],
+    lower: [0.5, Math.PI / 2, 0] as [number, number, number],
   };
   /** Current first-person look pitch (rad), fed from the camera each frame so the carry pose
    *  lifts with the view — the cutlass stays in frame whether you look up or down. */
   fpLookPitch = 0;
+  /** Current first-person look YAW (rad), fed from the camera. In FP the body faces the LOOK,
+   *  not the run direction — without this, strafing turned the body (and the body-attached arm)
+   *  away from the camera and the viewmodel clipped into itself (the movement-facing in step()
+   *  was trumping the look). Applied in syncMesh so it wins in every path, even standing still. */
+  fpLookYaw = 0;
   /** Set by combat when this pirate swings; drives the chop animation. */
   attackTimer = 0;
   /** Set by combat on kick; drives the lunge animation. */
@@ -538,6 +545,9 @@ export class Pirate {
     // -0.74, not the exact capsule half-height: a few cm of lift keeps the
     // feet from visually sinking into the deck planks
     this.mesh.position.set(t.x, t.y - 0.74, t.z);
+    // r18.1: in first person the body faces the LOOK, applied HERE (the last word before the mesh
+    // rotates) so the movement-facing set in step() can never trump it and twist the viewmodel.
+    if (this.fpHide) this.facing = this.fpLookYaw;
     if (this.alive) {
       // kick: brief forward lunge of the whole body (procedural body only —
       // the rigged model has a real Punch clip)

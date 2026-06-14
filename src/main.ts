@@ -461,20 +461,17 @@ async function main() {
       boarding.message = "fullscreen not supported by this browser";
       return;
     }
-    const hadLock = document.pointerLockElement !== null;
-    if (hadLock) document.exitPointerLock(); // Chrome rejects fullscreen while pointer-locked
+    // r18.1: do NOT exit pointer lock first. Chrome holds pointer-lock AND fullscreen at once
+    // (every FPS does it), so the old exit→request→re-grab-after-1.1s dance was just dropping
+    // control on the way in — which read as "fullscreen is broken". Request straight from the
+    // F / click user gesture and keep the lock.
     try {
       const p = reqFn.call(el); // NO options arg — maximal compatibility
       if (p && typeof (p as Promise<void>).then === "function") {
-        (p as Promise<void>)
-          .then(() => {
-            // pointer lock has a ~1 s cooldown after exit; best-effort re-grab
-            if (hadLock) setTimeout(() => renderer.domElement.requestPointerLock(), 1100);
-          })
-          .catch((err: Error) => {
-            boarding.message = `fullscreen refused: ${err.message} (already in F11?)`;
-            console.warn("[fullscreen]", err);
-          });
+        (p as Promise<void>).catch((err: Error) => {
+          boarding.message = `fullscreen refused: ${err.message} (already in F11?)`;
+          console.warn("[fullscreen]", err);
+        });
       }
     } catch (err) {
       boarding.message = `fullscreen error: ${(err as Error).message}`;
@@ -1085,6 +1082,9 @@ async function main() {
       const yaw = controls.cameraYaw();
       const pitch = controls.lookPitch();
       boarding.player.fpLookPitch = pitch; // carry pose lifts with the view (stays in frame)
+      // r18.1: feed the look yaw — crew.syncMesh faces the body to THIS (not the run direction) in
+      // FP, so the arm/cutlass hold their screen spot when you strafe instead of clipping in.
+      boarding.player.fpLookYaw = yaw;
       const lookX = Math.cos(yaw) * Math.cos(pitch);
       const lookZ = Math.sin(yaw) * Math.cos(pitch);
       // r18.1: with the REAL arm shown, seat the eye slightly BEHIND the shoulder so the right

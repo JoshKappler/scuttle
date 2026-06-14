@@ -207,14 +207,10 @@ export class BoardingSystem {
       // chest pickup / hauling / banking
       if (onFoot) this.updateChest(input.interact);
 
-      // drowning / overboard with no rescue is non-lethal for now: respawn aboard
-      const pt = this.player.worldPos(this.tmpA);
-      const st = this.playerShip.body.translation();
-      const adrift = Math.hypot(pt.x - st.x, pt.z - st.z);
-      if (pt.y < st.y - 14 || (this.player.swimming && adrift > 30)) {
-        this.respawnPlayer();
-        this.message = "your crew fishes you out of the sea";
-      }
+      // r18.1: going overboard NO LONGER auto-rescues you aboard. The player wanted the
+      // teleport-back gone — you stay in the sea (the swim spring keeps you at the surface)
+      // and haul yourself back up the stern ladder by hand (press E beside it). The ship has
+      // already dropped throttle to 0 (man-overboard), so she waits for you.
     }
 
     // ---- enemy crew AI ----
