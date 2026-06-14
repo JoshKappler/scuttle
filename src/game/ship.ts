@@ -1,18 +1,21 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
-import { G, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
+import { G, MAX_CARVE_CELLS, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
 import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeVoxelColumns, type VoxelColumn } from "../sim/buoyancy";
-import { sphereCells } from "../sim/ballistics";
+import { planCarve } from "../sim/carve";
+import { planCrush } from "../sim/crush";
+import { computeSurface, updateSurfaceAfterRemoval, unpackCell } from "../sim/surfaceSet";
 import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
-import { IRON } from "../sim/materials";
+import { MATERIALS, breakEnergy } from "../sim/materials";
 import { segmentBoxHit, segmentMastHit, segmentSailHit } from "../sim/rigDamage";
 import { meshChunk } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
 import type { ShipVisual, SailRecord } from "../render/shipVisual";
 import type { Physics } from "./physics";
+import { HullCollider } from "./hullCollider";
 
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
@@ -91,12 +94,22 @@ export class Ship {
 
   private phys: Physics;
   private deckCollider: RAPIER.Collider | null = null;
+  /** SHIP-SHIP / debris contact shape: the real voxel hull, mutated on damage (Task 1). */
+  readonly hull!: HullCollider;
+
+  /** Packed keys of every solid cell with an exposed face — the hull's boundary. Maintained
+   *  incrementally as the hull is carved; the deformable contact (voxelContact) tests only
+   *  these against the other hull, never the ~10^4 interior cells. */
+  private surface!: Set<number>;
+  /** Lazily-materialized packed [x,y,z,...] view of `surface`, rebuilt when the set changes. */
+  private surfaceCache: Int32Array | null = null;
 
   constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }) {
     this.phys = phys;
     this.build = build;
     this.visual = visual;
     this.columns = makeVoxelColumns(build.grid, build.compartments);
+    this.surface = computeSurface(build.grid);
 
     // keel anchor: lowest solid cell on the midship centerline
     const [kx, , knz] = build.grid.dims;
@@ -141,17 +154,15 @@ export class Ship {
       );
     this.body = world.createRigidBody(desc);
 
-    // coarse hull collider for SHIP-SHIP contact only; zero density — mass
-    // comes from the voxel grid above. Collision group 0x0002 keeps it OUT
-    // of the character controller's world: its flat top stood 1.1 m proud
-    // of the brig's waist deck, and a jump landed you ON it — "able to
-    // levitate a meter or two off the ground and walk on air" (round 7).
-    // Characters walk the deck trimesh; ships and debris still hit this box.
-    const collider = R.ColliderDesc.cuboid(l / 2, (h * 0.7) / 2, w / 2)
-      .setTranslation(l / 2, (h * 0.7) / 2, w / 2)
-      .setDensity(0)
-      .setCollisionGroups(0x0002ffff);
-    world.createCollider(collider, this.body);
+    // SHIP-SHIP / debris contact: the real voxel hull shape (mutated on damage).
+    // Group 0x0002ffff keeps it out of the character world; the deck trimesh
+    // (below) is what characters walk. Replaces the old coarse box (Task 1).
+    this.hull = new HullCollider(phys, this.body, build.grid);
+    // Take ship-vs-ship out of Rapier's rigid solver: tag this body as a ship and flag the
+    // hull collider so phys.hooks.filterContactPair fires for any pair touching it. Two ship
+    // hulls then generate no rigid impulse — the deformable voxelContact owns that response.
+    phys.shipBodies.add(this.body.handle);
+    this.hull.collider.setActiveHooks(R.ActiveHooks.FILTER_CONTACT_PAIRS);
 
     // the mast is solid — you should not be able to walk through it
     // (playtest round 5: "the mast has no physical hitbox")
@@ -638,41 +649,155 @@ export class Ship {
   }
 
   /**
-   * Remove voxels in a blast radius around a hit cell. Returns the number of
-   * cells destroyed. Mass properties and buoyancy probes are recomputed so
-   * handling and flotation genuinely change with damage.
+   * Spend an energy budget destroying voxels from `cell` along `dir` (the one
+   * destruction primitive — ramming and cannon fire both route here). Removes
+   * cells from the grid AND the voxel collider, registers breaches (incl. the
+   * cut faces of any section that breaks off), sheds disconnected islands as
+   * debris, and recomputes mass + buoyancy + deck. Returns cells destroyed.
    */
-  applyDamage(cell: [number, number, number], radiusVox: number): number {
+  carve(cell: [number, number, number], energy: number, dir: [number, number, number] | null, maxCells = MAX_CARVE_CELLS): number {
+    const grid = this.build.grid;
+    const plan = planCarve({
+      dims: grid.dims,
+      isSolid: (x, y, z) => grid.isSolid(x, y, z),
+      strengthAt: (x, y, z) => MATERIALS[grid.get(x, y, z)]?.strength ?? 0,
+      origin: cell,
+      dir,
+      energy,
+      maxCells,
+    });
+    return this.carveCells(plan.cells);
+  }
+
+  /** Remove an explicit list of cells — the shared tail of EVERY destruction path
+   *  (energy-budget ram carve, cannon bore-through, future tools): grid + voxel collider
+   *  + breach bookkeeping, then flag the throttled heavy recompute. Destroyed voxels just
+   *  VANISH (callers spawn dust) — they are never regrouped into a rigid body; only a
+   *  fully-disconnected island above a size threshold becomes one (see debris.ts). Returns
+   *  the count actually removed (already-empty cells are skipped). */
+  carveCells(cells: [number, number, number][]): number {
+    const grid = this.build.grid;
+    const gone: [number, number, number][] = [];
+    for (const [x, y, z] of cells) {
+      if (!grid.isSolid(x, y, z)) continue;
+      grid.remove(x, y, z);
+      this.hull.removeVoxel(x, y, z);
+      gone.push([x, y, z]);
+    }
+    if (gone.length === 0) return 0;
+    updateSurfaceAfterRemoval(grid, this.surface, gone); // keep the boundary set fresh
+    this.surfaceCache = null;
+    this.registerBreaches(cells);
+    this.damageDirty = true; // sever/mass/deck recompute is deferred + throttled (flushDamage)
+    return gone.length;
+  }
+
+  /** The universal destruction entry point: spend `energy` joules removing as many of the
+   *  given candidate cells as it can afford (toughest survive), paying each cell's real
+   *  material break-energy. Routes removal through carveCells (grid + collider + breaches +
+   *  dust). Unlike carve(), the candidate cells are SUPPLIED by the caller — the real
+   *  hull-hull overlap (ramming) or the real bore ray (cannon fire) — so holes land exactly
+   *  where contact happened, and penetration depth is emergent (the budget reaches as far
+   *  down the toughness-sorted candidates as it can pay for). Returns voxels removed +
+   *  leftover energy (the caller spends leftover on push/debris). */
+  crush(cells: [number, number, number][], energy: number): { removed: number; leftover: number } {
+    const grid = this.build.grid;
+    // only solid cells cost energy (empty cells are free at strength 0 and would inflate
+    // the count for nothing) — pre-filter so the budget is spent on real material.
+    const solid = cells.filter(([x, y, z]) => grid.isSolid(x, y, z));
+    const { removed, leftover } = planCrush(
+      solid,
+      ([x, y, z]) => breakEnergy(grid.get(x, y, z)),
+      energy,
+    );
+    const n = this.carveCells(removed);
+    return { removed: n, leftover };
+  }
+
+  /** Local-frame integer coords of every solid cell with an exposed face, packed
+   *  [x,y,z, x,y,z, ...]. Cached; rebuilt only when the hull is carved. Consumed by
+   *  voxelOverlap as the cheap boundary set for hull-vs-hull overlap tests. */
+  surfaceCells(): Int32Array {
+    if (this.surfaceCache) return this.surfaceCache;
+    const [nx, ny] = this.build.grid.dims;
+    const out = new Int32Array(this.surface.size * 3);
+    let i = 0;
+    for (const key of this.surface) {
+      const [x, y, z] = unpackCell(key, nx, ny);
+      out[i++] = x; out[i++] = y; out[i++] = z;
+    }
+    this.surfaceCache = out;
+    return out;
+  }
+
+  /** World-space AABB of the live hull's grid envelope, written into `out`, for broad-phase
+   *  culling of the deformable contact. Transforms the 8 corners of the local grid box by the
+   *  body pose — a safe (slightly loose) bound as cells carve away. */
+  aabbWorld(out: { min: THREE.Vector3; max: THREE.Vector3 }): { min: THREE.Vector3; max: THREE.Vector3 } {
+    const [nx, ny, nz] = this.build.grid.dims;
+    const ex = nx * VOXEL_SIZE, ey = ny * VOXEL_SIZE, ez = nz * VOXEL_SIZE;
+    const tr = this.body.translation();
+    const rot = this.body.rotation();
+    this.tmpQ.set(rot.x, rot.y, rot.z, rot.w);
+    out.min.set(Infinity, Infinity, Infinity);
+    out.max.set(-Infinity, -Infinity, -Infinity);
+    for (let i = 0; i < 8; i++) {
+      this.tmpV.set(i & 1 ? ex : 0, i & 2 ? ey : 0, i & 4 ? ez : 0).applyQuaternion(this.tmpQ);
+      this.tmpV.x += tr.x; this.tmpV.y += tr.y; this.tmpV.z += tr.z;
+      out.min.min(this.tmpV); out.max.max(this.tmpV);
+    }
+    return out;
+  }
+
+  /** Heavy post-damage recompute (shed disconnected islands, rebuild buoyancy columns
+   *  + deck trimesh), THROTTLED to ~10 Hz. carve() fires every frame during a ram, and
+   *  running these whole-hull rebuilds 60×/s per ship tanked the frame rate; the cheap
+   *  per-voxel removal (grid + collider + breaches) stays immediate in carve(), so the
+   *  visible hole is instant — only this physics recompute lags a few steps. Called once
+   *  per fixed step by the world loop; deterministic (step-counted, no wall clock). */
+  private damageDirty = false;
+  private framesSinceFlush = 0;
+  flushDamage(): void {
+    if (!this.damageDirty) return;
+    if (++this.framesSinceFlush < 6) return; // ~10 Hz during sustained carving
+    this.framesSinceFlush = 0;
+    this.damageDirty = false;
+    const grid = this.build.grid;
+    // anything no longer connected to the anchor breaks off as debris; its removed
+    // cells are fresh holes too — register them so the stump floods from the cut.
+    const islands = findSevered(grid, this.keelAnchor);
+    if (islands.length > 0) {
+      const islandCells: [number, number, number][] = [];
+      for (const island of islands) {
+        for (const c of island.cells) {
+          grid.remove(c.x, c.y, c.z);
+          this.hull.removeVoxel(c.x, c.y, c.z);
+          islandCells.push([c.x, c.y, c.z]);
+        }
+      }
+      updateSurfaceAfterRemoval(grid, this.surface, islandCells); // shed cells leave the boundary
+      this.surfaceCache = null;
+      this.registerBreaches(islandCells);
+      this.onSevered?.(islands);
+    }
+    // a mast whose step has been blown out goes by the board
+    this.build.masts.forEach((m, mi) => {
+      if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) this.fellMast(mi);
+    });
+    this.recomputeMassProperties();
+    this.rebuildDeckCollider();
+  }
+
+  /** Register removed hull cells as breaches: a removed cell adjacent to ONE
+   *  compartment's interior is a hull breach; adjacent to TWO is a bulkhead opening.
+   *  (Extracted verbatim from the old applyDamage breach loop.) */
+  private registerBreaches(cells: [number, number, number][]): void {
     const grid = this.build.grid;
     const [nx, ny] = grid.dims;
     const cidx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
-    let removed = 0;
-    const removedCells: [number, number, number][] = [];
-    for (const [x, y, z] of sphereCells(cell, radiusVox)) {
-      const mat = grid.get(x, y, z);
-      if (mat === 0) continue;
-      if (mat === IRON) {
-        const d = Math.hypot(x - cell[0], y - cell[1], z - cell[2]);
-        if (d > radiusVox * 0.55) continue; // iron shrugs off the blast fringe
-      }
-      grid.remove(x, y, z);
-      removedCells.push([x, y, z]);
-      removed++;
-    }
-    if (removed === 0) return 0;
-
-    // breach registration: a removed cell adjacent to one compartment is a
-    // hull breach for it; adjacent to two compartments, a bulkhead opening
-    for (const [x, y, z] of removedCells) {
+    for (const [x, y, z] of cells) {
       const adj = new Set<number>();
-      for (const [px, py, pz] of [
-        [x - 1, y, z],
-        [x + 1, y, z],
-        [x, y - 1, z],
-        [x, y + 1, z],
-        [x, y, z - 1],
-        [x, y, z + 1],
-      ] as [number, number, number][]) {
+      for (const [px, py, pz] of [[x - 1, y, z], [x + 1, y, z], [x, y - 1, z], [x, y + 1, z], [x, y, z - 1], [x, y, z + 1]] as [number, number, number][]) {
         const comp = this.cellComp.get(cidx(px, py, pz));
         if (comp !== undefined) adj.add(comp);
       }
@@ -681,31 +806,9 @@ export class Ship {
         this.breachCells.get(id)?.push([x, y, z]);
       } else if (adj.size >= 2) {
         const ids = [...adj];
-        for (let i = 0; i < ids.length - 1; i++) {
-          this.openings.push({ a: ids[i], b: ids[i + 1], area: VOXEL_SIZE * VOXEL_SIZE });
-        }
+        for (let i = 0; i < ids.length - 1; i++) this.openings.push({ a: ids[i], b: ids[i + 1], area: VOXEL_SIZE * VOXEL_SIZE });
       }
     }
-
-    // anything no longer connected to the keel breaks off as debris
-    const islands = findSevered(grid, this.keelAnchor);
-    if (islands.length > 0) {
-      for (const island of islands) {
-        for (const c of island.cells) grid.remove(c.x, c.y, c.z);
-      }
-      this.onSevered?.(islands);
-    }
-
-    // a mast whose step has been blown out goes by the board (round 7)
-    this.build.masts.forEach((m, mi) => {
-      if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) {
-        this.fellMast(mi);
-      }
-    });
-
-    this.recomputeMassProperties();
-    this.rebuildDeckCollider();
-    return removed;
   }
 
   /** Refresh rapier mass props + buoyancy probes from the current grid. */

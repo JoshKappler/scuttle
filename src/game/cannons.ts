@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { G, VOXEL_SIZE } from "../core/constants";
+import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
-import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld, velocityAtPoint, type GunFacing, type MuzzleOut } from "./gunnery";
+import { muzzleWorld, velocityAtPoint, type GunFacing, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
 
 /**
@@ -16,8 +17,6 @@ const MAX_BALLS = 64;
 // drawn — "it's not really firing along where the trajectory line is"
 // (playtest round 6: "fire all simultaneously with the left click")
 const STAGGER = 0;
-// round 8: "faster and more powerful" — bigger bite per ball
-const BLAST_RADIUS_VOX = 2.1;
 
 interface Ball {
   alive: boolean;
@@ -47,6 +46,10 @@ export class Cannons {
    *  firing one gun from the deck must not lock the whole battery. */
   private portReloadAt = new Map<string, number>();
   static RELOAD = 6; // s — player battery; AI crews pass a slower reload
+  /** Dev panel "semi-auto": when true every gun is treated as always loaded — the
+   *  reload wait is removed, nothing else changes (you still click each shot). Per
+   *  instance, so flipping the player's panel can't speed up the AI's own battery. */
+  noReload = false;
 
   private portKey(ship: Ship, portIndex: number): string {
     return `${this.shipId(ship)}:${portIndex}`;
@@ -65,6 +68,7 @@ export class Cannons {
 
   /** Seconds until the given gun is ready (0 = ready). */
   portReload(ship: Ship, portIndex: number, simTime: number): number {
+    if (this.noReload) return 0;
     return Math.max((this.portReloadAt.get(this.portKey(ship, portIndex)) ?? 0) - simTime, 0);
   }
 
@@ -83,6 +87,9 @@ export class Cannons {
   private tmpV = new THREE.Vector3();
   private tmpDir = new THREE.Vector3();
   private tmpMuzzle: MuzzleOut = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
+  private tmpQ = new THREE.Quaternion();
+  private tmpLocal = new THREE.Vector3();
+  private tmpLocalDir = new THREE.Vector3();
 
   constructor(
     scene: THREE.Scene,
@@ -159,9 +166,10 @@ export class Cannons {
       }
       b.prev.copy(b.pos);
       const v = b.vel.length();
-      b.vel.x += -BALL_DRAG * v * b.vel.x * dt;
-      b.vel.y += (-G - BALL_DRAG * v * b.vel.y) * dt;
-      b.vel.z += -BALL_DRAG * v * b.vel.z * dt;
+      const drag = TUN.gun.drag;
+      b.vel.x += -drag * v * b.vel.x * dt;
+      b.vel.y += (-G - drag * v * b.vel.y) * dt;
+      b.vel.z += -drag * v * b.vel.z * dt;
       b.pos.addScaledVector(b.vel, dt);
       b.mesh.position.copy(b.pos);
 
@@ -198,17 +206,24 @@ export class Cannons {
       for (const ship of targets) {
         const hit = this.marchGrid(ship, b.prev, b.pos);
         if (hit) {
-          const removed = ship.applyDamage(hit.cell, BLAST_RADIUS_VOX);
+          // poke a hole through, but DEPTH IS EMERGENT: the ball spends its kinetic energy
+          // boring along its path through the shared crush() core — a fast ball punches clean
+          // out the far side, a slow one lodges, an iron belt stops it. boreRadiusVox sets only
+          // the candidate-path WIDTH; how far the budget reaches down it is physics, not a cap.
+          // Same primitive as ramming, just smaller + faster. Removed voxels → dust, never beams.
+          const dir = this.tmpDir.copy(b.vel).normalize();
+          const ke = 0.5 * TUN.gun.mass * b.vel.lengthSq(); // joules carried by the ball
+          const { removed } = ship.crush(this.boreCells(ship, hit.world, dir), ke * TUN.gun.crushEfficiency);
           if (removed > 0) {
-            const normal = this.tmpDir.copy(b.vel).normalize().negate();
-            // debris MATCHES the damage: ~one flying timber chunk per voxel
-            // actually removed, thrown out along the impact normal (round 13:
-            // "too much coming off … just the voxels that were actually
-            // removed"). No more generic sparks-and-flash storm.
-            this.effects.impactDebris(hit.world, normal, removed);
-            // momentum transfer (9 kg ball — round 8: "more powerful")
+            // debris MATCHES the damage: ~one flying mote per voxel removed, thrown out
+            // along the bore (dir negated → points outward). No sparks-and-flash storm.
+            this.effects.impactDebris(hit.world, dir.negate(), removed);
+            // momentum transfer: ball mass × impact velocity. Mass lives in
+            // TUN.gun.mass (r18: dropped 9→4.3 so the faster muzzle doesn't shove
+            // ships ~2× harder — see TUN.gun). Round 8: "more powerful".
+            const m = TUN.gun.mass;
             ship.body.applyImpulseAtPoint(
-              { x: b.vel.x * 9, y: b.vel.y * 9, z: b.vel.z * 9 },
+              { x: b.vel.x * m, y: b.vel.y * m, z: b.vel.z * m },
               { x: hit.world.x, y: hit.world.y, z: hit.world.z },
               true,
             );
@@ -227,7 +242,7 @@ export class Cannons {
     b.age = 0;
     b.pos.copy(pos);
     b.prev.copy(pos);
-    b.vel.copy(dir).multiplyScalar(MUZZLE_SPEED).add(baseVel);
+    b.vel.copy(dir).multiplyScalar(TUN.gun.muzzleSpeed).add(baseVel);
     b.mesh.visible = true;
     b.mesh.position.copy(pos);
   }
@@ -269,5 +284,55 @@ export class Cannons {
       }
     }
     return null;
+  }
+
+  /** Every solid cell the ball's path grazes, ALL the way through the hull — a clean bore,
+   *  not a capped cluster. Marches the ray in the ship's local voxel frame from the entry
+   *  point, collecting solids within boreRadiusVox of the line, until it has passed out the
+   *  far side (or hit the perf backstop maxCellsPerHit). */
+  private boreCells(ship: Ship, fromWorld: THREE.Vector3, dirWorld: THREE.Vector3): [number, number, number][] {
+    const tr = ship.body.translation();
+    const rot = ship.body.rotation();
+    const inv = this.tmpQ.set(rot.x, rot.y, rot.z, rot.w).invert();
+    // entry point + direction in local VOXEL units
+    const lp = this.tmpLocal
+      .set(fromWorld.x - tr.x, fromWorld.y - tr.y, fromWorld.z - tr.z)
+      .applyQuaternion(inv)
+      .divideScalar(VOXEL_SIZE);
+    const ld = this.tmpLocalDir.copy(dirWorld).applyQuaternion(inv).normalize();
+    const grid = ship.build.grid;
+    const [nx, ny, nz] = grid.dims;
+    const r = Math.max(0, Math.round(TUN.gun.boreRadiusVox));
+    const maxLen = Math.ceil(Math.hypot(nx, ny, nz)) + 2; // grid diagonal, in voxels
+    const cap = TUN.gun.maxCellsPerHit;
+    const seen = new Set<number>();
+    const out: [number, number, number][] = [];
+    let enteredSolid = false;
+    for (let t = 0; t <= maxLen; t += 0.5) {
+      const bx = Math.floor(lp.x + ld.x * t);
+      const by = Math.floor(lp.y + ld.y * t);
+      const bz = Math.floor(lp.z + ld.z * t);
+      // once the ray core has entered the hull and then leaves the grid, the bore is through
+      if (bx < -r || by < -r || bz < -r || bx >= nx + r || by >= ny + r || bz >= nz + r) {
+        if (enteredSolid) break;
+        continue;
+      }
+      let solidHere = false;
+      for (let ox = -r; ox <= r; ox++) {
+        for (let oy = -r; oy <= r; oy++) {
+          for (let oz = -r; oz <= r; oz++) {
+            const x = bx + ox, y = by + oy, z = bz + oz;
+            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) continue;
+            if (!grid.isSolid(x, y, z)) continue;
+            solidHere = true;
+            const key = x + nx * (y + ny * z);
+            if (!seen.has(key)) { seen.add(key); out.push([x, y, z]); }
+          }
+        }
+      }
+      if (solidHere) enteredSolid = true;
+      if (out.length >= cap) break;
+    }
+    return out;
   }
 }

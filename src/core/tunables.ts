@@ -81,6 +81,79 @@ export const TUN = {
     /** bow-wave spray strength multiplier. */
     bow: 1.0,
   },
+
+  /** Cannon ballistics — read by game/cannons.ts (the LIVE ball) AND main.ts (the
+   *  aim-arc preview). Both integrate from these same numbers with the same G +
+   *  FIXED_DT, so the rendered trajectory and the real shot can never drift apart
+   *  (the hard-won "line ≡ ball" invariant from playtest rounds 6–8). r18 retuned
+   *  off the round-8 arcade values (72 m/s / 0.006 drag → ~70 m at 5°, ~180 m max)
+   *  toward a weightier, flatter, more ballistic feel: 150 m/s / 0.0025 drag roughly
+   *  TRIPLES range (~250 m at 5°, ~550 m max) while keeping the arc visible and
+   *  leadable. Full age-of-sail realism (a 6-pdr is ~440 m/s / ~0.0008 drag → 1.4–2.4
+   *  km) reads as invisible hitscan at this combat scale — drag the sliders to feel it. */
+  gun: {
+    /** muzzle speed (m/s). Real 6-pounder ≈ 440; 150 keeps the shot watchable. */
+    muzzleSpeed: 150,
+    /** quadratic air drag (per metre): |a_drag| = drag·v². Real ≈ 0.0008; 0.0025
+     *  trims the long high tails without flattening the close-range arc. */
+    drag: 0.0025,
+    /** ball mass (kg) scaling the impact's momentum kick on the target hull.
+     *  4.3 ≈ 9·(72/150) — preserves the old shove at the new, faster muzzle speed
+     *  so the retune doesn't suddenly ram ships ~2× harder. */
+    mass: 4.3,
+    /** cannon bore: a ball pokes a hole CLEAN THROUGH — every solid voxel its path grazes
+     *  vanishes, all the way out the far side (routed through ship.carveCells). boreRadiusVox
+     *  is the tunnel half-width in voxels (0 = 1 wide, 1 = 3 wide); maxCellsPerHit is just a
+     *  perf backstop on one ball's bore (set high — the hole should reach the far side). */
+    boreRadiusVox: 1,
+    maxCellsPerHit: 250,
+    /** Fraction of the ball's ½mv² that goes to boring (crush()). >1 because
+     *  STRENGTH_TO_JOULES is calibrated for RAMMING's megajoule reduced-mass impacts, so a
+     *  ~48 kJ ball needs a multiplier to punch a 3-wide bore through both oak walls; this is
+     *  the knob that decouples cannon penetration from the ram-tuned joule scale. Depth is
+     *  still emergent (a half-speed ball at ¼ KE lodges; an iron belt resists). Tuned live
+     *  at the Task 8 harness / Task 10 sweep alongside STRENGTH_TO_JOULES. */
+    crushEfficiency: 8,
+  },
+
+  /** Ship-vs-ship destruction — the Teardown-style CAPPED-IMPULSE contact, read by
+   *  game/collisionDestruction.ts each step. ONE emergent rule: contact force vs. the
+   *  voxels' strength. Below `minImpulse` the contact is solid (a weight a hull CAN bear,
+   *  a gentle fender, floating side by side → no damage). Above it the contact voxels give
+   *  way: the zone is pulverized to DUST (never a rigid beam — see debris.ts), the carve
+   *  happens BEFORE the solver so the struck hull is barely shoved and the rammer digs into
+   *  the void, and `drag` bleeds the digger's momentum into the destruction (it slows; the
+   *  target doesn't pick the momentum up). Perching emerges as impossible: your own weight
+   *  on a few deck voxels exceeds the threshold → they crush → you fall through. */
+  ram: {
+    /** master enable — off → plain rigid hull collisions, no destruction. */
+    enabled: true,
+    /** crush threshold (summed contact impulse, kg·m/s): the ONE gate. Set between a
+     *  gentle nudge and a hull's full weight bearing on a small patch — so weight-on-deck
+     *  crushes through (no perching) but a light touch / side-by-side raft does not.
+     *  Raise if hulls chip on mere contact; lower if slow rams just bounce off. */
+    minImpulse: 40000,
+    /** carve joules per unit of impulse ABOVE the threshold — higher pulverizes a bigger
+     *  crater per step. */
+    impulseToJoules: 0.5,
+    /** max voxels pulverized from ONE hull per contact-step. Generous: a hard ram turns the
+     *  touched zone to dust; the gash deepens every step she stays driven in. Not a "small
+     *  cluster" cap — lots of voxels is wanted, just never welded into a floating body. */
+    maxCellsPerHit: 60,
+    /** destruction drag (kg·m/s of momentum bled per voxel destroyed, from whichever hull
+     *  is driving INTO the contact). This is "the energy goes into the destruction, not into
+     *  shoving the target": the rammer slows as it digs in; the struck ship is barely moved.
+     *  Clamped so it can never reverse a hull's motion. 0 = pure rigid shove. */
+    drag: 4000,
+  },
+
+  /** Fleet — how many hostile ships the FleetManager (game/fleet.ts) keeps sailing
+   *  against the player. Integer 0..MAXVIS. Sunk enemies are auto-replaced to hold
+   *  this count (true even at 1). Default 1 = the shipped duel. The dev panel drives
+   *  this live; like every TUN knob it is NOT read by the deterministic vitest oracle. */
+  fleet: {
+    enemyCount: 1,
+  },
 };
 
 export type Tunables = typeof TUN;

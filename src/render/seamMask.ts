@@ -16,6 +16,11 @@ export class SeamMask {
 
   constructor(private hulls: THREE.Object3D[]) {}
 
+  /** Replace the set of hull silhouettes painted into the stencil (fleet changes). */
+  setHulls(hulls: THREE.Object3D[]): void {
+    this.hulls = hulls;
+  }
+
   /** Render hull silhouettes into the stencil buffer of the current target. */
   write(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera): void {
     const prevOverride = scene.overrideMaterial;

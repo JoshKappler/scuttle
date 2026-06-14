@@ -63,6 +63,9 @@ export async function loadPirateLibrary(): Promise<boolean> {
 }
 
 export interface PirateRig {
+  /** Asset family. Lets crew.ts skip the Quaternius-only procedural posing
+   *  (helm grip, FP carry pose, bone-scale cull) for self-posed kits. */
+  kind: "quaternius" | "kaykit" | "bugrimov" | "universal";
   root: THREE.Group;
   mixer: THREE.AnimationMixer;
   head: THREE.Object3D | null;
@@ -71,6 +74,10 @@ export interface PirateRig {
    *  action (a second sword swing must not hold the clamped last frame). */
   playFresh(key: ClipKey): void;
   update(dt: number): void;
+  /** Modular rigs (KayKit) present first person by hiding non-arm limb
+   *  meshes; the single-mesh Quaternius rig leaves this undefined and uses
+   *  crew.ts's bone-scale cull instead. */
+  setFirstPerson?(fp: boolean): void;
 }
 
 function pickClip(clips: THREE.AnimationClip[], key: ClipKey): THREE.AnimationClip | null {
@@ -166,6 +173,7 @@ export function createPirateRig(name: ModelName, heightM = 1.72): PirateRig | nu
 
   let current: THREE.AnimationAction | null = null;
   return {
+    kind: "quaternius",
     root,
     mixer,
     head,

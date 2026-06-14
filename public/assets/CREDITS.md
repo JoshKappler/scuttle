@@ -7,6 +7,22 @@
 - License: CC0 1.0 (stated on quaternius.com and on each poly.pizza model page)
 - Downloaded from the official Quaternius account mirrors at static.poly.pizza
 
+## Characters — KayKit "Adventurers" (on-foot character prototype)
+- `characters/kaykit/Rogue_Hooded.glb` (+ Rogue/Knight/Barbarian/Mage) — each
+  carries 76 animation clips and splits the body into separate limb meshes
+- `characters/kaykit/weapons/*` — swords/shields/etc. (cutlass = `sword_1handed`)
+- Author: Kay Lousberg (KayKit) — https://kaylousberg.itch.io/kaykit-adventurers
+- License: CC0 1.0 — see `characters/kaykit/LICENSE.txt`
+- Downloaded from the official KayKit-Game-Assets GitHub mirror
+
+## Characters — Bugrimov "Pirate Character Captain" (semi-realistic, in evaluation)
+- `characters/bugrimov/web/pirate.glb` (+ `web/*.png`) — a free semi-realistic
+  PBR pirate. The raw ~2GB FBX + uncompressed-TGA drop is gitignored; committed
+  here is the fbx2gltf mesh GLB + Pillow-downscaled 1K PNG textures.
+- Author: Maksim Bugrimov — https://www.renderhub.com/maksim-bugrimov/pirate
+  (also on Fab and ArtStation @maxbugor)
+- License: RenderHub Extended Use License — commercial use permitted.
+
 ## Textures — ambientCG
 - `textures/deck.jpg` = Planks039 1K Color — https://ambientcg.com/view?id=Planks039
 - `textures/hull.jpg` = Planks023A 1K Color — https://ambientcg.com/view?id=Planks023A

@@ -9,6 +9,11 @@ import {
   PALMWOOD,
   FOLIAGE,
   OAK,
+  PINE,
+  IRON,
+  RAM,
+  breakEnergy,
+  STRENGTH_TO_JOULES,
 } from "../src/sim/materials";
 
 describe("terrain materials", () => {
@@ -27,5 +32,19 @@ describe("terrain materials", () => {
   });
   it("keeps every material id within Int8 range", () => {
     for (const k of Object.keys(MATERIALS)) expect(Number(k)).toBeLessThanOrEqual(127);
+  });
+});
+
+describe("material break energy", () => {
+  it("scales with strength", () => {
+    expect(breakEnergy(PINE)).toBe(MATERIALS[PINE].strength * STRENGTH_TO_JOULES);
+    expect(breakEnergy(IRON)).toBeGreaterThan(breakEnergy(OAK));
+  });
+  it("ram is the toughest hull material (so a bow-first ram wins)", () => {
+    expect(MATERIALS[RAM].strength).toBeGreaterThan(MATERIALS[OAK].strength);
+    expect(MATERIALS[RAM].strength).toBeGreaterThan(MATERIALS[IRON].strength);
+  });
+  it("empty / unknown material costs nothing to break", () => {
+    expect(breakEnergy(0)).toBe(0);
   });
 });

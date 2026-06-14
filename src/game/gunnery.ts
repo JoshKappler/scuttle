@@ -44,12 +44,12 @@ export const TRUNNION_OUT = TRUNNION_OUT_B * GUN_SCALE;
 export const TIP_FROM_TRUNNION = TIP_FROM_TRUNNION_B * GUN_SCALE;
 export const BARREL_PIVOT_UP = BARREL_PIVOT_UP_B * GUN_SCALE;
 
-/** Shared by the projectile spawn AND the aim-arc preview — one constant so
- *  the line and the ball can never disagree. Round 8 raised it from 55
- *  ("the cannonballs should be faster and more powerful, have a further
- *  range") — 72 m/s nearly doubles flat-trajectory reach. */
-export const MUZZLE_SPEED = 72; // m/s
-export const BALL_DRAG = 0.006;
+// Muzzle speed + air drag used to live here as constants; r18 moved them to
+// `TUN.gun` (src/core/tunables.ts) so the dev panel can dial them live. They are
+// STILL the single source shared by the projectile spawn (game/cannons.ts) and
+// the aim-arc preview (main.ts) — both read TUN.gun, so the line and the ball
+// can never disagree (the hard-won "line ≡ ball" invariant). See TUN.gun for the
+// r18 retune (150 m/s / 0.0025 drag) and the realism notes.
 
 export interface MuzzleOut {
   pos: THREE.Vector3;

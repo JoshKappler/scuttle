@@ -26,6 +26,9 @@ export class BoardingSystem {
   chestCarried = false;
   chestBanked = false;
   message = "";
+  /** false when there is no live enemy to board (fleet count 0, or the current
+   *  target was culled). Grapple + chest pickup no-op while false. */
+  hasTarget = true;
 
   private chest: THREE.Mesh;
   private slashCd = 0;
@@ -122,7 +125,29 @@ export class BoardingSystem {
     return Math.hypot(b.x - a.x, b.z - a.z);
   }
 
+  /** The enemy ship boarding currently acts on (grapple/chest). */
+  currentEnemy(): Ship {
+    return this.enemyShip;
+  }
+
+  /** Point boarding at a new enemy. Locked while grappled or carrying the chest
+   *  (you don't swap the ship you're lashed to). Moves the prize chest to the new
+   *  target's quarterdeck. Pass force=true to retarget unconditionally (used when
+   *  the old target was culled out from under us). */
+  setEnemy(ship: Ship, force = false): void {
+    if (ship === this.enemyShip) return;
+    if (!force && (this.grappled || this.chestCarried)) return;
+    this.enemyShip.visual.group.remove(this.chest);
+    ship.visual.group.add(this.chest);
+    this.chest.position.set(4.2, this.deckTop(ship), 4);
+    this.enemyShip = ship;
+  }
+
   toggleGrapple(): void {
+    if (!this.hasTarget) {
+      this.message = "no ship to grapple";
+      return;
+    }
     if (this.grappled) {
       this.grappled = false;
       this.message = "grapple cut loose";
@@ -156,7 +181,7 @@ export class BoardingSystem {
     let playerDied = false;
 
     // grapple: pull the hulls alongside with anchored forces
-    if (this.grappled) {
+    if (this.grappled && this.hasTarget) {
       const a = this.playerShip.body.translation();
       const b = this.enemyShip.body.translation();
       const dx = b.x - a.x;
@@ -207,14 +232,10 @@ export class BoardingSystem {
       // chest pickup / hauling / banking
       if (onFoot) this.updateChest(input.interact);
 
-      // drowning / overboard with no rescue is non-lethal for now: respawn aboard
-      const pt = this.player.worldPos(this.tmpA);
-      const st = this.playerShip.body.translation();
-      const adrift = Math.hypot(pt.x - st.x, pt.z - st.z);
-      if (pt.y < st.y - 14 || (this.player.swimming && adrift > 30)) {
-        this.respawnPlayer();
-        this.message = "your crew fishes you out of the sea";
-      }
+      // r18.1: going overboard NO LONGER auto-rescues you aboard. The player wanted the
+      // teleport-back gone — you stay in the sea (the swim spring keeps you at the surface)
+      // and haul yourself back up the stern ladder by hand (press E beside it). The ship has
+      // already dropped throttle to 0 (man-overboard), so she waits for you.
     }
 
     // ---- enemy crew AI ----
@@ -290,6 +311,9 @@ export class BoardingSystem {
   private nearestShip(p: Pirate): Ship {
     const t = p.body.translation();
     const a = this.playerShip.body.translation();
+    // no live enemy (fleet count 0, or our target was just culled): enemyShip may
+    // point at a freed Rapier body — never deref it, just stay on the player's deck.
+    if (!this.hasTarget) return this.playerShip;
     const b = this.enemyShip.body.translation();
     const af = this.playerShip.build.footprint;
     const bf = this.enemyShip.build.footprint;
@@ -351,6 +375,7 @@ export class BoardingSystem {
       return;
     }
 
+    if (!this.hasTarget) return;
     if (!interact) return;
     // pick up: chest sits on the enemy ship; must be close
     const cw = this.chest.getWorldPosition(this.tmpB);
