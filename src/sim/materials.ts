@@ -3,13 +3,17 @@ export const EMPTY = 0;
 export const OAK = 1;
 export const PINE = 2;
 export const IRON = 3;
+export const RAM = 4;
+
+/** Joules of impact energy a cell absorbs per point of `strength` before it breaks. Tuned later in Task 10. */
+export const STRENGTH_TO_JOULES = 6000;
 
 export interface Material {
   name: string;
   density: number; // kg/m³
   /** Base color as linear RGB triplet 0..1 (weathered, desaturated palette per spec aesthetic). */
   color: [number, number, number];
-  /** Hit points per voxel — how much cannonball energy a cell soaks. */
+  /** Impact energy a cell absorbs before breaking (joules = strength × STRENGTH_TO_JOULES). */
   strength: number;
 }
 
@@ -26,4 +30,12 @@ export const MATERIALS: Record<number, Material> = {
   [OAK]: { name: "oak", density: 430, color: [0.055, 0.032, 0.017], strength: 3 },
   [PINE]: { name: "pine", density: 310, color: [0.1, 0.066, 0.036], strength: 2 },
   [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
+  // Reinforced bow timber bound with iron — a dense, dark, very tough ram.
+  // Toughest hull material of all, so a bow-first ram mechanically wins.
+  [RAM]: { name: "ram", density: 900, color: [0.04, 0.025, 0.015], strength: 14 },
 };
+
+/** Joules required to break one voxel of the given material (0 for empty/unknown). */
+export function breakEnergy(mat: number): number {
+  return (MATERIALS[mat]?.strength ?? 0) * STRENGTH_TO_JOULES;
+}
