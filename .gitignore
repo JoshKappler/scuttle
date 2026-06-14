@@ -17,3 +17,13 @@ public/assets/characters/bugrimov/Unity_Project/
 public/assets/characters/universal/*
 !public/assets/characters/universal/web/
 !public/assets/characters/universal/README_DROP_HERE.md
+
+# Quaternius Modular Character Outfits (Fantasy) RAW drop — keep only web/ + README
+public/assets/characters/outfits/*
+!public/assets/characters/outfits/web/
+!public/assets/characters/outfits/README.md
+
+# Quaternius/Kenney Pirate Kit RAW drop — keep only web/ + README
+public/assets/props/piratekit/*
+!public/assets/props/piratekit/web/
+!public/assets/props/piratekit/README.md

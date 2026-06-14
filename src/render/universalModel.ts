@@ -23,6 +23,7 @@ export type UniversalName = "superhero_male";
 
 const CHAR_URL = "/assets/characters/universal/web/Superhero_Male_FullBody.gltf";
 const CLIPS_URL = "/assets/characters/universal/web/clips.glb";
+const OUTFIT_URL = "/assets/characters/outfits/web/Male_Ranger.gltf";
 
 /** ClipKey → Universal Animation Library 2 clip name. */
 const CLIP_NAMES: Record<ClipKey, string> = {
@@ -38,6 +39,7 @@ const CLIP_NAMES: Record<ClipKey, string> = {
 
 let charScene: THREE.Group | null = null;
 let clips: THREE.AnimationClip[] = [];
+let outfitScene: THREE.Group | null = null;
 let loadAttempted = false;
 let loadOk = false;
 
@@ -47,9 +49,14 @@ export async function loadUniversalLibrary(): Promise<boolean> {
   loadAttempted = true;
   const loader = new GLTFLoader();
   try {
-    const [char, lib] = await Promise.all([loader.loadAsync(CHAR_URL), loader.loadAsync(CLIPS_URL)]);
+    const [char, lib, outfit] = await Promise.all([
+      loader.loadAsync(CHAR_URL),
+      loader.loadAsync(CLIPS_URL),
+      loader.loadAsync(OUTFIT_URL).catch(() => null), // outfit is optional dressing
+    ]);
     charScene = char.scene;
     clips = lib.animations;
+    outfitScene = outfit ? (outfit.scene as THREE.Group) : null;
     loadOk = clips.length > 0;
   } catch (err) {
     console.warn("universal character failed to load — falling back to Quaternius", err);
@@ -99,6 +106,42 @@ function buildNaturalWalk(walk: THREE.AnimationClip, idle: THREE.AnimationClip):
   return out;
 }
 
+/** Bind a Quaternius outfit's skinned garments onto an already-cloned base rig.
+ *  The outfit shares the 65-bone Universal skeleton, so we rebuild each garment's
+ *  skeleton from the BASE's bones (matched by name) and parent it alongside the
+ *  body — it then deforms with the same animation clips, no retargeting. `hideHood`
+ *  drops the Head_Hood so his face shows. Returns the garments added (for FP cull). */
+function attachOutfit(inner: THREE.Group, scene: THREE.Group, hideHood: boolean): THREE.Object3D[] {
+  let found: THREE.SkinnedMesh | undefined;
+  inner.traverse((o) => {
+    if (!found && (o as THREE.SkinnedMesh).isSkinnedMesh) found = o as THREE.SkinnedMesh;
+  });
+  if (!found) return [];
+  const base = found;
+  const boneByName = new Map<string, THREE.Bone>();
+  for (const b of base.skeleton.bones) boneByName.set(b.name, b);
+  const parent = base.parent ?? inner;
+  const added: THREE.Object3D[] = [];
+  const clone = cloneSkeleton(scene) as THREE.Group;
+  const garments: THREE.SkinnedMesh[] = [];
+  clone.traverse((o) => {
+    if ((o as THREE.SkinnedMesh).isSkinnedMesh) garments.push(o as THREE.SkinnedMesh);
+  });
+  for (const sm of garments) {
+    if (hideHood && /hood/i.test(sm.name)) continue;
+    const remapped = sm.skeleton.bones.map((b) => boneByName.get(b.name) ?? b);
+    sm.bind(new THREE.Skeleton(remapped, sm.skeleton.boneInverses), sm.bindMatrix);
+    sm.position.copy(base.position);
+    sm.quaternion.copy(base.quaternion);
+    sm.scale.copy(base.scale);
+    sm.castShadow = true;
+    sm.frustumCulled = false;
+    parent.add(sm);
+    added.push(sm);
+  }
+  return added;
+}
+
 export function createUniversalRig(_name: UniversalName = "superhero_male", heightM = 2.0): PirateRig | null {
   if (!charScene) return null;
 
@@ -137,6 +180,12 @@ export function createUniversalRig(_name: UniversalName = "superhero_male", heig
   const root = new THREE.Group();
   root.rotation.y = Math.PI / 2; // glTF faces +z; the game uses +x (tune if wrong)
   root.add(inner);
+
+  // dress him: bind the Ranger outfit's garments onto this body's skeleton (same
+  // Quaternius rig → they animate with the same clips). Hood off so his face shows.
+  if (outfitScene) {
+    for (const m of attachOutfit(inner, outfitScene, true)) bodyHideMeshes.push(m);
+  }
 
   // bind the shared-rig clips onto this body. Root translation is stripped from
   // every clip — the capsule owns world position, the clips only rotate bones.
