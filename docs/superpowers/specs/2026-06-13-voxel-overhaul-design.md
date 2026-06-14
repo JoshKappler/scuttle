@@ -1,5 +1,12 @@
 # Voxel Overhaul — Design Proposal (for review)
 
+> **STATUS 2026-06-13 — PARTIALLY SUPERSEDED:** V1 (ramming) and V2 (debris) are superseded
+> by the approved `specs/2026-06-13-voxel-destruction-core-design.md` — the user directed a
+> more ambitious approach (physics energy model + native Rapier voxel colliders, not preset
+> bite-factors on the box). V2's break-off/debris already shipped in m10. **V3 (voxel
+> masts/sails)** and **V4 (in-hull fluid / replace the blue bar)** remain open future
+> proposals. Original proposal preserved below for reference.
+
 > Drafted autonomously overnight 2026-06-13 while the headline water/buoyancy/gameplay
 > fixes shipped. This is a PROPOSAL to review and direct, not an approved/implemented
 > plan — the user parked voxel work ("skip the voxel stuff for now, we'll tackle it
