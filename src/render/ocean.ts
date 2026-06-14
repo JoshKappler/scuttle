@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { Wave } from "../sim/gerstner";
 import { physicsWaves } from "../sim/gerstner";
 import type { OceanField } from "./oceanField";
+import { MAXVIS } from "../core/constants";
 
 /**
  * Ocean surface: a camera-centered POLAR grid whose vertex shader evaluates
@@ -43,7 +44,7 @@ export interface Ocean {
    *  between — a wake that follows the actual path sailed, curves and all
    *  (round 6: the old white water "appeared painted onto the ship"). */
   updateShipWake(
-    slot: 0 | 1,
+    slot: number,
     centerX: number,
     centerZ: number,
     fwdX: number,
@@ -61,10 +62,14 @@ export interface Ocean {
   /** P4: bind a hull's per-column keel/deck profile texture (built once from the
    *  voxel grid) and its local span, per slot (0 = player, 1 = enemy). Activates
    *  that hull's voxel-accurate cut. */
-  setHullProfile(slot: 0 | 1, tex: THREE.Texture, sizeX: number, sizeZ: number): void;
+  setHullProfile(slot: number, tex: THREE.Texture, sizeX: number, sizeZ: number): void;
   /** P4: feed a hull's live world→local rotation (inverse of the body quaternion)
    *  and world translation each frame, per slot, so its cut tracks heave/pitch/roll. */
-  updateHullPose(slot: 0 | 1, invRot: THREE.Matrix3, trans: THREE.Vector3): void;
+  updateHullPose(slot: number, invRot: THREE.Matrix3, trans: THREE.Vector3): void;
+  /** Free a per-ship slot so the shader skips it (sets halfL<0.5 + profileOn=0). */
+  clearSlot(slot: number): void;
+  /** Clear the stern-trail ribbon for a premium slot (0|1) on reassignment. */
+  resetTrail(slot: number): void;
   /** P5: bind the dynamic-wave interaction field (src/render/dynamicWaves.ts). Its
    *  R-channel height is summed onto the surface in VERT and the legacy analytic
    *  collar/bow mounds cross-fade down where it is active. Pass the field texture, its
@@ -124,8 +129,8 @@ const VERT = /* glsl */ `
 uniform float uTime;
 uniform vec4 uWaveA[NWAVES]; // dirX, dirZ, amplitude, k
 uniform vec2 uWaveB[NWAVES]; // qa, omega
-uniform vec4 uShipA[2]; // bow x, bow z, fwdX, fwdZ
-uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
+uniform vec4 uShipA[MAXVIS]; // bow x, bow z, fwdX, fwdZ
+uniform vec4 uShipB[MAXVIS]; // speed, halfL, halfB, 0
 uniform sampler2D uCascadeDisp[NCASC]; // per-cascade chop displacement (RGB = Dx, height, Dz)
 uniform float uCascadeTile[NCASC]; // per-cascade world tile size (m)
 uniform float uCascadeChop[NCASC]; // per-cascade horizontal choppiness λ
@@ -236,7 +241,7 @@ void main() {
   // the hull's effect on the sea: a STANDING displacement collar at all times
   // (round 9: "real boats have an effect on the water … make it bulge as it
   // displaces it"), plus the speed-driven bow wave on top.
-  for (int s2 = 0; s2 < 2; s2++) {
+  for (int s2 = 0; s2 < MAXVIS; s2++) {
     float hL = uShipB[s2].y;
     if (hL < 0.5) continue; // unused/uninitialised slot
     float hB = uShipB[s2].z;
@@ -328,9 +333,9 @@ uniform vec2 uShipPos; // world xz of the cutaway ship
 uniform vec2 uFwd; // unit fore-aft axis, world xz
 uniform vec2 uHalf; // half-length, half-beam of the footprint
 uniform vec4 uCutPlane; // xyz = normal, w = constant (THREE.Plane form)
-uniform vec4 uShipA[2]; // bow x, bow z, fwdX, fwdZ
-uniform vec4 uShipB[2]; // speed, halfL, halfB, 0
-uniform vec2 uShipC[2]; // keel world-Y, deck-top world-Y (hull vertical span)
+uniform vec4 uShipA[MAXVIS]; // bow x, bow z, fwdX, fwdZ
+uniform vec4 uShipB[MAXVIS]; // speed, halfL, halfB, 0
+uniform vec2 uShipC[MAXVIS]; // keel world-Y, deck-top world-Y (hull vertical span)
 uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 
 // P4 voxel-accurate, attitude-aware in-hull cut — now PER SHIP (slot 0 = player,
@@ -339,7 +344,7 @@ uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 // by their true voxel plan AND heave/pitch/roll, and the enemy no longer falls back
 // to the flat analytic ellipse. Two named samplers (not a sampler array) keep this
 // valid under GLSL ES 1.00, where a sampler array can't take a dynamic index.
-uniform float uProfileOn[2];    // 1 per slot when that hull's profile cut is live
+uniform float uProfileOn[MAXVIS];    // 1 per slot when that hull's profile cut is live
 uniform sampler2D uProfileTex0; // slot 0 (player): RG = keelYLocal, deckYLocal (m)
 uniform sampler2D uProfileTex1; // slot 1 (enemy):  RG = keelYLocal, deckYLocal (m)
 uniform mat3 uProfileInvRot[2]; // world→local rotation per slot (inverse body quat)
@@ -356,7 +361,7 @@ void main() {
   // P4: any slot with a live voxel-accurate profile is cut below instead, so skip
   // its analytic ellipse here. Both ships now carry a profile — the ellipse is only
   // a fallback for a slot whose profile failed to bind.
-  for (int s0 = 0; s0 < 2; s0++) {
+  for (int s0 = 0; s0 < MAXVIS; s0++) {
     if (uProfileOn[s0] > 0.5) continue;
     float keelY = uShipC[s0].x;
     float deckY = uShipC[s0].y;
@@ -499,7 +504,7 @@ void main() {
   // recorded stern-path points — it follows the actual track, curves and
   // all, widening and fading as it ages (round 6: "leaving a wake behind")
   float wash = 0.0;
-  for (int s = 0; s < 2; s++) {
+  for (int s = 0; s < MAXVIS; s++) {
     float spd = uShipB[s].x;
     if (spd < 1.0) continue;
     vec2 fwd2 = uShipA[s].zw;
@@ -624,7 +629,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT,
     fragmentShader: FRAG,
-    defines: { NWAVES: swell.length, NCASC },
+    defines: { NWAVES: swell.length, NCASC, MAXVIS },
     clipping: true,
     transparent: true, // the cutaway wedge fades to glass; alpha 1 elsewhere
     depthWrite: true,
@@ -657,11 +662,11 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uFwd: { value: new THREE.Vector2(1, 0) },
       uHalf: { value: new THREE.Vector2(12.9, 3.7) },
       uCutPlane: { value: new THREE.Vector4(0, 0, 1, 0) },
-      uShipA: { value: [new THREE.Vector4(), new THREE.Vector4()] },
-      uShipB: { value: [new THREE.Vector4(), new THREE.Vector4()] },
-      uShipC: { value: [new THREE.Vector2(0, -1), new THREE.Vector2(0, -1)] },
+      uShipA: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector4()) },
+      uShipB: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector4()) },
+      uShipC: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector2(0, -1)) },
       uTrail: { value: Array.from({ length: 64 }, () => new THREE.Vector4()) },
-      uProfileOn: { value: [0, 0] },
+      uProfileOn: { value: Array.from({ length: MAXVIS }, () => 0) },
       uProfileTex0: { value: dummyTex },
       uProfileTex1: { value: dummyTex },
       uProfileInvRot: { value: [new THREE.Matrix3(), new THREE.Matrix3()] },
@@ -711,25 +716,29 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       b.set(speed, halfL, halfB, 0);
       c.set(keelWorldY, deckWorldY);
 
-      const trail = trails[slot];
-      const sx = centerX - fwdX * (halfL + 0.8);
-      const sz = centerZ - fwdZ * (halfL + 0.8);
-      const last = trail[trail.length - 1];
-      // r17: tighter 1.2 m spacing (was 2.4) → twice as many points = a SMOOTH continuous
-      // ribbon instead of a lace that pops a blob every ~0.25 s, and 31 points now span
-      // only ~37 m (~1 hull length, was ~74 m) so the tail no longer reads as a speedboat.
-      if (speed > 1.5 && (!last || Math.hypot(sx - last.x, sz - last.z) > 1.2)) {
-        trail.push({ x: sx, z: sz, t: time, w: Math.min(speed / 8, 0.9) });
-      }
-      // and a 7 s age cap (was 16) so a slow displacement hull leaves only a short stub.
-      while (trail.length > 31 || (trail.length > 0 && time - trail[0].t > 7)) trail.shift();
+      // stern ribbon only for the PREMIUM pair (slots 0,1 = the two uTrail halves).
+      // Cheap slots (2..) get collar/bow/flank-wash above but no trailing ribbon.
+      if (slot < 2) {
+        const trail = trails[slot];
+        const sx = centerX - fwdX * (halfL + 0.8);
+        const sz = centerZ - fwdZ * (halfL + 0.8);
+        const last = trail[trail.length - 1];
+        // r17: tighter 1.2 m spacing (was 2.4) → twice as many points = a SMOOTH continuous
+        // ribbon instead of a lace that pops a blob every ~0.25 s, and 31 points now span
+        // only ~37 m (~1 hull length, was ~74 m) so the tail no longer reads as a speedboat.
+        if (speed > 1.5 && (!last || Math.hypot(sx - last.x, sz - last.z) > 1.2)) {
+          trail.push({ x: sx, z: sz, t: time, w: Math.min(speed / 8, 0.9) });
+        }
+        // and a 7 s age cap (was 16) so a slow displacement hull leaves only a short stub.
+        while (trail.length > 31 || (trail.length > 0 && time - trail[0].t > 7)) trail.shift();
 
-      const u = mat.uniforms.uTrail.value as THREE.Vector4[];
-      const base = slot * 32;
-      for (let i = 0; i < 32; i++) {
-        const pt = trail[i];
-        if (pt) u[base + i].set(pt.x, pt.z, time - pt.t, pt.w);
-        else u[base + i].set(0, 0, 0, 0);
+        const u = mat.uniforms.uTrail.value as THREE.Vector4[];
+        const base = slot * 32;
+        for (let i = 0; i < 32; i++) {
+          const pt = trail[i];
+          if (pt) u[base + i].set(pt.x, pt.z, time - pt.t, pt.w);
+          else u[base + i].set(0, 0, 0, 0);
+        }
       }
     },
     setHullProfile(slot, tex, sizeX, sizeZ) {
@@ -737,6 +746,17 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       else mat.uniforms.uProfileTex1.value = tex;
       (mat.uniforms.uProfileSize.value as THREE.Vector2[])[slot].set(sizeX, sizeZ);
       (mat.uniforms.uProfileOn.value as number[])[slot] = 1;
+    },
+    clearSlot(slot) {
+      (mat.uniforms.uShipB.value as THREE.Vector4[])[slot].set(0, 0, 0, 0); // halfL=0 → collar/bow/wash skip
+      (mat.uniforms.uShipC.value as THREE.Vector2[])[slot].set(0, -1); // deck<=keel → ellipse cut skips
+      (mat.uniforms.uProfileOn.value as number[])[slot] = 0;
+    },
+    resetTrail(slot) {
+      trails[slot] = [];
+      const u = mat.uniforms.uTrail.value as THREE.Vector4[];
+      const base = slot * 32;
+      for (let i = 0; i < 32; i++) u[base + i].set(0, 0, 0, 0);
     },
     updateHullPose(slot, invRot, trans) {
       (mat.uniforms.uProfileInvRot.value as THREE.Matrix3[])[slot].copy(invRot);
