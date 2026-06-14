@@ -3,6 +3,7 @@ import { FIXED_DT } from "../core/constants";
 import { physicsWaves, type Wave } from "../sim/gerstner";
 import type { Physics } from "./physics";
 import { Ship } from "./ship";
+import { VoxelContact } from "./voxelContact";
 
 /**
  * Game orchestration: owns ships, runs the fixed-step physics loop with an
@@ -17,6 +18,9 @@ import { Ship } from "./ship";
  */
 export class GameWorld {
   readonly ships: Ship[] = [];
+  /** The deformable ship-vs-ship contact (replaces the rigid-reaction path). main.ts may
+   *  attach `.effects` for pulverization dust + read `.debug` for the tuning harness. */
+  readonly contact = new VoxelContact();
   simTime = 0;
   /** Called every fixed step after buoyancy, before the physics step —
    *  sailing forces, AI, projectiles hook in here. */
@@ -67,6 +71,9 @@ export class GameWorld {
         ship.applyForces(this.physWaves, this.simTime);
       }
       this.onFixedStep?.(this.simTime, FIXED_DT);
+      // deformable ship-vs-ship crunch: reads the real voxel overlap, applies the capped
+      // penalty push, and carves both hulls at the contact (sets damageDirty for flushDamage).
+      this.contact.stepAll(this.ships, FIXED_DT);
       for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute
       // hooks: filterContactPair pulls ship-vs-ship pairs out of the rigid solver (physics.ts).
       this.physics.world.step(undefined, this.physics.hooks);

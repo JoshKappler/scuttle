@@ -147,6 +147,36 @@ export const TUN = {
     drag: 4000,
   },
 
+  /** Ship-vs-ship DEFORMABLE contact — the rebuild (game/voxelContact.ts). The hull-hull
+   *  pair is out of Rapier's rigid solver (physics.ts); each fixed step we read the real
+   *  voxel overlap and apply a soft, force-capped penalty spring whose over-cap energy CARVES
+   *  both hulls at the contact. The carve shrinks the overlap → bleeds the spring, so the
+   *  rammer decelerates and digs in while the target is barely shoved (fMax bounds the push).
+   *  Mutual "wet-wood crunch", not rigid plow. Replaces TUN.ram (retired in Task 10). */
+  crush: {
+    /** master enable — off → ship-vs-ship does nothing (hulls ghost; see physics.ts hook). */
+    enabled: true,
+    /** penalty spring stiffness (N per metre of penetration). With substeps + critical
+     *  damping the stability bound is ~ k·(dt/N)²/m_eff ≲ 1; start soft, raise at the harness. */
+    k: 6.0e6,
+    /** damping as a fraction of critical (c = mult·2·√(k·m_eff)). 1 = critically damped (no
+     *  bounce); back off slightly for a little spring-feel. */
+    damping: 0.9,
+    /** force cap (N). THE knob for "barely shove the target": the push can never exceed this,
+     *  so a hard ram's excess energy goes to carving instead of launching the struck ship.
+     *  This cap also bounds the per-step impulse (≤ fMax·dt), which is what makes the contact
+     *  stable in a single pass — no sub-stepping needed. */
+    fMax: 6.0e5,
+    /** fraction of the over-cap energy that becomes destruction (1 = all). Tunes how readily
+     *  the crunch carves vs. just bounces. */
+    yield: 1,
+    /** dust motes flung per voxel carved at the contact (visual; 0 = none). */
+    fling: 1,
+    /** minimum penetration (m) before any carving — kills voxel flicker on a grazing touch /
+     *  a calm side-by-side raft (which still gets the gentle spring, just no damage). */
+    minDepth: 0.06,
+  },
+
   /** Fleet — how many hostile ships the FleetManager (game/fleet.ts) keeps sailing
    *  against the player. Integer 0..MAXVIS. Sunk enemies are auto-replaced to hold
    *  this count (true even at 1). Default 1 = the shipped duel. The dev panel drives
