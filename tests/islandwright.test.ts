@@ -12,7 +12,7 @@ import {
   OAK,
 } from "../src/sim/materials";
 
-const opts = { seed: 42, radiusVox: 40, peakVox: 34, cliffiness: 0.6 };
+const opts = { seed: 42, radiusVox: 70, peakVox: 50, ruggedness: 0.5 };
 
 describe("buildIsland", () => {
   it("is deterministic", () => {
@@ -23,10 +23,13 @@ describe("buildIsland", () => {
   it("rises out of the water and is sea-ringed (empty at the grid edge columns)", () => {
     const { grid, meta } = buildIsland(opts);
     const [nx, ny, nz] = grid.dims;
+    // a substantial landmass pokes above the waterline somewhere
     let aboveWater = 0;
-    for (let y = meta.waterlineY; y < ny; y++)
-      if (grid.isSolid(Math.floor(nx / 2), y, Math.floor(nz / 2))) aboveWater++;
-    expect(aboveWater).toBeGreaterThan(0);
+    grid.forEachSolid((_x, y) => {
+      if (y > meta.waterlineY) aboveWater++;
+    });
+    expect(aboveWater).toBeGreaterThan(500);
+    // the grid edge rings are open water (no land touches the boundary)
     let edgeSolids = 0;
     for (let x = 0; x < nx; x++)
       for (let y = 0; y < ny; y++) {
@@ -45,7 +48,7 @@ describe("buildIsland", () => {
     expect(counts[EMPTY]).toBeUndefined();
   });
   it("scatters palms (trunk + canopy) on the highland", () => {
-    const { grid } = buildIsland({ seed: 3, radiusVox: 40, peakVox: 34, cliffiness: 0.4 });
+    const { grid } = buildIsland({ seed: 3, radiusVox: 70, peakVox: 45, ruggedness: 0.4 });
     const counts: Record<number, number> = {};
     grid.forEachSolid((_x, _y, _z, m) => (counts[m] = (counts[m] ?? 0) + 1));
     expect(counts[PALMWOOD] ?? 0).toBeGreaterThan(0);

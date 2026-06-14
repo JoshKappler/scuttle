@@ -10,11 +10,11 @@ describe("planIslandPlacements", () => {
     const harbors = plan.filter((p) => p.kind === "harbor");
     expect(harbors).toHaveLength(1);
     const d = Math.hypot(harbors[0].x, harbors[0].z);
-    expect(d).toBeGreaterThan(200);
-    expect(d).toBeLessThan(450);
+    expect(d).toBeGreaterThan(300);
+    expect(d).toBeLessThan(480);
   });
   it("keeps a clear lagoon around spawn and no overlaps", () => {
-    for (const p of plan) expect(Math.hypot(p.x, p.z)).toBeGreaterThan(120);
+    for (const p of plan) expect(Math.hypot(p.x, p.z)).toBeGreaterThan(150);
     for (let i = 0; i < plan.length; i++)
       for (let j = i + 1; j < plan.length; j++) {
         const d = Math.hypot(plan[i].x - plan[j].x, plan[i].z - plan[j].z);
