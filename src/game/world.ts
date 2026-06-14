@@ -52,6 +52,7 @@ export class GameWorld {
       if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
       else if (mat) mat.dispose();
     });
+    this.physics.shipBodies.delete(ship.body.handle); // handles are recycled — drop the stale one
     this.physics.world.removeRigidBody(ship.body);
   }
 
@@ -67,7 +68,8 @@ export class GameWorld {
       }
       this.onFixedStep?.(this.simTime, FIXED_DT);
       for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute
-      this.physics.world.step();
+      // hooks: filterContactPair pulls ship-vs-ship pairs out of the rigid solver (physics.ts).
+      this.physics.world.step(undefined, this.physics.hooks);
     }
     for (const ship of this.ships) {
       ship.visual.refresh();

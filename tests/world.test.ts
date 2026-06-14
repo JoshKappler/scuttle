@@ -15,7 +15,7 @@ function fakeShip(): Ship {
 function fakeWorld() {
   const scene = new THREE.Scene();
   const removeRigidBody = vi.fn();
-  const physics = { world: { removeRigidBody }, RAPIER: {} } as unknown as Physics;
+  const physics = { world: { removeRigidBody }, RAPIER: {}, shipBodies: new Set<number>() } as unknown as Physics;
   const waves = makeWaves(new Rng("test"), 4);
   return { world: new GameWorld(physics, waves, scene), scene, removeRigidBody };
 }

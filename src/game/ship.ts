@@ -158,6 +158,11 @@ export class Ship {
     // Group 0x0002ffff keeps it out of the character world; the deck trimesh
     // (below) is what characters walk. Replaces the old coarse box (Task 1).
     this.hull = new HullCollider(phys, this.body, build.grid);
+    // Take ship-vs-ship out of Rapier's rigid solver: tag this body as a ship and flag the
+    // hull collider so phys.hooks.filterContactPair fires for any pair touching it. Two ship
+    // hulls then generate no rigid impulse — the deformable voxelContact owns that response.
+    phys.shipBodies.add(this.body.handle);
+    this.hull.collider.setActiveHooks(R.ActiveHooks.FILTER_CONTACT_PAIRS);
 
     // the mast is solid — you should not be able to walk through it
     // (playtest round 5: "the mast has no physical hitbox")
