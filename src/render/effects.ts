@@ -232,7 +232,7 @@ export class Effects {
    *  under gravity so they arc and fall into the sea — plus a small dust puff
    *  off the fresh wound. No sparks, no flash, no generic white storm.
    *
-   *  `removed` is the voxel count from ship.applyDamage; 0 emits nothing. */
+   *  `removed` is the voxel count from the carve that spawned it; 0 emits nothing. */
   impactDebris(p: THREE.Vector3, normal: THREE.Vector3, removed: number): void {
     if (removed <= 0) return;
     // one chunk per removed voxel (playtest round 13: "should not be capped at

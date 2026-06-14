@@ -48,6 +48,7 @@ export class GameWorld {
         ship.applyForces(this.physWaves, this.simTime);
       }
       this.onFixedStep?.(this.simTime, FIXED_DT);
+      for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute
       this.physics.world.step();
     }
     for (const ship of this.ships) {

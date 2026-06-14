@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { G, VOXEL_SIZE } from "../core/constants";
+import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
-import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld, velocityAtPoint, type GunFacing, type MuzzleOut } from "./gunnery";
+import { muzzleWorld, velocityAtPoint, type GunFacing, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
 
 /**
@@ -16,8 +17,6 @@ const MAX_BALLS = 64;
 // drawn — "it's not really firing along where the trajectory line is"
 // (playtest round 6: "fire all simultaneously with the left click")
 const STAGGER = 0;
-// round 8: "faster and more powerful" — bigger bite per ball
-const BLAST_RADIUS_VOX = 2.1;
 
 interface Ball {
   alive: boolean;
@@ -47,6 +46,10 @@ export class Cannons {
    *  firing one gun from the deck must not lock the whole battery. */
   private portReloadAt = new Map<string, number>();
   static RELOAD = 6; // s — player battery; AI crews pass a slower reload
+  /** Dev panel "semi-auto": when true every gun is treated as always loaded — the
+   *  reload wait is removed, nothing else changes (you still click each shot). Per
+   *  instance, so flipping the player's panel can't speed up the AI's own battery. */
+  noReload = false;
 
   private portKey(ship: Ship, portIndex: number): string {
     return `${this.shipId(ship)}:${portIndex}`;
@@ -65,6 +68,7 @@ export class Cannons {
 
   /** Seconds until the given gun is ready (0 = ready). */
   portReload(ship: Ship, portIndex: number, simTime: number): number {
+    if (this.noReload) return 0;
     return Math.max((this.portReloadAt.get(this.portKey(ship, portIndex)) ?? 0) - simTime, 0);
   }
 
@@ -159,9 +163,10 @@ export class Cannons {
       }
       b.prev.copy(b.pos);
       const v = b.vel.length();
-      b.vel.x += -BALL_DRAG * v * b.vel.x * dt;
-      b.vel.y += (-G - BALL_DRAG * v * b.vel.y) * dt;
-      b.vel.z += -BALL_DRAG * v * b.vel.z * dt;
+      const drag = TUN.gun.drag;
+      b.vel.x += -drag * v * b.vel.x * dt;
+      b.vel.y += (-G - drag * v * b.vel.y) * dt;
+      b.vel.z += -drag * v * b.vel.z * dt;
       b.pos.addScaledVector(b.vel, dt);
       b.mesh.position.copy(b.pos);
 
@@ -198,17 +203,30 @@ export class Cannons {
       for (const ship of targets) {
         const hit = this.marchGrid(ship, b.prev, b.pos);
         if (hit) {
-          const removed = ship.applyDamage(hit.cell, BLAST_RADIUS_VOX);
+          // route the ball through the SAME carve() primitive as ramming: a small,
+          // DIRECTIONAL bite along the ball's path (TUN.gun.carveJoules / maxCellsPerHit).
+          // Replaces the old isotropic blast that tore out whole rows. tmpDir is the ball
+          // travel dir (into the hull) for the carve, then negated for the outward normal.
+          const dir = this.tmpDir.copy(b.vel).normalize();
+          const removed = ship.carve(
+            hit.cell,
+            TUN.gun.carveJoules,
+            [dir.x, dir.y, dir.z],
+            TUN.gun.maxCellsPerHit,
+          );
           if (removed > 0) {
-            const normal = this.tmpDir.copy(b.vel).normalize().negate();
+            const normal = dir.negate();
             // debris MATCHES the damage: ~one flying timber chunk per voxel
             // actually removed, thrown out along the impact normal (round 13:
             // "too much coming off … just the voxels that were actually
             // removed"). No more generic sparks-and-flash storm.
             this.effects.impactDebris(hit.world, normal, removed);
-            // momentum transfer (9 kg ball — round 8: "more powerful")
+            // momentum transfer: ball mass × impact velocity. Mass lives in
+            // TUN.gun.mass (r18: dropped 9→4.3 so the faster muzzle doesn't shove
+            // ships ~2× harder — see TUN.gun). Round 8: "more powerful".
+            const m = TUN.gun.mass;
             ship.body.applyImpulseAtPoint(
-              { x: b.vel.x * 9, y: b.vel.y * 9, z: b.vel.z * 9 },
+              { x: b.vel.x * m, y: b.vel.y * m, z: b.vel.z * m },
               { x: hit.world.x, y: hit.world.y, z: hit.world.z },
               true,
             );
@@ -227,7 +245,7 @@ export class Cannons {
     b.age = 0;
     b.pos.copy(pos);
     b.prev.copy(pos);
-    b.vel.copy(dir).multiplyScalar(MUZZLE_SPEED).add(baseVel);
+    b.vel.copy(dir).multiplyScalar(TUN.gun.muzzleSpeed).add(baseVel);
     b.mesh.visible = true;
     b.mesh.position.copy(pos);
   }

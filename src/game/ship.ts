@@ -640,7 +640,7 @@ export class Ship {
    * cut faces of any section that breaks off), sheds disconnected islands as
    * debris, and recomputes mass + buoyancy + deck. Returns cells destroyed.
    */
-  carve(cell: [number, number, number], energy: number, dir: [number, number, number] | null): number {
+  carve(cell: [number, number, number], energy: number, dir: [number, number, number] | null, maxCells = MAX_CARVE_CELLS): number {
     const grid = this.build.grid;
     const plan = planCarve({
       dims: grid.dims,
@@ -649,12 +649,29 @@ export class Ship {
       origin: cell,
       dir,
       energy,
-      maxCells: MAX_CARVE_CELLS,
+      maxCells,
     });
     if (plan.cells.length === 0) return 0;
     for (const [x, y, z] of plan.cells) { grid.remove(x, y, z); this.hull.removeVoxel(x, y, z); }
     this.registerBreaches(plan.cells);
+    this.damageDirty = true; // sever/mass/deck recompute is deferred + throttled (flushDamage)
+    return plan.cells.length;
+  }
 
+  /** Heavy post-damage recompute (shed disconnected islands, rebuild buoyancy columns
+   *  + deck trimesh), THROTTLED to ~10 Hz. carve() fires every frame during a ram, and
+   *  running these whole-hull rebuilds 60×/s per ship tanked the frame rate; the cheap
+   *  per-voxel removal (grid + collider + breaches) stays immediate in carve(), so the
+   *  visible hole is instant — only this physics recompute lags a few steps. Called once
+   *  per fixed step by the world loop; deterministic (step-counted, no wall clock). */
+  private damageDirty = false;
+  private framesSinceFlush = 0;
+  flushDamage(): void {
+    if (!this.damageDirty) return;
+    if (++this.framesSinceFlush < 6) return; // ~10 Hz during sustained carving
+    this.framesSinceFlush = 0;
+    this.damageDirty = false;
+    const grid = this.build.grid;
     // anything no longer connected to the anchor breaks off as debris; its removed
     // cells are fresh holes too — register them so the stump floods from the cut.
     const islands = findSevered(grid, this.keelAnchor);
@@ -670,21 +687,12 @@ export class Ship {
       this.registerBreaches(islandCells);
       this.onSevered?.(islands);
     }
-
     // a mast whose step has been blown out goes by the board
     this.build.masts.forEach((m, mi) => {
       if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) this.fellMast(mi);
     });
-
     this.recomputeMassProperties();
     this.rebuildDeckCollider();
-    return plan.cells.length;
-  }
-
-  /** Back-compat shim for callers not yet migrated (cannons → Task 9, ramming → Task 5).
-   *  Energy ∝ blast volume to roughly preserve the old sphere-removal feel meanwhile. */
-  applyDamage(cell: [number, number, number], radiusVox: number): number {
-    return this.carve(cell, radiusVox * radiusVox * radiusVox * 50000, null);
   }
 
   /** Register removed hull cells as breaches: a removed cell adjacent to ONE

@@ -12,3 +12,8 @@ public/assets/characters/bugrimov/Models_UE4_UE5/
 public/assets/characters/bugrimov/Models_Unity/
 public/assets/characters/bugrimov/UE4_Project/
 public/assets/characters/bugrimov/Unity_Project/
+
+# Quaternius Universal RAW drop — keep only web/ + the README
+public/assets/characters/universal/*
+!public/assets/characters/universal/web/
+!public/assets/characters/universal/README_DROP_HERE.md

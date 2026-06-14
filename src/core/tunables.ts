@@ -101,17 +101,30 @@ export const TUN = {
      *  4.3 ≈ 9·(72/150) — preserves the old shove at the new, faster muzzle speed
      *  so the retune doesn't suddenly ram ships ~2× harder. */
     mass: 4.3,
+    /** voxel-carving joules per cannonball hit — routed through the SAME carve()
+     *  primitive as ramming. Sized for a small entry cluster, not a blown-out row. */
+    carveJoules: 110000,
+    /** max voxels one ball removes: a tight, directional bite along the ball's path. */
+    maxCellsPerHit: 8,
   },
 
   /** Ship-vs-ship ramming destruction — read by game/collisionDestruction.ts each
-   *  contact. Carve energy = impulseToJoules × (Rapier contact impulse), so destruction
-   *  scales with how hard the hulls actually hit, not instantaneous relative velocity
-   *  (which collapses to ~0 once two heavy hulls grind together). Dial live in the panel. */
+   *  contact. Carve energy = impulseToJoules × max(0, contactImpulse − minImpulse): only
+   *  the impulse ABOVE the crush threshold tears voxels out, so a hull resting its weight
+   *  on another, a gentle fender, or two hulls floating side by side destroy NOTHING,
+   *  while a real strike (impulse ≈ closing-speed × reduced-mass) bites hard. Dial live. */
   ram: {
-    /** joules of voxel-carving per unit of contact impulse (kg·m/s). */
-    impulseToJoules: 5,
-    /** ignore contacts below this summed impulse (resting weight / gentle fenders). */
-    minImpulse: 50,
+    /** joules of voxel-carving per unit of impulse ABOVE minImpulse (kg·m/s). */
+    impulseToJoules: 2.5,
+    /** crush threshold: contacts at/below this carve nothing (resting weight, gentle
+     *  fenders, floating side by side). Set above a hull's per-step weight impulse so
+     *  only way-on impacts destroy. Raise if hulls chip on mere contact; lower if slow
+     *  rams just bounce. */
+    minImpulse: 100000,
+    /** hard cap on voxels removed from ONE hull per contact-step — keeps each step's
+     *  bite to "single voxels and small groups"; a deep gash emerges over many steps of
+     *  a sustained ram, never a whole row in one frame. */
+    maxCellsPerHit: 10,
   },
 };
 

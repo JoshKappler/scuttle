@@ -111,6 +111,9 @@ async function main() {
   } else if (charPack === "bugrimov") {
     const { loadBugrimovLibrary } = await import("./render/bugrimovModel");
     charOk = await loadBugrimovLibrary();
+  } else if (charPack === "universal") {
+    const { loadUniversalLibrary } = await import("./render/universalModel");
+    charOk = await loadUniversalLibrary();
   }
   if (!charOk) {
     const { loadPirateLibrary } = await import("./render/pirateModel");
@@ -1063,16 +1066,15 @@ async function main() {
     enemy.body.setRotation(tq, true);
     enemy.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     enemy.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    const baseline = sloop.build.grid.solidCount() + enemy.build.grid.solidCount();
     let frames = 0;
+    // keep the way ON through contact so she drives her bow IN (sustained impulse →
+    // sustained carving → embedding/tearing), the way a sail-driven ram would, rather
+    // than coasting to a stop the instant the hulls touch.
     const drive = () => {
       frames++;
-      const contacted = sloop.build.grid.solidCount() + enemy.build.grid.solidCount() < baseline;
-      if (!contacted && frames < 200) {
-        const v = sloop.body.linvel();
-        sloop.body.setLinvel({ x: fx * SPEED, y: v.y, z: fz * SPEED }, true);
-        requestAnimationFrame(drive);
-      }
+      const v = sloop.body.linvel();
+      sloop.body.setLinvel({ x: fx * SPEED, y: v.y, z: fz * SPEED }, true);
+      if (frames < 120) requestAnimationFrame(drive);
     };
     requestAnimationFrame(drive);
   };
@@ -1139,8 +1141,12 @@ async function main() {
       title: "🔧 Destruction tests",
       controls: [
         { type: "button", label: "⚔ Ram Test (T-bone)", onClick: ramTest },
-        { type: "slider", label: "ram dmg ×", obj: TUN.ram, key: "impulseToJoules", min: 0, max: 50, step: 0.5 },
-        { type: "slider", label: "ram min imp", obj: TUN.ram, key: "minImpulse", min: 0, max: 500, step: 10 },
+        { type: "button", label: "⚑ ram debug log", onClick: () => { window.__ramDebug = !window.__ramDebug; console.log("[ram] debug", window.__ramDebug ? "ON" : "OFF"); } },
+        { type: "slider", label: "ram dmg ×", obj: TUN.ram, key: "impulseToJoules", min: 0, max: 10, step: 0.25 },
+        { type: "slider", label: "ram crush thresh", obj: TUN.ram, key: "minImpulse", min: 0, max: 400000, step: 5000 },
+        { type: "slider", label: "ram max vox/hit", obj: TUN.ram, key: "maxCellsPerHit", min: 1, max: 40, step: 1 },
+        { type: "slider", label: "ball dmg J", obj: TUN.gun, key: "carveJoules", min: 0, max: 400000, step: 5000 },
+        { type: "slider", label: "ball max vox", obj: TUN.gun, key: "maxCellsPerHit", min: 1, max: 30, step: 1 },
       ],
     },
   ]);

@@ -30,9 +30,11 @@ export const MATERIALS: Record<number, Material> = {
   [OAK]: { name: "oak", density: 430, color: [0.055, 0.032, 0.017], strength: 3 },
   [PINE]: { name: "pine", density: 310, color: [0.1, 0.066, 0.036], strength: 2 },
   [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
-  // Reinforced bow timber bound with iron — a dense, dark, very tough ram.
-  // Toughest hull material of all, so a bow-first ram mechanically wins.
-  [RAM]: { name: "ram", density: 900, color: [0.04, 0.025, 0.015], strength: 14 },
+  // Reinforced bow timber — the toughest hull material (strength 14, ~4.6× oak),
+  // laid over the forward shell by armorBow() so a bow-first ram mechanically wins.
+  // Density matched to oak so the OAK→RAM armor swap is mass-neutral: it changes
+  // toughness, never the hull's tuned draft/trim (THE LAW #2 — attitude is emergent).
+  [RAM]: { name: "ram", density: 430, color: [0.04, 0.025, 0.015], strength: 14 },
 };
 
 /** Joules required to break one voxel of the given material (0 for empty/unknown). */

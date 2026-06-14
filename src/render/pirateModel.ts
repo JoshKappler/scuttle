@@ -65,7 +65,7 @@ export async function loadPirateLibrary(): Promise<boolean> {
 export interface PirateRig {
   /** Asset family. Lets crew.ts skip the Quaternius-only procedural posing
    *  (helm grip, FP carry pose, bone-scale cull) for self-posed kits. */
-  kind: "quaternius" | "kaykit" | "bugrimov";
+  kind: "quaternius" | "kaykit" | "bugrimov" | "universal";
   root: THREE.Group;
   mixer: THREE.AnimationMixer;
   head: THREE.Object3D | null;

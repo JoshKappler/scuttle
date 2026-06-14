@@ -36,11 +36,18 @@ export class CollisionDestruction {
           if (nc === 0) return;
           let impulse = 0;
           for (let k = 0; k < nc; k++) impulse += Math.abs(m.contactImpulse(k));
-          if (impulse < TUN.ram.minImpulse) return;
+          // Only the impulse ABOVE the crush threshold destroys. A hull resting its
+          // weight on another, a gentle wave-driven fender, two hulls floating side by
+          // side — all sit at/below minImpulse and carve NOTHING (this is what stops the
+          // "anything that touches a voxel melts" + the side-by-side grind). The excess
+          // (a real hit: closing-speed × reduced-mass) is what tears voxels out, so
+          // destruction scales with how hard she actually strikes, never with mere weight.
+          const excess = impulse - TUN.ram.minImpulse;
+          if (excess <= 0) return;
           const cp = m.solverContactPoint(0);
           if (!cp) return;
           const n = m.normal();
-          const energy = TUN.ram.impulseToJoules * impulse;
+          const energy = TUN.ram.impulseToJoules * excess;
           this.contact.set(cp.x, cp.y, cp.z);
           this.nrm.set(n.x, n.y, n.z);
           // normal points collider1(a)→collider2(b) unless flipped; carve each hull inboard
@@ -71,6 +78,8 @@ export class CollisionDestruction {
     this.q.set(r.x, r.y, r.z, r.w).conjugate(); // world → local rotation
     const ld = worldDirInto.applyQuaternion(this.q);
     const len = ld.length() || 1;
-    return ship.carve([cx, cy, cz], energy, [ld.x / len, ld.y / len, ld.z / len]);
+    // small per-step cap → each contact-step takes a small cluster, never a whole row;
+    // a deep gash emerges over the many steps a sustained ram stays in contact.
+    return ship.carve([cx, cy, cz], energy, [ld.x / len, ld.y / len, ld.z / len], TUN.ram.maxCellsPerHit);
   }
 }

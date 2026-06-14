@@ -6,6 +6,7 @@ import type { Effects } from "../render/effects";
 import { createPirateRig, type ModelName, type PirateRig, type ClipKey } from "../render/pirateModel";
 import { createKayKitRig, kaykitReady } from "../render/kaykitModel";
 import { createBugrimovRig, bugrimovReady } from "../render/bugrimovModel";
+import { createUniversalRig, universalReady } from "../render/universalModel";
 import { characterPack } from "./characterPack";
 import type { Physics } from "./physics";
 import type { Ship } from "./ship";
@@ -103,11 +104,13 @@ export class Pirate {
     // legacy Quaternius pirate. Both satisfy the PirateRig contract.
     const pack = characterPack();
     this.rig =
-      pack === "bugrimov" && bugrimovReady()
-        ? createBugrimovRig("captain")
-        : pack === "kaykit" && kaykitReady()
-          ? createKayKitRig(faction === "player" ? "Rogue_Hooded" : "Rogue")
-          : createPirateRig(model ?? (faction === "player" ? "captain" : "henry"));
+      pack === "universal" && universalReady()
+        ? createUniversalRig("superhero_male")
+        : pack === "bugrimov" && bugrimovReady()
+          ? createBugrimovRig("captain")
+          : pack === "kaykit" && kaykitReady()
+            ? createKayKitRig(faction === "player" ? "Rogue_Hooded" : "Rogue")
+            : createPirateRig(model ?? (faction === "player" ? "captain" : "henry"));
     if (this.rig) {
       this.mesh.add(this.rig.root);
       this.rig.play("idle");

@@ -19,6 +19,10 @@ export class SailingController {
    *  the player can out-run and out-turn to a firing position (round 6:
    *  "no amount of throttle and turning can take you broadside … nerf"). */
   efficiency = 1;
+  /** Dev panel speed knob: a multiplier on forward sail thrust. Lives per controller,
+   *  so the slider drives ONLY the player's ship — the AI captain keeps its own at 1.
+   *  1 = the shipped feel; <1 to crawl, >1 to zip around while testing. */
+  boost = 1;
 
   private tmpQ = new THREE.Quaternion();
   private tmpF = new THREE.Vector3();
@@ -70,7 +74,7 @@ export class SailingController {
     const upright = Math.min(Math.max(rotUp.y, 0), 1);
     // 0.019: the deep round-5 hull drags more wetted surface than the old
     // canoe — this keeps full sail in the low-20s of knots
-    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.019 * upright * this.efficiency;
+    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.019 * upright * this.efficiency * this.boost;
 
     if (thrust > 0 && ship.submergedFrac > 0.02) {
       // drive and heel split across every mast (the brig carries two) —

@@ -179,7 +179,7 @@ function makeSlider(c: SliderSpec): HTMLDivElement {
   const val = document.createElement("span");
   val.textContent = fmt(c.obj[c.key] as number);
   Object.assign(val.style, {
-    flex: "0 0 38px",
+    flex: "0 0 46px", // wide enough for 4-dp coefficients like "0.0025"
     textAlign: "right",
     color: "#9fd0ff",
   } as Partial<CSSStyleDeclaration>);
@@ -236,5 +236,8 @@ function makeButton(c: ButtonSpec): HTMLDivElement {
 
 function fmt(n: number): string {
   if (Number.isInteger(n)) return String(n);
-  return n.toFixed(Math.abs(n) < 1 ? 2 : 1);
+  // small coefficients (e.g. cannon air drag ≈ 0.0025) need more decimals than the
+  // 2 dp used for ~unit-scale knobs, or they'd read as a meaningless "0.00".
+  const a = Math.abs(n);
+  return n.toFixed(a < 0.01 ? 4 : a < 1 ? 2 : 1);
 }

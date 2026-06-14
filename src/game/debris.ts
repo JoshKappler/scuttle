@@ -185,8 +185,13 @@ export class DebrisManager {
       }
       if (wet > 0) {
         const v = p.body.linvel();
-        const k = p.body.mass() * 1.2 * wet;
-        p.body.addForce({ x: -v.x * k, y: -v.y * k, z: -v.z * k }, true);
+        const m = p.body.mass();
+        // The vertical buoyancy spring was only ~0.18 of critically damped, so chunks
+        // bobbed instead of settling. Raise VERTICAL damping near-critical to kill the
+        // bob; keep HORIZONTAL light so wreckage still drifts calmly rather than freezing.
+        const kv = m * 6 * wet;
+        const kh = m * 0.8 * wet;
+        p.body.addForce({ x: -v.x * kh, y: -v.y * kv, z: -v.z * kh }, true);
       }
 
       // sync visual

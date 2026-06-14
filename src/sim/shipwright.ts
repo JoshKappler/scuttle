@@ -1,6 +1,6 @@
 import { VOXEL_SIZE, VOXEL_VOLUME } from "../core/constants";
 import { createGrid, type VoxelGrid } from "./voxelGrid";
-import { EMPTY, IRON, OAK, PINE } from "./materials";
+import { EMPTY, IRON, OAK, PINE, RAM } from "./materials";
 import { findCompartments, type Compartment } from "./compartments";
 
 /**
@@ -30,6 +30,24 @@ export interface ShipBuild {
   wheelM: { x: number; z: number };
   /** Hull footprint in local METERS, for overboard checks. */
   footprint: { minX: number; maxX: number; zC: number; halfZ: number };
+}
+
+/** Lay reinforced ram-timber (RAM) over the forward shell of a finished hull so a
+ *  bow-first ram mechanically WINS. Each RAM voxel costs ~4.6× an oak one to break, so
+ *  the same impact energy on both hulls barely chips the armored bow while the victim's
+ *  unarmored oak side caves in — the asymmetry falls out of the material cost, with no
+ *  special-casing in the collision code. A pure OAK→RAM swap (RAM density = oak), so
+ *  draft and the tuned trim are unchanged: toughness only. Bow is at high x on every hull. */
+function armorBow(grid: VoxelGrid, forwardFrac = 0.82): void {
+  const [nx, ny, nz] = grid.dims;
+  const x0 = Math.floor(nx * forwardFrac);
+  for (let x = x0; x < nx; x++) {
+    for (let y = 0; y < ny; y++) {
+      for (let z = 0; z < nz; z++) {
+        if (grid.get(x, y, z) === OAK) grid.set(x, y, z, RAM);
+      }
+    }
+  }
 }
 
 export function buildSloop(): ShipBuild {
@@ -241,6 +259,8 @@ export function buildSloop(): ShipBuild {
 
   // single mast slightly forward of midship
   const masts = [{ x: x0 + Math.round(L * 0.42), z: Math.round(cz), h: 15 }];
+
+  armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
 
   return {
     grid,
@@ -522,6 +542,8 @@ export function buildBrig(): ShipBuild {
     { x: x0 + Math.round(L * 0.38), z: Math.round(cz), h: 21 },
     { x: x0 + Math.round(L * 0.68), z: Math.round(cz), h: 18 },
   ];
+
+  armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
 
   return {
     grid,
