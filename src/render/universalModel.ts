@@ -36,9 +36,6 @@ const CLIP_NAMES: Record<ClipKey, string> = {
   jump: "NinjaJump_Start",
 };
 
-/** Head-region meshes hidden in first person (a real FP viewmodel is a later task). */
-const FP_HIDE = /(face|eye|hair|brow)/i;
-
 let charScene: THREE.Group | null = null;
 let clips: THREE.AnimationClip[] = [];
 let loadAttempted = false;
@@ -76,6 +73,32 @@ function findClip(key: ClipKey): THREE.AnimationClip | null {
   return fallback;
 }
 
+/** The free Standard library has no plain walk — only `Walk_Carry_Loop`, whose
+ *  arms are locked forward around an invisible barrel. Synthesize a natural walk:
+ *  keep the legs / hips / spine stepping but freeze the arm + neck/head chain to
+ *  the relaxed idle pose so the hands fall to the sides. (A real walk/run WITH arm
+ *  swing needs the paid UAL locomotion set or a retarget — a later upgrade.) */
+const FROZEN_IN_WALK = /(clavicle|upperarm|lowerarm|hand|thumb|index|middle|ring|pinky|finger|neck|head)/i;
+function buildNaturalWalk(walk: THREE.AnimationClip, idle: THREE.AnimationClip): THREE.AnimationClip {
+  const out = walk.clone();
+  out.tracks = out.tracks.filter((t) => !t.name.endsWith(".position"));
+  const idlePose = new Map<string, THREE.Quaternion>();
+  for (const t of idle.tracks) {
+    const p = THREE.PropertyBinding.parseTrackName(t.name);
+    if (p.propertyName === "quaternion") {
+      idlePose.set(p.nodeName, new THREE.Quaternion(t.values[0], t.values[1], t.values[2], t.values[3]));
+    }
+  }
+  out.tracks = out.tracks.map((t) => {
+    const p = THREE.PropertyBinding.parseTrackName(t.name);
+    if (p.propertyName !== "quaternion" || !FROZEN_IN_WALK.test(p.nodeName)) return t;
+    const q = idlePose.get(p.nodeName);
+    if (!q) return t;
+    return new THREE.QuaternionKeyframeTrack(t.name, [0, out.duration], [q.x, q.y, q.z, q.w, q.x, q.y, q.z, q.w]);
+  });
+  return out;
+}
+
 export function createUniversalRig(_name: UniversalName = "superhero_male", heightM = 2.0): PirateRig | null {
   if (!charScene) return null;
 
@@ -86,7 +109,7 @@ export function createUniversalRig(_name: UniversalName = "superhero_male", heig
     if (!mesh.isMesh) return;
     mesh.castShadow = true;
     mesh.frustumCulled = false; // skinned bounds lag the animation
-    if (FP_HIDE.test(o.name)) bodyHideMeshes.push(o);
+    bodyHideMeshes.push(o); // first person hides the whole body for now (arm viewmodel TBD)
   });
 
   // normalize: feet on y=0, target height, centered, facing +x (game forward)
@@ -120,16 +143,24 @@ export function createUniversalRig(_name: UniversalName = "superhero_male", heig
   const mixer = new THREE.AnimationMixer(inner);
   const actions = new Map<ClipKey, THREE.AnimationAction>();
   const oneShot = new Set<ClipKey>(["attack", "punch", "hit", "death", "jump"]);
+  const idleClip = findClip("idle");
   for (const key of Object.keys(CLIP_NAMES) as ClipKey[]) {
     const clip = findClip(key);
     if (!clip) continue;
-    const useClip = clip.clone();
-    useClip.tracks = useClip.tracks.filter((t) => !t.name.endsWith(".position"));
+    let useClip: THREE.AnimationClip;
+    if ((key === "walk" || key === "run") && idleClip) {
+      // turn the barrel-carry walk into a natural one: walking legs, relaxed arms
+      useClip = buildNaturalWalk(clip, idleClip);
+    } else {
+      useClip = clip.clone();
+      useClip.tracks = useClip.tracks.filter((t) => !t.name.endsWith(".position"));
+    }
     const action = mixer.clipAction(useClip);
     if (oneShot.has(key)) {
       action.setLoop(THREE.LoopOnce, 1);
       action.clampWhenFinished = true;
     }
+    if (key === "run") action.timeScale = 1.45; // no real run clip — jog the walk faster
     actions.set(key, action);
   }
 

@@ -261,10 +261,13 @@ async function main() {
   // energy-budget carve — embedding/tearing emerge from the material model.
   const collisionDestruction = new CollisionDestruction(physics, effects);
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
-  // Steering only happens at the wheel (E to take/leave it); V toggles
-  // first person. Third person keeps a bird's-eye orbit on the ship.
+  // Steering only happens at the wheel (E to take/leave it). V cycles the view:
+  // character 3rd-person (default) → character 1st-person → bird's-eye ship orbit.
   let atWheel = true;
   let onFoot = false; // derived each step: !atWheel
+  // 0 = character 3rd-person, 1 = character 1st-person, 2 = ship orbit. firstPerson
+  // (mode 1) is derived so the rest of the loop's checks stay simple.
+  let camMode: 0 | 1 | 2 = 0;
   let firstPerson = false;
   const wheelWorld = new THREE.Vector3();
   const ladderWorld = new THREE.Vector3();
@@ -542,9 +545,11 @@ async function main() {
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
     if (e.code === "KeyV" && boarding.player) {
-      firstPerson = !firstPerson;
+      camMode = ((camMode + 1) % 3) as 0 | 1 | 2;
+      firstPerson = camMode === 1;
       boarding.player.setFirstPerson(firstPerson);
       controls.syncFirstPerson(firstPerson);
+      controls.charFollow = camMode === 0; // wheel zoom works the follow-cam in char 3rd-person
     }
     if (e.code === "KeyF") toggleFullscreen();
     if (e.code === "KeyX") {
@@ -1310,7 +1315,10 @@ async function main() {
       // r18.1: seat the eye at the true eye line (the old 0.95 sat at the crown, which pushed the
       // body-attached arm + cutlass off the bottom of the frame). Lower brings the weapon into the
       // forward view; the head bone is collapsed in FP so the camera isn't inside any mesh.
-      const eyeY = pt.y + (boarding.player.rig ? 0.74 : 0.95);
+      // the eye sits higher on the taller Universal base mesh than on the stocky
+      // Quaternius captain — otherwise FP frames his collarbone.
+      const eyeY =
+        pt.y + (boarding.player.rig ? (boarding.player.rig.kind === "universal" ? 1.05 : 0.74) : 0.95);
       const yaw = controls.cameraYaw();
       const pitch = controls.lookPitch();
       boarding.player.fpLookPitch = pitch; // carry pose lifts with the view (stays in frame)
@@ -1323,7 +1331,9 @@ async function main() {
       // arm extends FORWARD into frame (the shoulder sits ~at the capsule centre; without the
       // pull-back the short arm hangs beside the lens and never reaches the view). The head is
       // collapsed in FP so there's no mesh to clip into back here.
-      const back = boarding.player.rig ? 0.42 : 0;
+      // pull back behind the shoulder ONLY when there's a real FP arm to frame
+      // (Quaternius). The Universal mesh has no FP arm yet, so sit right at the eye.
+      const back = boarding.player.rig && boarding.player.rig.kind !== "universal" ? 0.42 : 0;
       camera.position.set(pt.x - lookX * back, eyeY, pt.z - lookZ * back);
       camera.lookAt(camera.position.x + lookX, eyeY + Math.sin(pitch), camera.position.z + lookZ);
       // viewmodel: the procedural stand-in arm shows ONLY when there's no rigged model — the
@@ -1339,6 +1349,12 @@ async function main() {
       // a diagonal cutlass slash: the blade sweeps down-and-across the view (more roll +
       // yaw than the old straight chop) with a little follow-through, then recovers.
       vmArm.rotation.set(-0.12 - swingP * 1.7, 0.28 + swingP * 0.55, 0.78 - swingP * 0.95);
+    } else if (camMode === 0 && boarding.player) {
+      // character third-person: a short follow-cam orbiting the player himself
+      // (V's default view) instead of the whole ship.
+      viewModel.visible = false;
+      const pp = boarding.player.body.translation();
+      controls.updateFollowCamera(camera, new THREE.Vector3(pp.x, pp.y, pp.z));
     } else {
       viewModel.visible = false;
       // bird's-eye orbit on the ship's CENTER (the body origin is the grid

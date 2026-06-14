@@ -10,6 +10,9 @@ export class PlayerControls {
   private orbitYaw = 2.6;
   private orbitPitch = 0.32; // radians above horizon
   private dist = 46; // the brig needs a longer default orbit
+  private followDist = 6; // short orbit for the character follow-cam (V → char 3rd person)
+  /** True while the third-person camera follows the CHARACTER, not the ship. */
+  charFollow = true;
   private dragging = false;
 
   /** Set on left-click while pointer-locked; cleared by the consumer.
@@ -140,7 +143,11 @@ export class PlayerControls {
         this.spyFov = Math.min(Math.max(this.spyFov + Math.sign(e.deltaY) * 2.5, 8), 28);
         return;
       }
-      this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 8), 130);
+      if (this.charFollow && !this.firstPersonMode) {
+        this.followDist = Math.min(Math.max(this.followDist * (1 + Math.sign(e.deltaY) * 0.12), 2.5), 22);
+      } else {
+        this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 8), 130);
+      }
     });
   }
 
@@ -198,5 +205,18 @@ export class PlayerControls {
     ).multiplyScalar(this.dist);
     camera.position.copy(target).add(offset);
     camera.lookAt(target.x, target.y + 2, target.z);
+  }
+
+  /** Character follow-cam: same orbit angles, but a short character-scale
+   *  distance (own wheel zoom) and a look-at at roughly chest height. */
+  updateFollowCamera(camera: THREE.PerspectiveCamera, target: THREE.Vector3): void {
+    const cy = Math.cos(this.orbitPitch);
+    const offset = new THREE.Vector3(
+      Math.cos(this.orbitYaw) * cy,
+      Math.sin(this.orbitPitch),
+      Math.sin(this.orbitYaw) * cy,
+    ).multiplyScalar(this.followDist);
+    camera.position.copy(target).add(offset);
+    camera.lookAt(target.x, target.y + 1.1, target.z);
   }
 }

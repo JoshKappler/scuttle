@@ -1,9 +1,11 @@
 /**
  * Which on-foot character pack to use.
  *
- * Default is the Bugrimov semi-realistic pirate (`?char=bug`). The legacy
- * Quaternius captain is `?char=q`; the KayKit rogue (too chibi — "cartoon
- * pill") is parked at `?char=kk` for reference only.
+ * Default is the Quaternius Universal base character (no param, or `?char=u`):
+ * a clean ~13k-tri body driven by the shared-skeleton Universal Animation
+ * Library — interchangeable and pre-animated. The Bugrimov semi-realistic
+ * pirate is parked at `?char=bug`, the legacy Quaternius captain at `?char=q`,
+ * and the KayKit rogue (too chibi — "cartoon pill") at `?char=kk`.
  *
  * Resolved once per page load and cached so crew.ts and main.ts always agree.
  */
@@ -13,7 +15,7 @@ let cached: CharPack | null = null;
 
 export function characterPack(): CharPack {
   if (cached) return cached;
-  let pack: CharPack = "bugrimov";
+  let pack: CharPack = "universal";
   try {
     const q = new URLSearchParams(location.search).get("char");
     if (q === "kaykit" || q === "kk") pack = "kaykit";
