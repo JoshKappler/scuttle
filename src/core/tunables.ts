@@ -170,6 +170,11 @@ export const TUN = {
     /** fraction of the over-cap energy that becomes destruction (1 = all). Tunes how readily
      *  the crunch carves vs. just bounces. */
     yield: 1,
+    /** how strongly the energy SPENT breaking voxels bleeds the closing speed (1 = full
+     *  physical: the rammer loses exactly the KE that went into destruction). This is "the
+     *  ship slows as it digs in, dampened by the destruction." The bled momentum rides off
+     *  with the debris (not reacted onto the struck ship), so the target still barely moves. */
+    carveDamp: 1,
     /** dust motes flung per voxel carved at the contact (visual; 0 = none). */
     fling: 1,
     /** minimum penetration (m) before any carving — kills voxel flicker on a grazing touch /

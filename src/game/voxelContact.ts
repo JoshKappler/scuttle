@@ -137,12 +137,35 @@ export class VoxelContact {
       const absorbable = TUN.crush.fMax * depth; // work the capped spring can do over the overlap
       const E = Math.max(0, closingKE - absorbable) * TUN.crush.yield;
       if (E > 0) {
-        removedA = shipA.crush(ov.aCells, E / 2).removed;
-        removedB = shipB.crush(ov.bCells, E / 2).removed;
+        const rA = shipA.crush(ov.aCells, E / 2);
+        const rB = shipB.crush(ov.bCells, E / 2);
+        removedA = rA.removed; removedB = rB.removed;
         energy = E;
         const removed = removedA + removedB;
         if (this.effects && TUN.crush.fling > 0 && removed > 0) {
           this.effects.impactDebris(point, n, Math.min(removed * TUN.crush.fling, 40));
+        }
+
+        // RAMMER DECELERATION: the joules actually spent breaking voxels are bled from the
+        // closing motion — the ship driving in slows as it digs (mass+speed via μ, dampened
+        // by how much destruction happened). The bled momentum is NOT reacted onto the other
+        // hull (it rides off with the flung debris), so the struck ship stays put. We only
+        // ever shave each body's APPROACH speed (clamped ≤ its own approach), never reverse or
+        // launch it. Applied at the COM (pure linear bleed; the at-point penalty above already
+        // supplies the contact torque/slew).
+        const spent = (E / 2 - rA.leftover) + (E / 2 - rB.leftover);
+        if (spent > 0) {
+          const newClose = Math.sqrt(Math.max(0, vClose * vClose - (2 * spent / mu) * TUN.crush.carveDamp));
+          const dVc = vClose - newClose;
+          const vAn = this.vA.dot(n), vBn = this.vB.dot(n); // A→B is +n
+          const aShare = Math.max(0, vAn), bShare = Math.max(0, -vBn); // each body's approach speed
+          const tot = aShare + bShare;
+          if (dVc > 0 && tot > 1e-4) {
+            const dvA = Math.min(aShare, (dVc * aShare) / tot);
+            const dvB = Math.min(bShare, (dVc * bShare) / tot);
+            if (dvA > 0) shipA.body.applyImpulse(this.imp.copy(n).multiplyScalar(-dvA * mA), true);
+            if (dvB > 0) shipB.body.applyImpulse(this.imp.copy(n).multiplyScalar(dvB * mB), true);
+          }
         }
       }
     }
