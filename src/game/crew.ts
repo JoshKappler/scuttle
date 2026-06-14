@@ -32,6 +32,7 @@ const KCC_FILTER_GROUPS = 0xfffffffd;
 
 const tmpCarry = new THREE.Vector3();
 const tmpAnchor = new THREE.Vector3();
+const _fpEuler = new THREE.Euler();
 
 export type Faction = "player" | "enemy";
 
@@ -174,6 +175,21 @@ export class Pirate {
   rig: PirateRig | null = null;
   private animKey: ClipKey | "" = "";
   private fpHide = false;
+  // r18.1: first person shows the REAL right arm + cutlass. The body is ONE skinned mesh, so we
+  // can't hide sub-meshes — instead we collapse the non-arm BONES (head/neck/left arm/legs) and
+  // hold the right-arm chain in a fixed "carry" pose so the real blade sits in frame. fpArmPose
+  // is local-euler per bone, tunable live via DEBUG.boarding.player.fpArmPose then baked here.
+  private fpCullBones: THREE.Object3D[] = [];
+  private rArm: { shoulder?: THREE.Object3D; upper?: THREE.Object3D; lower?: THREE.Object3D } = {};
+  private fpBonesFound = false;
+  fpArmPose = {
+    shoulder: [-0.4, 0, 0] as [number, number, number],
+    upper: [0.8, 0, 0.15] as [number, number, number],
+    lower: [0.5, 0, 0] as [number, number, number],
+  };
+  /** Current first-person look pitch (rad), fed from the camera each frame so the carry pose
+   *  lifts with the view — the cutlass stays in frame whether you look up or down. */
+  fpLookPitch = 0;
   /** Set by combat when this pirate swings; drives the chop animation. */
   attackTimer = 0;
   /** Set by combat on kick; drives the lunge animation. */
@@ -209,17 +225,52 @@ export class Pirate {
     return out.set(t.x, t.y, t.z);
   }
 
-  /** First-person: hide the whole body — eye-level cameras inside a skinned
-   *  model otherwise show "the inside of the pirate's uniform" (round 5). */
+  /** First person (r18.1): show the REAL body but collapse the non-arm BONES so only the right
+   *  arm + cutlass remain in view (the old code hid the whole rig and drew a procedural arm the
+   *  player hated). The camera sits at the eyes; head/neck collapse so it isn't inside them, the
+   *  left arm + legs collapse out of frame, and postPose() holds the right arm in a carry pose.
+   *  Leaving FP restores every bone to full scale and lets the mixer drive the arm again. */
   setFirstPerson(fp: boolean): void {
     this.fpHide = fp;
-    if (this.rig) this.rig.root.visible = !fp;
-    // restore the rigged head bone when leaving FP — step()/idleTick() shrink
-    // it to ~0 each frame in FP so it can't block the eye-level camera; that
-    // scale was never put back, so a head that went first-person stayed
-    // headless in third (playtest: "the 3rd-person pirate has no head").
-    if (this.rig?.head) this.rig.head.scale.setScalar(fp ? 0.001 : 1);
-    for (const part of this.headParts) part.visible = !fp;
+    if (this.rig) {
+      this.rig.root.visible = true;
+      this.applyFpCull();
+    }
+    for (const part of this.headParts) part.visible = !fp; // procedural fallback body only
+  }
+
+  private findFpBones(): void {
+    if (this.fpBonesFound || !this.rig) return;
+    this.fpBonesFound = true;
+    this.rig.root.traverse((o) => {
+      switch (o.name) {
+        case "Head":
+        case "Neck":
+        case "ShoulderL":
+        case "UpperLegL":
+        case "UpperLegR":
+          this.fpCullBones.push(o);
+          break;
+        case "ShoulderR":
+          this.rArm.shoulder = o;
+          break;
+        case "UpperArmR":
+          this.rArm.upper = o;
+          break;
+        case "LowerArmR":
+          this.rArm.lower = o;
+          break;
+      }
+    });
+  }
+
+  /** Shrink the non-arm bones to nothing in FP (restore to full scale in third person). Cheap,
+   *  re-applied each frame since a skeleton clone can otherwise reset the scales. */
+  private applyFpCull(): void {
+    if (!this.rig) return;
+    this.findFpBones();
+    const k = this.fpHide ? 0.0001 : 1;
+    for (const b of this.fpCullBones) b.scale.setScalar(k);
   }
 
   /** Pin to a world position with a fixed facing (used while at the wheel).
@@ -264,20 +315,38 @@ export class Pirate {
    *  fixed steps, from the frozen grip — the playing idle clip cannot move
    *  the arms through it. */
   postPose(): void {
-    if (!this.atHelm || !this.rig || !this.helmGrip) return;
-    const b = this.findArmBones();
-    const r = this.helmRudder;
-    const lean: Record<string, number> = {
-      UpperArmL: -(1.05 - r * 0.3),
-      UpperArmR: -(1.05 + r * 0.3),
-      LowerArmL: -0.38,
-      LowerArmR: -0.38,
-    };
-    for (const name of Object.keys(b)) {
-      const frozen = this.helmGrip.get(name);
-      if (!frozen) continue;
-      b[name].quaternion.copy(frozen);
-      b[name].rotateX(lean[name] ?? 0);
+    if (!this.rig) return;
+    // FIRST PERSON takes priority: always carry the real right arm + cutlass in frame (even
+    // while steering — the old procedural viewmodel did the same), applied AFTER the mixer.
+    // Skipped mid-swing so the Sword clip plays through the view unaltered.
+    if (this.fpHide) {
+      if (this.attackTimer <= 0) {
+        this.findFpBones();
+        const p = this.fpArmPose;
+        // the shoulder lift tracks the look pitch (gain ~1) so the blade holds its screen spot
+        // as you pan up/down — the body-attached arm would otherwise sink when you look up.
+        this.rArm.shoulder?.quaternion.setFromEuler(_fpEuler.set(p.shoulder[0] - this.fpLookPitch, p.shoulder[1], p.shoulder[2]));
+        this.rArm.upper?.quaternion.setFromEuler(_fpEuler.set(p.upper[0], p.upper[1], p.upper[2]));
+        this.rArm.lower?.quaternion.setFromEuler(_fpEuler.set(p.lower[0], p.lower[1], p.lower[2]));
+      }
+      return;
+    }
+    // third person at the helm: both hands frozen on the wheel rim + rudder lean
+    if (this.atHelm && this.helmGrip) {
+      const b = this.findArmBones();
+      const r = this.helmRudder;
+      const lean: Record<string, number> = {
+        UpperArmL: -(1.05 - r * 0.3),
+        UpperArmR: -(1.05 + r * 0.3),
+        LowerArmL: -0.38,
+        LowerArmR: -0.38,
+      };
+      for (const name of Object.keys(b)) {
+        const frozen = this.helmGrip.get(name);
+        if (!frozen) continue;
+        b[name].quaternion.copy(frozen);
+        b[name].rotateX(lean[name] ?? 0);
+      }
     }
   }
 
@@ -299,7 +368,7 @@ export class Pirate {
     // FP hides the head (camera sits inside it); 3rd person keeps it full size.
     // Re-applied every frame and two-sided so the head can never stay shrunk
     // after returning from first-person.
-    if (this.rig?.head) this.rig.head.scale.setScalar(this.fpHide ? 0.001 : 1);
+    this.applyFpCull();
     if (!this.alive) {
       this.syncMesh();
       this.ragdollAge += dt;
@@ -436,7 +505,7 @@ export class Pirate {
       this.helmGrip = new Map();
       for (const name of Object.keys(bones)) this.helmGrip.set(name, bones[name].quaternion.clone());
     }
-    if (this.rig?.head) this.rig.head.scale.setScalar(this.fpHide ? 0.001 : 1);
+    this.applyFpCull();
   }
 
   private tickStamina(dt: number, draining: boolean): void {

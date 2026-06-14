@@ -949,27 +949,29 @@ async function main() {
     if (st.cd <= 0 && ship.bowSpray.wet) {
       const b = ship.bowSpray;
       const strength = Math.min(0.5 + spd * 0.12, 2.4) * TUN.spray.bow;
-      effects.bowWave(b.x, b.y + 0.1, b.z, sprayF.x, sprayF.z, strength);
+      // emit from JUST BENEATH the surface so the spawn point is hidden under the water — the
+      // sheet appears to erupt out of the sea, never from a visible dot floating above it.
+      effects.bowWave(b.x, b.y - 0.25, b.z, sprayF.x, sprayF.z, strength);
       st.cd = 0.05; // ~20 Hz → a continuous sheet, not bursts
     }
-    // SUBTLE per-voxel waterline fizz: a few small puffs off random columns that are cutting
-    // the surface (the whole hull line), speed-scaled and low-strength so it reads as a light
-    // fizz, not a storm. This is the seed of real chop/wave creation later — for now cosmetic.
+    // per-voxel waterline fizz off the hull's edge columns (the whole hull line), speed-scaled.
+    // More pronounced than r18.0 — the player wants to see water breaking all along the sides,
+    // not just barely catch it. Also emitted from beneath the surface so it springs from the sea.
     if (st.fizzCd <= 0 && ship.waterlineN > 0) {
-      const fizzStr = Math.min(spd * 0.05, 0.7) * TUN.spray.bow;
+      const fizzStr = Math.min(spd * 0.08, 1.2) * TUN.spray.bow;
       if (fizzStr > 0.02) {
-        const k = Math.min(6, ship.waterlineN);
+        const k = Math.min(11, ship.waterlineN);
         for (let i = 0; i < k; i++) {
           const idx = ((Math.random() * ship.waterlineN) | 0) * 3;
           effects.waterlineFizz(
             ship.waterline[idx],
-            ship.waterline[idx + 1] + 0.05,
+            ship.waterline[idx + 1] - 0.12,
             ship.waterline[idx + 2],
             fizzStr,
           );
         }
       }
-      st.fizzCd = 0.08;
+      st.fizzCd = 0.07;
     }
   };
 
@@ -1076,17 +1078,25 @@ async function main() {
       // eye-level camera — at the model's eye line, not its collar
       // (playtest round 5: "really only shows the inside of the uniform")
       const pt = boarding.player.body.translation();
-      const eyeY = pt.y + 0.95;
-      camera.position.set(pt.x, eyeY, pt.z);
+      // r18.1: seat the eye at the true eye line (the old 0.95 sat at the crown, which pushed the
+      // body-attached arm + cutlass off the bottom of the frame). Lower brings the weapon into the
+      // forward view; the head bone is collapsed in FP so the camera isn't inside any mesh.
+      const eyeY = pt.y + (boarding.player.rig ? 0.74 : 0.95);
       const yaw = controls.cameraYaw();
       const pitch = controls.lookPitch();
-      camera.lookAt(
-        pt.x + Math.cos(yaw) * Math.cos(pitch),
-        eyeY + Math.sin(pitch),
-        pt.z + Math.sin(yaw) * Math.cos(pitch),
-      );
-      // viewmodel: track the camera, idle-bob, and chop on a slash
-      viewModel.visible = true;
+      boarding.player.fpLookPitch = pitch; // carry pose lifts with the view (stays in frame)
+      const lookX = Math.cos(yaw) * Math.cos(pitch);
+      const lookZ = Math.sin(yaw) * Math.cos(pitch);
+      // r18.1: with the REAL arm shown, seat the eye slightly BEHIND the shoulder so the right
+      // arm extends FORWARD into frame (the shoulder sits ~at the capsule centre; without the
+      // pull-back the short arm hangs beside the lens and never reaches the view). The head is
+      // collapsed in FP so there's no mesh to clip into back here.
+      const back = boarding.player.rig ? 0.42 : 0;
+      camera.position.set(pt.x - lookX * back, eyeY, pt.z - lookZ * back);
+      camera.lookAt(camera.position.x + lookX, eyeY + Math.sin(pitch), camera.position.z + lookZ);
+      // viewmodel: the procedural stand-in arm shows ONLY when there's no rigged model — the
+      // rigged pirate now carries its REAL right arm + cutlass in first person (r18.1).
+      viewModel.visible = !boarding.player.rig;
       const swingT = boarding.player.attackTimer ?? 0;
       const swingP = swingT > 0 ? Math.sin((1 - swingT / 0.7) * Math.PI) : 0;
       vmBob += dt * 3.2;

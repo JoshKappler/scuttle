@@ -358,18 +358,20 @@ export class Effects {
     const s = Math.min(strength, 1);
     if (this.gpuSpray) {
       _fizzP.set(x, y, z);
-      _fizzV.set((Math.random() - 0.5) * 0.5, 1.0 + Math.random() * 1.1 * s, (Math.random() - 0.5) * 0.5);
-      this.gpuSpray.emit(_fizzP, _fizzV, 1, 0.4, 0.12 + 0.05 * s, this._simTime);
+      // a fuller upward puff (r18.1: the side spray was too faint) — a little outward scatter
+      // and a real vertical kick so it breaks visibly along the hull.
+      _fizzV.set((Math.random() - 0.5) * 0.8, 1.5 + Math.random() * 1.6 * s, (Math.random() - 0.5) * 0.8);
+      this.gpuSpray.emit(_fizzP, _fizzV, 2, 0.55, 0.16 + 0.09 * s, this._simTime);
       return;
     }
-    // CPU fallback: a couple of small motes
-    for (let i = 0; i < 2; i++) {
+    // CPU fallback: a few small motes
+    for (let i = 0; i < 3; i++) {
       this.spawn(
         x,
         y,
         z,
-        [(Math.random() - 0.5) * 0.6, 1.1 + Math.random() * 1.2 * s, (Math.random() - 0.5) * 0.6],
-        0.4 + Math.random() * 0.3,
+        [(Math.random() - 0.5) * 0.8, 1.4 + Math.random() * 1.6 * s, (Math.random() - 0.5) * 0.8],
+        0.45 + Math.random() * 0.35,
         [0.92, 0.96, 0.97],
         -9.81,
         0.5,
