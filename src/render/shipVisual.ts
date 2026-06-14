@@ -4,6 +4,7 @@ import {
   barrelDirLocal,
   BARREL_PIVOT_UP,
   BORE_UP_B,
+  CHASER_INBOARD,
   GUN_INBOARD_M,
   GUN_SCALE,
   TIP_FROM_TRUNNION_B,
@@ -602,9 +603,9 @@ export class ShipVisual {
       // carriage inboard along ±x (behind the bow / forward of the stern); a broadside
       // gun inboard along ±z (3.4 plants all four trucks on deck, round 9).
       if (port.facing === "fore") {
-        pivot.position.set((port.x + 0.5 - 3.4) * VOXEL_SIZE - GUN_INBOARD_M, cyP, (port.z + 0.5) * VOXEL_SIZE);
+        pivot.position.set((port.x + 0.5 - CHASER_INBOARD) * VOXEL_SIZE, cyP, (port.z + 0.5) * VOXEL_SIZE);
       } else if (port.facing === "aft") {
-        pivot.position.set((port.x + 0.5 + 3.4) * VOXEL_SIZE + GUN_INBOARD_M, cyP, (port.z + 0.5) * VOXEL_SIZE);
+        pivot.position.set((port.x + 0.5 + CHASER_INBOARD) * VOXEL_SIZE, cyP, (port.z + 0.5) * VOXEL_SIZE);
       } else {
         const pz = (port.z + 0.5 - port.side * 3.4) * VOXEL_SIZE;
         pivot.position.set(px, cyP, pz - port.side * GUN_INBOARD_M);
@@ -625,30 +626,49 @@ export class ShipVisual {
         m.castShadow = true;
         pivot.add(m);
       };
-      for (const s of [-1, 1]) {
-        add(gg.cheekF, woodMat, s * 0.15, BORE_UP_B - 0.22, -0.02);
-        add(gg.cheekR, woodMat, s * 0.15, BORE_UP_B - 0.38, -0.45);
-        add(gg.wheelF, woodMat, s * 0.26, deckInPivot + 0.17, 0.18, true);
-        add(gg.wheelR, woodMat, s * 0.26, deckInPivot + 0.15, -0.55, true);
+      // r18: a CHASER shows ONLY its barrel, run out through a hull window — NO wooden carriage.
+      // Below the thick bow/stern the truck has no open deck to stand on and its cheeks + trucks
+      // jut out the narrowing hull ("just the full cannon body poking straight through"). The
+      // open-deck broadside guns keep their full carriage. The barrel still elevates/traverses.
+      if (!port.facing) {
+        for (const s of [-1, 1]) {
+          add(gg.cheekF, woodMat, s * 0.15, BORE_UP_B - 0.22, -0.02);
+          add(gg.cheekR, woodMat, s * 0.15, BORE_UP_B - 0.38, -0.45);
+          add(gg.wheelF, woodMat, s * 0.26, deckInPivot + 0.17, 0.18, true);
+          add(gg.wheelR, woodMat, s * 0.26, deckInPivot + 0.15, -0.55, true);
+        }
+        add(gg.bed, woodMat, 0, deckInPivot + 0.09, -0.18);
+        add(gg.axle, ironMat, 0, deckInPivot + 0.17, 0.18, true);
+        add(gg.axle, ironMat, 0, deckInPivot + 0.15, -0.55, true);
       }
-      add(gg.bed, woodMat, 0, deckInPivot + 0.09, -0.18);
-      add(gg.axle, ironMat, 0, deckInPivot + 0.17, 0.18, true);
-      add(gg.axle, ironMat, 0, deckInPivot + 0.15, -0.55, true);
       this.group.add(pivot);
       this.barrels.push({ mesh: pivot, side: port.side, elev, tilt: 0, facing: port.facing });
 
-      // a framed gunport "window" where the barrel exits the hull skin
+      // a framed gunport "window" where the barrel exits the hull skin: a wood surround with a
+      // dark recess proud of the planking, the barrel running out through it. (The hull voxels
+      // stay solid — carving a real hole would breach the watertight compartments the flooding
+      // model relies on — so this painted-on port is what reads as the opening, exactly like the
+      // broadside ports the player already accepts.)
       const wy = cyP - 0.12; // about the bore line
       if (port.facing === "fore" || port.facing === "aft") {
-        // on the bow / stern face, thin axis along x
+        // scan the bow/stern skin AT THE BORE LINE (~3 voxels above the carriage seat) so the
+        // frame sits where the barrel actually pierces the hull, not floating off the curved stem.
         const dir = port.facing === "fore" ? 1 : -1;
-        const wx = (port.x + 0.5) * VOXEL_SIZE + dir * 1.5;
+        const [gnx] = this.build.grid.dims;
+        const boreVox = port.y + 3;
+        let sk = port.x;
+        if (dir > 0) {
+          for (let xx = gnx - 1; xx >= port.x; xx--) if (this.build.grid.isSolid(xx, boreVox, port.z)) { sk = xx; break; }
+        } else {
+          for (let xx = 0; xx <= port.x; xx++) if (this.build.grid.isSolid(xx, boreVox, port.z)) { sk = xx; break; }
+        }
+        const wx = (sk + (dir > 0 ? 1 : 0)) * VOXEL_SIZE; // outer face of the skin voxel
         const wz = (port.z + 0.5) * VOXEL_SIZE;
         const frame = new THREE.Mesh(gunportFrameGeo, woodMat);
         frame.position.set(wx, wy, wz);
         frame.rotation.y = Math.PI / 2;
         const hole = new THREE.Mesh(gunportHoleGeo, gunportMat);
-        hole.position.set(wx + dir * 0.05, wy, wz);
+        hole.position.set(wx + dir * 0.05, wy, wz); // PROUD of the skin so the dark opening shows
         hole.rotation.y = Math.PI / 2;
         this.group.add(frame, hole);
       } else if (port.y < this.build.deckY) {

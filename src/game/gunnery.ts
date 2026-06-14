@@ -17,6 +17,11 @@ import type { Ship } from "./ship";
 export const GUN_SCALE = 1.6;
 
 export const BARREL_INBOARD = 2.6; // voxels the carriage sits inboard of the port cell
+// r18: a CHASER's port cell sits several voxels INSIDE the bow/stern skin (the hull is a thick
+// wedge there), so seating its carriage as far inboard as a broadside gun buried the whole gun
+// — barrel and gunport both vanished inside the timber. Seat it almost AT the port cell so the
+// long barrel clears the skin and pokes out the window like the broadside guns do.
+export const CHASER_INBOARD = 0.5; // voxels inboard of the port cell for a bow/stern chaser
 /** Extra meters inboard of that: round 7 had the carriage so far outboard
  *  "their front wheels are actually off of the ship"; round 8 still saw
  *  wheels over the edge with the bigger guns — pulled well inboard. */
@@ -87,9 +92,9 @@ export function pivotLocal(ship: Ship, portIndex: number, out: THREE.Vector3): T
   const cy = port.y * VOXEL_SIZE + BARREL_PIVOT_UP;
   const cz = (port.z + 0.5) * VOXEL_SIZE;
   if (port.facing === "fore")
-    return out.set((port.x + 0.5 - BARREL_INBOARD) * VOXEL_SIZE - GUN_INBOARD_M, cy, cz);
+    return out.set((port.x + 0.5 - CHASER_INBOARD) * VOXEL_SIZE, cy, cz);
   if (port.facing === "aft")
-    return out.set((port.x + 0.5 + BARREL_INBOARD) * VOXEL_SIZE + GUN_INBOARD_M, cy, cz);
+    return out.set((port.x + 0.5 + CHASER_INBOARD) * VOXEL_SIZE, cy, cz);
   return out.set(
     (port.x + 0.5) * VOXEL_SIZE,
     cy,
