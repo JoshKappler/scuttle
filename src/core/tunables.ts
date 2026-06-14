@@ -116,37 +116,6 @@ export const TUN = {
     crushEfficiency: 40,
   },
 
-  /** Ship-vs-ship destruction — the Teardown-style CAPPED-IMPULSE contact, read by
-   *  game/collisionDestruction.ts each step. ONE emergent rule: contact force vs. the
-   *  voxels' strength. Below `minImpulse` the contact is solid (a weight a hull CAN bear,
-   *  a gentle fender, floating side by side → no damage). Above it the contact voxels give
-   *  way: the zone is pulverized to DUST (never a rigid beam — see debris.ts), the carve
-   *  happens BEFORE the solver so the struck hull is barely shoved and the rammer digs into
-   *  the void, and `drag` bleeds the digger's momentum into the destruction (it slows; the
-   *  target doesn't pick the momentum up). Perching emerges as impossible: your own weight
-   *  on a few deck voxels exceeds the threshold → they crush → you fall through. */
-  ram: {
-    /** master enable — off → plain rigid hull collisions, no destruction. */
-    enabled: true,
-    /** crush threshold (summed contact impulse, kg·m/s): the ONE gate. Set between a
-     *  gentle nudge and a hull's full weight bearing on a small patch — so weight-on-deck
-     *  crushes through (no perching) but a light touch / side-by-side raft does not.
-     *  Raise if hulls chip on mere contact; lower if slow rams just bounce off. */
-    minImpulse: 40000,
-    /** carve joules per unit of impulse ABOVE the threshold — higher pulverizes a bigger
-     *  crater per step. */
-    impulseToJoules: 0.5,
-    /** max voxels pulverized from ONE hull per contact-step. Generous: a hard ram turns the
-     *  touched zone to dust; the gash deepens every step she stays driven in. Not a "small
-     *  cluster" cap — lots of voxels is wanted, just never welded into a floating body. */
-    maxCellsPerHit: 60,
-    /** destruction drag (kg·m/s of momentum bled per voxel destroyed, from whichever hull
-     *  is driving INTO the contact). This is "the energy goes into the destruction, not into
-     *  shoving the target": the rammer slows as it digs in; the struck ship is barely moved.
-     *  Clamped so it can never reverse a hull's motion. 0 = pure rigid shove. */
-    drag: 4000,
-  },
-
   /** Ship-vs-ship DEFORMABLE contact — the rebuild (game/voxelContact.ts). The hull-hull
    *  pair is out of Rapier's rigid solver (physics.ts); each fixed step we read the real
    *  voxel overlap and apply a soft, force-capped penalty spring whose over-cap energy CARVES

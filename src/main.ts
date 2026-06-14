@@ -19,7 +19,6 @@ import { FleetManager, type EnemyUnit } from "./game/fleet";
 import { MAXVIS } from "./core/constants";
 import { BoardingSystem } from "./game/boarding";
 import { Cannons } from "./game/cannons";
-import { CollisionDestruction } from "./game/collisionDestruction";
 import { muzzleWorld } from "./game/gunnery";
 import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
 import { CharacterSpike } from "./game/character";
@@ -256,10 +255,11 @@ async function main() {
   // hull-on-hull: meeting with way on carves voxels out of BOTH ships at the
   // contact point. No toast, no scripted "ramming event" — it's just timber
   // coming off where two hulls grind together (round 9: "voxel based and
-  // dynamic … we don't really need any mechanical logic or an alert"). Task 5:
-  // driven by Rapier's real contact manifold (world.contactPair) and the
-  // energy-budget carve — embedding/tearing emerge from the material model.
-  const collisionDestruction = new CollisionDestruction(physics, effects);
+  // dynamic … we don't really need any mechanical logic or an alert"). The
+  // deformable ship-vs-ship crunch lives in world.contact (game/voxelContact.ts),
+  // driven each fixed step inside world.step — give it the effects sink so carved
+  // voxels throw pulverization dust at the contact.
+  world.contact.effects = effects;
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
   // Steering only happens at the wheel (E to take/leave it). V cycles the view:
   // character 3rd-person (default) → character 1st-person → bird's-eye ship orbit.
@@ -425,7 +425,7 @@ async function main() {
     }
 
     cannons.update(dt, t, waves, fleet.enemies);
-    collisionDestruction.update([sloop, ...fleet.enemies]);
+    // ship-vs-ship destruction now runs inside world.step (world.contact.stepAll), not here.
     debris.update(dt, t, waves);
     character?.update(dt, controls.cameraYaw());
 
@@ -570,7 +570,7 @@ async function main() {
     controls,
     camera,
     sailing,
-    collisionDestruction,
+    contact: world.contact,
     debris,
     oceanField,
     dynWaves,
@@ -1218,17 +1218,19 @@ async function main() {
       ],
     },
     {
-      title: "🔧 Destruction tests",
+      title: "🔧 Crunch (ship-vs-ship)",
       controls: [
         { type: "button", label: "⚔ Ram Test (T-bone)", onClick: ramTest },
-        { type: "button", label: "⚑ ram debug log", onClick: () => { window.__ramDebug = !window.__ramDebug; console.log("[ram] debug", window.__ramDebug ? "ON" : "OFF"); } },
-        { type: "button", label: "⊘ ram destruction on/off", onClick: () => { TUN.ram.enabled = !TUN.ram.enabled; console.log("[ram] destruction", TUN.ram.enabled ? "ON" : "OFF"); } },
-        { type: "slider", label: "ram crush thresh", obj: TUN.ram, key: "minImpulse", min: 0, max: 300000, step: 5000 },
-        { type: "slider", label: "ram dmg ×", obj: TUN.ram, key: "impulseToJoules", min: 0, max: 3, step: 0.05 },
-        { type: "slider", label: "ram max vox/step", obj: TUN.ram, key: "maxCellsPerHit", min: 1, max: 120, step: 1 },
-        { type: "slider", label: "ram drag", obj: TUN.ram, key: "drag", min: 0, max: 20000, step: 250 },
+        { type: "toggle", label: "deformable crush", obj: TUN.crush, key: "enabled" },
+        // penalty spring + force cap: fMax is THE "barely shove the target" knob.
+        { type: "slider", label: "stiffness k (×1e6)", obj: TUN.crush as unknown as Record<string, number>, key: "k", min: 0.5e6, max: 20e6, step: 0.5e6 },
+        { type: "slider", label: "force cap fMax (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "fMax", min: 0.5e5, max: 30e5, step: 0.5e5 },
+        { type: "slider", label: "carve yield", obj: TUN.crush, key: "yield", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "carve→decel", obj: TUN.crush, key: "carveDamp", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "min depth m", obj: TUN.crush, key: "minDepth", min: 0, max: 0.5, step: 0.01 },
+        // cannons share the crush core; this scales their ½mv² into the same joule budget.
+        { type: "slider", label: "cannon crush ×", obj: TUN.gun, key: "crushEfficiency", min: 1, max: 120, step: 1 },
         { type: "slider", label: "ball bore radius", obj: TUN.gun, key: "boreRadiusVox", min: 0, max: 3, step: 1 },
-        { type: "slider", label: "ball max vox", obj: TUN.gun, key: "maxCellsPerHit", min: 1, max: 400, step: 5 },
       ],
     },
   ]);
@@ -1245,10 +1247,13 @@ async function main() {
     const heelDeg = (Math.asin(Math.min(Math.max(_roR.y, -1), 1)) * 180) / Math.PI;
     const v = sloop.body.linvel();
     const kn = Math.hypot(v.x, v.z) * 1.94384;
+    const c = world.contact.debug;
     devPanel.setReadout(
       `pitch ${pitchDeg >= 0 ? "+" : ""}${pitchDeg.toFixed(1)}°  heel ${heelDeg >= 0 ? "+" : ""}${heelDeg.toFixed(1)}°\n` +
         `submerged ${(sloop.submergedFrac * 100).toFixed(0)}%  waterlog ${(sloop.waterlog * 100).toFixed(0)}%\n` +
-        `speed ${kn.toFixed(1)} kn`,
+        `speed ${kn.toFixed(1)} kn\n` +
+        `crunch: ovlp ${c.overlapCount}  depth ${c.depth.toFixed(2)}m  F ${(c.force / 1000).toFixed(0)}kN\n` +
+        `  vClose ${c.vClose.toFixed(1)}  carved A${c.removedA}/B${c.removedB}  E ${(c.energy / 1000).toFixed(0)}kJ`,
     );
   };
 
