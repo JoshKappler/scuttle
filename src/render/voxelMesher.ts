@@ -131,6 +131,41 @@ export function meshChunk(grid: VoxelGrid, cx: number, cy: number, cz: number): 
   };
 }
 
+/**
+ * Mesh an ENTIRE grid into one merged geometry by concatenating every chunk's
+ * greedy mesh and re-basing its indices. Pure (no THREE) — reused by the static
+ * island renderer and its trimesh collider. Element-wise concat avoids any
+ * spread arg-count limit on densely-packed chunks.
+ */
+export function meshGrid(grid: VoxelGrid): ChunkMesh {
+  const [nx, ny, nz] = grid.dims;
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  for (let cx = 0; cx <= Math.floor((nx - 1) / CHUNK_SIZE); cx++) {
+    for (let cy = 0; cy <= Math.floor((ny - 1) / CHUNK_SIZE); cy++) {
+      for (let cz = 0; cz <= Math.floor((nz - 1) / CHUNK_SIZE); cz++) {
+        const m = meshChunk(grid, cx, cy, cz);
+        if (!m) continue;
+        const base = positions.length / 3;
+        for (let i = 0; i < m.positions.length; i++) {
+          positions.push(m.positions[i]);
+          normals.push(m.normals[i]);
+          colors.push(m.colors[i]);
+        }
+        for (let i = 0; i < m.indices.length; i++) indices.push(m.indices[i] + base);
+      }
+    }
+  }
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    colors: new Float32Array(colors),
+    indices: new Uint32Array(indices),
+  };
+}
+
 function inChunkRange(c: number): boolean {
   return c >= 0 && c < CHUNK_SIZE;
 }

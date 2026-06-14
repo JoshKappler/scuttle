@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { meshChunk } from "../src/render/voxelMesher";
+import { meshChunk, meshGrid } from "../src/render/voxelMesher";
 import { createGrid } from "../src/sim/voxelGrid";
-import { OAK, PINE } from "../src/sim/materials";
+import { OAK, PINE, ROCK } from "../src/sim/materials";
+import { VOXEL_SIZE } from "../src/core/constants";
 
 describe("greedy voxel mesher", () => {
   it("a solid 2×2×2 block merges to exactly 6 quads", () => {
@@ -52,5 +53,34 @@ describe("greedy voxel mesher", () => {
     const m0 = meshChunk(g, 0, 0, 0)!;
     // 5 faces only (the +x face is hidden by the neighbor chunk's cell)
     expect(m0.positions.length / 3).toBe(5 * 4);
+  });
+});
+
+describe("meshGrid", () => {
+  it("meshes a single voxel into a closed box (24 verts, 12 tris)", () => {
+    const g = createGrid(4, 4, 4);
+    g.set(1, 1, 1, ROCK);
+    const m = meshGrid(g);
+    expect(m.positions.length / 3).toBe(24); // 6 faces × 4 verts
+    expect(m.indices.length).toBe(36); // 6 faces × 2 tris × 3
+    for (let i = 0; i < m.positions.length; i++) {
+      expect(m.positions[i]).toBeGreaterThanOrEqual(0);
+      expect(m.positions[i]).toBeLessThanOrEqual(4 * VOXEL_SIZE);
+    }
+  });
+  it("re-bases indices across chunks so triangles stay in range", () => {
+    const g = createGrid(40, 8, 8); // spans 3 chunks along x
+    g.set(2, 2, 2, ROCK);
+    g.set(20, 2, 2, ROCK);
+    g.set(36, 2, 2, ROCK);
+    const m = meshGrid(g);
+    const verts = m.positions.length / 3;
+    expect(verts).toBe(72); // 3 separate boxes × 24
+    for (let i = 0; i < m.indices.length; i++) expect(m.indices[i]).toBeLessThan(verts);
+  });
+  it("returns empty arrays for an empty grid", () => {
+    const m = meshGrid(createGrid(2, 2, 2));
+    expect(m.positions.length).toBe(0);
+    expect(m.indices.length).toBe(0);
   });
 });
