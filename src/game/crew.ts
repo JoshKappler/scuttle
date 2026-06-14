@@ -5,6 +5,7 @@ import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
 import { createPirateRig, type ModelName, type PirateRig, type ClipKey } from "../render/pirateModel";
 import { createKayKitRig, kaykitReady } from "../render/kaykitModel";
+import { createBugrimovRig, bugrimovReady } from "../render/bugrimovModel";
 import { characterPack } from "./characterPack";
 import type { Physics } from "./physics";
 import type { Ship } from "./ship";
@@ -100,10 +101,13 @@ export class Pirate {
     this.mesh = new THREE.Group();
     // KayKit (modular limbs + 76 melee clips) when selected and loaded; else the
     // legacy Quaternius pirate. Both satisfy the PirateRig contract.
+    const pack = characterPack();
     this.rig =
-      characterPack() === "kaykit" && kaykitReady()
-        ? createKayKitRig(faction === "player" ? "Rogue_Hooded" : "Rogue")
-        : createPirateRig(model ?? (faction === "player" ? "captain" : "henry"));
+      pack === "bugrimov" && bugrimovReady()
+        ? createBugrimovRig("captain")
+        : pack === "kaykit" && kaykitReady()
+          ? createKayKitRig(faction === "player" ? "Rogue_Hooded" : "Rogue")
+          : createPirateRig(model ?? (faction === "player" ? "captain" : "henry"));
     if (this.rig) {
       this.mesh.add(this.rig.root);
       this.rig.play("idle");
@@ -250,7 +254,7 @@ export class Pirate {
       this.rig.root.visible = true;
       // KayKit hides its non-arm limb MESHES (clean, modular); the single-mesh
       // Quaternius rig falls back to crew.ts's per-bone scale cull.
-      if (this.rig.kind === "kaykit") this.rig.setFirstPerson?.(fp);
+      if (this.rig.kind !== "quaternius") this.rig.setFirstPerson?.(fp);
       else this.applyFpCull();
     }
     for (const part of this.headParts) part.visible = !fp; // procedural fallback body only
@@ -286,7 +290,7 @@ export class Pirate {
   private applyFpCull(): void {
     // KayKit handles FP by mesh visibility (setFirstPerson) — its bones aren't
     // named like the Quaternius rig, so the per-bone cull is a no-op for it.
-    if (!this.rig || this.rig.kind === "kaykit") return;
+    if (!this.rig || this.rig.kind !== "quaternius") return;
     this.findFpBones();
     const k = this.fpHide ? 0.0001 : 1;
     for (const b of this.fpCullBones) b.scale.setScalar(k);
@@ -338,7 +342,7 @@ export class Pirate {
     // KayKit is fully clip-driven: the real right arm carries the cutlass in FP
     // and plays the swing itself, so none of the Quaternius procedural posing
     // (helm grip / FP carry pose) applies — and its bones aren't named for it.
-    if (this.rig.kind === "kaykit") return;
+    if (this.rig.kind !== "quaternius") return;
     // FIRST PERSON takes priority: always carry the real right arm + cutlass in frame (even
     // while steering — the old procedural viewmodel did the same), applied AFTER the mixer.
     // Skipped mid-swing so the Sword clip plays through the view unaltered.

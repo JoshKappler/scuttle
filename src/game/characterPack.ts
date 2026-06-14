@@ -9,7 +9,7 @@
  *
  * Resolved once per page load and cached so crew.ts and main.ts always agree.
  */
-export type CharPack = "quaternius" | "kaykit";
+export type CharPack = "quaternius" | "kaykit" | "bugrimov";
 
 let cached: CharPack | null = null;
 
@@ -19,6 +19,7 @@ export function characterPack(): CharPack {
   try {
     const q = new URLSearchParams(location.search).get("char");
     if (q === "kaykit" || q === "kk") pack = "kaykit";
+    else if (q === "bugrimov" || q === "bug" || q === "pirate") pack = "bugrimov";
     else if (q === "quaternius" || q === "q" || q === "old") pack = "quaternius";
   } catch {
     // non-browser (vitest): keep the default

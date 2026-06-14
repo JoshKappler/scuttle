@@ -99,14 +99,18 @@ async function main() {
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
-  // rigged CC0 character pack — loaded up front so every Pirate can be built
-  // synchronously. Default KayKit (modular limbs + 76 melee clips); ?char=q
-  // selects the legacy Quaternius pirate. If KayKit fails to load, fall back to
-  // Quaternius so the demo still has a real (if single-mesh) body.
+  // rigged character pack — loaded up front so every Pirate can be built
+  // synchronously. Default is the Quaternius captain; ?char=bug loads the
+  // Bugrimov semi-realistic pirate, ?char=kk the KayKit rogue. Whichever is
+  // chosen falls back to Quaternius if it fails to load.
   let charOk = false;
-  if (characterPack() === "kaykit") {
+  const charPack = characterPack();
+  if (charPack === "kaykit") {
     const { loadKayKitLibrary } = await import("./render/kaykitModel");
     charOk = await loadKayKitLibrary();
+  } else if (charPack === "bugrimov") {
+    const { loadBugrimovLibrary } = await import("./render/bugrimovModel");
+    charOk = await loadBugrimovLibrary();
   }
   if (!charOk) {
     const { loadPirateLibrary } = await import("./render/pirateModel");
@@ -1087,6 +1091,14 @@ async function main() {
       ],
     },
     {
+      title: "Sailing",
+      controls: [
+        // player-only thrust multiplier (the AI captain owns a separate controller),
+        // so you can crawl or zip about while testing without touching the enemy.
+        { type: "slider", label: "sail power", obj: sailing as unknown as Record<string, number | boolean>, key: "boost", min: 0.25, max: 4, step: 0.25 },
+      ],
+    },
+    {
       title: "Waves / Chop",
       controls: [
         { type: "slider", label: "chop", obj: TUN.chop, key: "strength", min: 0, max: 2, step: 0.05 },
@@ -1119,6 +1131,8 @@ async function main() {
         { type: "slider", label: "muzzle m/s", obj: TUN.gun, key: "muzzleSpeed", min: 40, max: 500, step: 5 },
         { type: "slider", label: "air drag", obj: TUN.gun, key: "drag", min: 0.0005, max: 0.008, step: 0.0005 },
         { type: "slider", label: "shove kg", obj: TUN.gun, key: "mass", min: 1, max: 12, step: 0.5 },
+        // "semi-auto": removes the reload wait on YOUR battery (the AI keeps its own).
+        { type: "toggle", label: "no reload", obj: cannons as unknown as Record<string, number | boolean>, key: "noReload" },
       ],
     },
     {

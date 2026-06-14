@@ -15,6 +15,14 @@
 - License: CC0 1.0 — see `characters/kaykit/LICENSE.txt`
 - Downloaded from the official KayKit-Game-Assets GitHub mirror
 
+## Characters — Bugrimov "Pirate Character Captain" (semi-realistic, in evaluation)
+- `characters/bugrimov/web/pirate.glb` (+ `web/*.png`) — a free semi-realistic
+  PBR pirate. The raw ~2GB FBX + uncompressed-TGA drop is gitignored; committed
+  here is the fbx2gltf mesh GLB + Pillow-downscaled 1K PNG textures.
+- Author: Maksim Bugrimov — https://www.renderhub.com/maksim-bugrimov/pirate
+  (also on Fab and ArtStation @maxbugor)
+- License: RenderHub Extended Use License — commercial use permitted.
+
 ## Textures — ambientCG
 - `textures/deck.jpg` = Planks039 1K Color — https://ambientcg.com/view?id=Planks039
 - `textures/hull.jpg` = Planks023A 1K Color — https://ambientcg.com/view?id=Planks023A
