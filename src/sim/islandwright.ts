@@ -1,6 +1,7 @@
 import { createGrid, type VoxelGrid } from "./voxelGrid";
+import { Rng } from "../core/rng";
 import { fbm2 } from "./noise";
-import { DARKROCK, DIRT, EMPTY, GRASS, ROCK, SAND } from "./materials";
+import { DARKROCK, DIRT, EMPTY, FOLIAGE, GRASS, PALMWOOD, ROCK, SAND } from "./materials";
 
 /**
  * Procedural voxel islandwright — the terrain analogue of sim/shipwright.ts.
@@ -89,8 +90,36 @@ export function buildIsland(o: IslandOpts): IslandModel {
     }
   }
 
+  scatterPalms(grid, o, hgt, waterlineY);
+
   return {
     grid,
     meta: { waterlineY, radiusVox: o.radiusVox, peakVox: o.peakVox, dock: null },
   };
+}
+
+/** Stamp a deterministic handful of palms (PALMWOOD trunk + FOLIAGE canopy) onto
+ *  grass columns, so the whole island stays a single voxel mesh. */
+function scatterPalms(grid: VoxelGrid, o: IslandOpts, hgt: number[], _waterlineY: number): void {
+  const [nx, ny, nz] = grid.dims;
+  const rng = new Rng(`palms-${o.seed}`);
+  const count = Math.round(o.radiusVox / 6);
+  for (let i = 0; i < count; i++) {
+    const x = rng.int(2, nx - 2);
+    const z = rng.int(2, nz - 2);
+    if (hgt[x + z * nx] <= 0) continue;
+    const topY = SEABED_Y + hgt[x + z * nx];
+    if (grid.get(x, topY, z) !== GRASS) continue; // palms only on grass
+    const trunk = rng.int(5, 9);
+    for (let t = 1; t <= trunk && topY + t < ny; t++) grid.set(x, topY + t, z, PALMWOOD);
+    const cy = topY + trunk;
+    for (let dx = -2; dx <= 2; dx++) // a +-shaped frond canopy
+      for (let dz = -2; dz <= 2; dz++) {
+        if (Math.abs(dx) + Math.abs(dz) > 2) continue;
+        const px = x + dx;
+        const pz = z + dz;
+        if (px > 0 && px < nx && pz > 0 && pz < nz && cy < ny && grid.get(px, cy, pz) === EMPTY)
+          grid.set(px, cy, pz, FOLIAGE);
+      }
+  }
 }

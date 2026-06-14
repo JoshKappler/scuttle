@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildIsland } from "../src/sim/islandwright";
-import { EMPTY, SAND, GRASS, ROCK, DARKROCK } from "../src/sim/materials";
+import { EMPTY, SAND, GRASS, ROCK, DARKROCK, PALMWOOD, FOLIAGE } from "../src/sim/materials";
 
 const opts = { seed: 42, radiusVox: 40, peakVox: 34, cliffiness: 0.6 };
 
@@ -33,5 +33,12 @@ describe("buildIsland", () => {
     expect(counts[GRASS] ?? 0).toBeGreaterThan(0);
     expect((counts[ROCK] ?? 0) + (counts[DARKROCK] ?? 0)).toBeGreaterThan(0);
     expect(counts[EMPTY]).toBeUndefined();
+  });
+  it("scatters palms (trunk + canopy) on the highland", () => {
+    const { grid } = buildIsland({ seed: 3, radiusVox: 40, peakVox: 34, cliffiness: 0.4 });
+    const counts: Record<number, number> = {};
+    grid.forEachSolid((_x, _y, _z, m) => (counts[m] = (counts[m] ?? 0) + 1));
+    expect(counts[PALMWOOD] ?? 0).toBeGreaterThan(0);
+    expect(counts[FOLIAGE] ?? 0).toBeGreaterThan(0);
   });
 });
