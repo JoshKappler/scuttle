@@ -21,6 +21,7 @@ import { Ramming } from "./game/ramming";
 import { BALL_DRAG, MUZZLE_SPEED, muzzleWorld } from "./game/gunnery";
 import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
 import { CharacterSpike } from "./game/character";
+import { characterPack } from "./game/characterPack";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
 import { createSpray } from "./render/spray";
@@ -98,10 +99,19 @@ async function main() {
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
-  // rigged CC0 pirates (Quaternius) — loaded up front so every Pirate can be
-  // built synchronously; falls back to procedural bodies if it fails
-  const { loadPirateLibrary } = await import("./render/pirateModel");
-  await loadPirateLibrary();
+  // rigged CC0 character pack — loaded up front so every Pirate can be built
+  // synchronously. Default KayKit (modular limbs + 76 melee clips); ?char=q
+  // selects the legacy Quaternius pirate. If KayKit fails to load, fall back to
+  // Quaternius so the demo still has a real (if single-mesh) body.
+  let charOk = false;
+  if (characterPack() === "kaykit") {
+    const { loadKayKitLibrary } = await import("./render/kaykitModel");
+    charOk = await loadKayKitLibrary();
+  }
+  if (!charOk) {
+    const { loadPirateLibrary } = await import("./render/pirateModel");
+    await loadPirateLibrary();
+  }
   const world = new GameWorld(physics, waves, scene);
 
   // the player's brig splashes down and settles (round 6: "a realistically
@@ -136,7 +146,7 @@ async function main() {
     return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ };
   };
   const sloopProfile = makeProfileTex(sloop.build.grid);
-  ocean.setHullProfile(sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
+  ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
 
   // enemy captain: the old, smaller sloop — kept as the easier opponent
   // (round 6) — spawns upwind, ALREADY POINTED AT YOU, and runs down on you.
@@ -157,6 +167,10 @@ async function main() {
   }
   world.addShip(enemy);
   const enemyProfile = makeProfileTex(enemy.build.grid);
+  // P4: give the enemy hull the SAME voxel-accurate, attitude-aware cut as the
+  // player — previously it fell back to the old flat waterline ellipse (the void
+  // crescents / sea-through-hull on the "old ship").
+  ocean.setHullProfile(1, enemyProfile.tex, enemyProfile.sizeX, enemyProfile.sizeZ);
 
   // P5: the dynamic-wave INTERACTION field (Crest/Atlas FDTD ping-pong, GPU
   // fragment passes). A 256 m height/velocity sheet re-centred on the camera each
@@ -869,15 +883,13 @@ async function main() {
       tr.y + span.keel,
       tr.y + span.deck,
     );
-    // P4: feed the PLAYER hull's live world→local pose so the voxel-accurate cut
-    // tracks heave/pitch/roll (the shader skips slot 0's analytic ellipse).
-    if (slot === 0) {
-      _poseQuat.set(rot.x, rot.y, rot.z, rot.w);
-      _poseM4.makeRotationFromQuaternion(_poseQuat);
-      _poseInvRot.setFromMatrix4(_poseM4).transpose(); // R⁻¹ = Rᵀ for a rotation
-      _poseTrans.set(tr.x, tr.y, tr.z);
-      ocean.updateHullPose(_poseInvRot, _poseTrans);
-    }
+    // P4: feed BOTH hulls' live world→local pose so each ship's voxel-accurate cut
+    // tracks its own heave/pitch/roll (the shader skips that slot's analytic ellipse).
+    _poseQuat.set(rot.x, rot.y, rot.z, rot.w);
+    _poseM4.makeRotationFromQuaternion(_poseQuat);
+    _poseInvRot.setFromMatrix4(_poseM4).transpose(); // R⁻¹ = Rᵀ for a rotation
+    _poseTrans.set(tr.x, tr.y, tr.z);
+    ocean.updateHullPose(slot, _poseInvRot, _poseTrans);
   };
 
   // P5: assemble both ships' pose + plan for the dynamic-wave INJECTION pass. Each
