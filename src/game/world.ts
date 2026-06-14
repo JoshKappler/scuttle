@@ -76,7 +76,8 @@ export class GameWorld {
       this.contact.stepAll(this.ships, FIXED_DT);
       for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute
       // hooks: filterContactPair pulls ship-vs-ship pairs out of the rigid solver (physics.ts).
-      this.physics.world.step(undefined, this.physics.hooks);
+      // The EventQueue is REQUIRED for the hooks to fire in this Rapier build (see Physics.events).
+      this.physics.world.step(this.physics.events, this.physics.hooks);
     }
     for (const ship of this.ships) {
       ship.visual.refresh();
