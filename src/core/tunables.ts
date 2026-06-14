@@ -126,6 +126,14 @@ export const TUN = {
      *  a sustained ram, never a whole row in one frame. */
     maxCellsPerHit: 10,
   },
+
+  /** Fleet — how many hostile ships the FleetManager (game/fleet.ts) keeps sailing
+   *  against the player. Integer 0..MAXVIS. Sunk enemies are auto-replaced to hold
+   *  this count (true even at 1). Default 1 = the shipped duel. The dev panel drives
+   *  this live; like every TUN knob it is NOT read by the deterministic vitest oracle. */
+  fleet: {
+    enemyCount: 1,
+  },
 };
 
 export type Tunables = typeof TUN;
