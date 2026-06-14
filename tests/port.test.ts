@@ -27,7 +27,7 @@ beforeEach(() => {
 
 // --- lightweight fakes (duck-typed; PortController only imports these as types) ---
 function fakeShip(over: Partial<Record<string, unknown>> = {}) {
-  return {
+  const ship = {
     columns: [{ cellY: [0, 1, 2] }, { cellY: [0, 1] }], // value = 5 displacing cells
     sailIntegrity: [1, 1],
     mastAlive: [true, true],
@@ -36,39 +36,41 @@ function fakeShip(over: Partial<Record<string, unknown>> = {}) {
     planks: 8,
     _breaches: 0,
     hasBreaches() {
-      return (this._breaches as number) > 0;
+      return (ship._breaches as number) > 0;
     },
     plugBreach() {
-      if (this.planks > 0 && (this._breaches as number) > 0) {
-        this.planks--;
-        (this._breaches as number)--;
+      if (ship.planks > 0 && (ship._breaches as number) > 0) {
+        ship.planks--;
+        (ship._breaches as number)--;
         return true;
       }
       return false;
     },
     ...over,
-  } as unknown as Ship & { _breaches: number };
+  };
+  return ship as unknown as Ship & { _breaches: number };
 }
 function fakeBoarding() {
   return { gold: 0, message: "" } as unknown as BoardingSystem;
 }
 function fakeUi() {
-  return {
+  const ui = {
     isOpen: false,
     last: null as PortView | null,
     refreshes: 0,
     open(v: PortView) {
-      this.isOpen = true;
-      this.last = v;
+      ui.isOpen = true;
+      ui.last = v;
     },
     refresh(v: PortView) {
-      this.last = v;
-      this.refreshes++;
+      ui.last = v;
+      ui.refreshes++;
     },
     close() {
-      this.isOpen = false;
+      ui.isOpen = false;
     },
-  } as unknown as PortScreen & { last: PortView | null; refreshes: number };
+  };
+  return ui as unknown as PortScreen & { last: PortView | null; refreshes: number };
 }
 
 function make(econInit?: ConstructorParameters<typeof Economy>[0]) {
