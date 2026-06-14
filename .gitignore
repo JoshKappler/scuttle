@@ -5,3 +5,6 @@ dist/
 
 # Local playtest console logs (preserved on disk, kept out of the showcase repo)
 docs/playtest-logs/
+
+# Playwright MCP scratch output (screenshots/snapshots/console logs from in-browser verification)
+.playwright-mcp/
