@@ -311,6 +311,9 @@ export class BoardingSystem {
   private nearestShip(p: Pirate): Ship {
     const t = p.body.translation();
     const a = this.playerShip.body.translation();
+    // no live enemy (fleet count 0, or our target was just culled): enemyShip may
+    // point at a freed Rapier body — never deref it, just stay on the player's deck.
+    if (!this.hasTarget) return this.playerShip;
     const b = this.enemyShip.body.translation();
     const af = this.playerShip.build.footprint;
     const bf = this.enemyShip.build.footprint;
