@@ -4,9 +4,9 @@
  * all of them; the economy stays engine-free and the UI stays dumb.
  *
  * Compatibility contract:
- *  - The wallet of record stays {@link BoardingSystem.gold} (the existing HUD reads
- *    it). After every economy mutation we mirror `economy.doubloons → boarding.gold`,
- *    so no HUD/index.html change is needed and sibling branches keep working.
+ *  - The wallet of record is a standalone {@link Wallet} (the HUD reads it). After
+ *    every economy mutation we mirror `economy.doubloons → wallet`, and surface
+ *    feedback through the {@link MessageBus} toast channel.
  *  - Docking depends only on the tiny {@link DockProvider} interface, which the
  *    islands branch's `IslandField.nearestDock(x,z)` already satisfies. On this
  *    branch we fall back to {@link DevDockProvider} so the loop is testable solo.
@@ -16,7 +16,8 @@
 import { Economy, GOODS, UPGRADES, DEFAULT_CARGO_CAPACITY, repairQuote, rollLoot } from "../sim/economy";
 import { Rng } from "../core/rng";
 import type { Ship } from "./ship";
-import type { BoardingSystem } from "./boarding";
+import type { Wallet } from "./wallet";
+import type { MessageBus } from "./messageBus";
 import type { PortScreen, PortView } from "../render/portScreen";
 
 /** The world-space dock anchor lookup. `IslandField` satisfies this structurally. */
@@ -35,7 +36,8 @@ export class DevDockProvider implements DockProvider {
 export interface PortDeps {
   economy: Economy;
   ship: Ship; // the player ship — upgrade/repair effects land here
-  boarding: BoardingSystem; // gold mirror + toast messages
+  wallet: Wallet; // gold of record (mirrored from economy.doubloons)
+  msg: MessageBus; // toast channel for port feedback
   ui: PortScreen;
   getPlayerPos: () => { x: number; z: number };
   dock?: DockProvider; // omit on this branch → DevDockProvider
@@ -55,7 +57,8 @@ export class PortController {
 
   private economy: Economy;
   private ship: Ship;
-  private boarding: BoardingSystem;
+  private wallet: Wallet;
+  private msg: MessageBus;
   private ui: PortScreen;
   private getPlayerPos: () => { x: number; z: number };
   private dock: DockProvider;
@@ -67,7 +70,8 @@ export class PortController {
   constructor(d: PortDeps) {
     this.economy = d.economy;
     this.ship = d.ship;
-    this.boarding = d.boarding;
+    this.wallet = d.wallet;
+    this.msg = d.msg;
     this.ui = d.ui;
     this.getPlayerPos = d.getPlayerPos;
     this.dock = d.dock ?? new DevDockProvider();
@@ -89,7 +93,7 @@ export class PortController {
     const near = !!d && Math.hypot(d.x - p.x, d.z - p.z) <= DOCK_RANGE;
     this.canDock = near;
     if (near && !this.hintShown) {
-      this.boarding.message = "press E — make port";
+      this.msg.post("press E — make port");
       this.hintShown = true;
     } else if (!near) {
       this.hintShown = false;
@@ -117,7 +121,7 @@ export class PortController {
     this.mirrorGold();
     const lost = Object.values(res.lost).reduce((a, b) => a + b, 0);
     const tail = lost > 0 ? ` (hold full — ${lost} lost to the deep)` : "";
-    this.boarding.message = `PLUNDER — ⛀ ${loot.doubloons} + cargo${tail}. Sail on.`;
+    this.msg.post(`PLUNDER — ⛀ ${loot.doubloons} + cargo${tail}. Sail on.`);
   }
 
   // ---- port actions (called by the UI) ----
@@ -201,7 +205,7 @@ export class PortController {
 
   // ---- ship glue ----
   private mirrorGold(): void {
-    this.boarding.gold = this.economy.state.doubloons;
+    this.wallet.set(this.economy.state.doubloons);
   }
 
   private maxPlanks(): number {
