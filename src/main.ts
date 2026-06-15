@@ -9,6 +9,7 @@ import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
 import { createSky } from "./render/sky";
 import { CloudDome } from "./render/clouds";
+import { islandGritUniforms } from "./render/islandVisual";
 import { buildBrig, buildSloop } from "./sim/shipwright";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
@@ -1533,6 +1534,7 @@ async function main() {
     );
     ocean.setChop(TUN.chop.strength, TUN.chop.choppiness);
     ocean.setReflStrength(TUN.gfx.reflection.strength);
+    islandGritUniforms.uGritStrength.value = TUN.gfx.islandGrit.strength;
     ocean.update(world.simTime, camera.position);
 
     // drifting clouds follow the camera; re-bake the sky+cloud reflection cube at
