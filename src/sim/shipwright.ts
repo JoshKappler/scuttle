@@ -678,6 +678,13 @@ export function buildManOfWar(): ShipBuild {
   // spine, all packed into the lower hold well below the lower gun deck (y21).
   // Lands draft ≈ 0.455 of the envelope with COM ≈ 2.25 (very low), so GM ≈ 4.1
   // and she stays restoring out past 15° — a stiff first-rate, not a Vasa.
+  //
+  // Every band sits ~0.016·L AFT of the symmetric layout (e.g. tier-0 0.05→0.90
+  // became 0.034→0.884): in-browser she rode a steady bow-down trim because the
+  // iron's centroid was forward of the fuller-aft hull's center of buoyancy —
+  // the exact lever the brig cured (see buildBrig's ballast comment). Walking
+  // the rows aft drops the COM onto the COB, so the fore-aft moment vanishes and
+  // she floats on an even keel (tests/manOfWarFloat.test.ts trim test, |trim| < 0.2).
   const ballastZ = (k: number) => {
     const zs: number[] = [];
     for (let z = Math.ceil(cz - k); z <= Math.floor(cz + k); z++) zs.push(z);
@@ -685,15 +692,15 @@ export function buildManOfWar(): ShipBuild {
   };
   // each row: [tier above keel, tMin, tMax, zHalf]
   const ballastRows: [number, number, number, number][] = [
-    [0, 0.05, 0.90, 8],
-    [1, 0.06, 0.89, 8],
-    [2, 0.08, 0.87, 7],
-    [3, 0.10, 0.85, 7],
-    [4, 0.13, 0.82, 6],
-    [5, 0.16, 0.79, 5],
-    [6, 0.20, 0.75, 4],
-    [7, 0.25, 0.70, 3],
-    [8, 0.31, 0.64, 2],
+    [0, 0.034, 0.884, 8],
+    [1, 0.044, 0.874, 8],
+    [2, 0.064, 0.854, 7],
+    [3, 0.084, 0.834, 7],
+    [4, 0.114, 0.804, 6],
+    [5, 0.144, 0.774, 5],
+    [6, 0.184, 0.734, 4],
+    [7, 0.234, 0.684, 3],
+    [8, 0.294, 0.624, 2],
   ];
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);

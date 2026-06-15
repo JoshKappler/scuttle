@@ -57,4 +57,21 @@ describe("man-o'-war flotation (emergent, tuned ballast)", () => {
     const y = equilibriumY(heel);
     expect(hydrostatics(heel, y).torqueX * heel).toBeLessThan(0);
   });
+
+  it("floats on an even keel: the buoyancy centroid sits under the COM (no bow/stern trim)", () => {
+    // At the upright equilibrium draft, each probe's buoyant force acts at its
+    // own fore-aft (local x) position. A level ship has the buoyancy centroid
+    // directly under the COM, so the net fore-aft moment about the COM is ~0.
+    // moment/(mass*G) is exactly the fore-aft offset (m) between the buoyancy
+    // centroid and the COM — this is the lever the brig's ballast comments tune away.
+    const comY = equilibriumY(0);
+    let moment = 0;
+    for (const p of probes) {
+      const wy = comY + (p.local[1] - com[1]); // upright (no heel)
+      const f = probeForce(p, wy, 0, 0);
+      moment += (p.local[0] - com[0]) * f;
+    }
+    const trimOffsetM = moment / (mass * G);
+    expect(Math.abs(trimOffsetM)).toBeLessThan(0.2);
+  });
 });
