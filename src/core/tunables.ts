@@ -221,21 +221,38 @@ export const TUN = {
   gfx: {
     /** master switch for the whole post-processing composer. Off → main.ts uses
      *  the legacy direct renderer.render path (no bloom/god rays/grade) — a perf
-     *  floor + safety valve if the composer ever misbehaves. */
-    post: { enabled: true },
+     *  floor + safety valve if the composer ever misbehaves.
+     *  PERF (these are the big levers — the post chain is fill-bound):
+     *  maxPixelRatio caps the resolution the WHOLE chain renders at (1 = native
+     *  pixels even on a 2× HiDPI display → up to 4× fewer pixels through bloom +
+     *  god-rays; the final pass upscales to the canvas). scale multiplies that
+     *  further (0.75 = render at 3/4 res for more speed; 1 = no extra scaling). */
+    post: { enabled: true, maxPixelRatio: 1, scale: 1.0 },
+    /** global ACES exposure (renderer.toneMappingExposure). <1 calms an over-bright
+     *  sky/sun uniformly without touching the individual effects. Nested in its own
+     *  flat object so the dev-panel slider's `obj` stays a Bag (the gfx root has
+     *  sub-objects, which a Bag = Record<string, number|boolean> can't hold). */
+    tone: { exposure: 0.95 },
     /** UnrealBloomPass — glows the sun disc, the sun-glint path and bright foam.
-     *  Mild by design ("grounded realism with punch", not a bloom-fest). */
-    bloom: { enabled: true, strength: 0.14, radius: 0.5, threshold: 1.5, clamp: 12 },
+     *  Mild by design ("grounded realism with punch", not a bloom-fest). clamp caps
+     *  the HDR fed to bloom so the sun's astronomical luminance can't white-wash. */
+    bloom: { enabled: true, strength: 0.09, radius: 0.5, threshold: 1.7, clamp: 7 },
     /** screen-space god rays (render/post.ts GodRayPass) anchored at the sun's
-     *  projected position; occlusion is free (dark geometry blocks the shafts). */
-    godrays: { enabled: true, strength: 0.8, decay: 0.96, density: 0.9, weight: 0.5, threshold: 4, samples: 60 },
+     *  projected position; occlusion is free (dark geometry blocks the shafts).
+     *  threshold gates which pixels seed shafts (high = only the sun disc, not the
+     *  whole bright sky → no white haze). samples = the per-pixel march length, the
+     *  pass's dominant cost; read ONCE at Post construction, so a reload is needed
+     *  to change it (lower = much faster). */
+    godrays: { enabled: true, strength: 0.32, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 24 },
     /** final color grade (render/post.ts GradePass): contrast + saturation +
      *  a subtle vignette for the cinematic punch. */
-    grade: { contrast: 1.06, saturation: 1.1, vignette: 0.2 },
+    grade: { contrast: 1.06, saturation: 1.08, vignette: 0.22 },
     /** water reflection of the sky env cube (render/ocean.ts): strength scales the
-     *  Fresnel-weighted reflection; rebakeHz throttles re-rendering the sky+cloud
-     *  cube (clouds drift slowly, so a couple of bakes a second is plenty). */
-    reflection: { strength: 0.9, rebakeHz: 2 },
+     *  Fresnel-weighted reflection (high = chrome mirror; the sea should mostly read
+     *  as its own teal body with a sky SHEEN, not liquid metal). clamp caps the
+     *  reflected HDR so a bright sky can't blow the water to white. rebakeHz throttles
+     *  re-rendering the sky+cloud cube (clouds drift slowly — a couple bakes/s is plenty). */
+    reflection: { strength: 0.42, rebakeHz: 2, clamp: 2.0 },
     /** procedural cloud dome (render/clouds.ts): coverage = how much sky is cloud,
      *  density = opacity/contrast of each puff, speed = drift rate. */
     clouds: { coverage: 0.5, density: 0.7, speed: 0.6 },

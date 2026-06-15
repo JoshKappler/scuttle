@@ -60,9 +60,10 @@ async function main() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  // 1.0 + the stronger hemisphere fill: shade reads as shade, not a void
-  // (round 7: "anything that's not in direct sunlight is completely pitch black")
-  renderer.toneMappingExposure = 1.0;
+  // ACES exposure — live from TUN.gfx.tone.exposure (set again each frame in the
+  // render loop so the dev-panel slider is live). <1 calms an over-bright sky/sun
+  // without touching the individual effects; the hemisphere fill keeps shade out of the void.
+  renderer.toneMappingExposure = TUN.gfx.tone.exposure;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.localClippingEnabled = true;
@@ -1477,13 +1478,18 @@ async function main() {
       title: "✨ Graphics (visual pass)",
       controls: [
         { type: "toggle", label: "post FX", obj: TUN.gfx.post, key: "enabled" },
+        { type: "slider", label: "post res", obj: TUN.gfx.post, key: "scale", min: 0.4, max: 1.5, step: 0.05 },
+        { type: "slider", label: "post maxDPR", obj: TUN.gfx.post, key: "maxPixelRatio", min: 0.5, max: 2, step: 0.25 },
+        { type: "slider", label: "exposure", obj: TUN.gfx.tone, key: "exposure", min: 0.5, max: 1.3, step: 0.02 },
         { type: "toggle", label: "bloom", obj: TUN.gfx.bloom, key: "enabled" },
         { type: "slider", label: "bloom str", obj: TUN.gfx.bloom, key: "strength", min: 0, max: 1, step: 0.02 },
         { type: "slider", label: "bloom thr", obj: TUN.gfx.bloom, key: "threshold", min: 0, max: 4, step: 0.1 },
         { type: "slider", label: "bloom clamp", obj: TUN.gfx.bloom, key: "clamp", min: 2, max: 30, step: 1 },
         { type: "toggle", label: "god rays", obj: TUN.gfx.godrays, key: "enabled" },
         { type: "slider", label: "rays str", obj: TUN.gfx.godrays, key: "strength", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "rays thr", obj: TUN.gfx.godrays, key: "threshold", min: 0, max: 16, step: 0.5 },
         { type: "slider", label: "reflect", obj: TUN.gfx.reflection, key: "strength", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "refl clamp", obj: TUN.gfx.reflection, key: "clamp", min: 0.5, max: 6, step: 0.1 },
         { type: "slider", label: "cloud cov", obj: TUN.gfx.clouds, key: "coverage", min: 0, max: 1, step: 0.02 },
         { type: "slider", label: "cloud dens", obj: TUN.gfx.clouds, key: "density", min: 0, max: 1, step: 0.02 },
         { type: "slider", label: "cloud spd", obj: TUN.gfx.clouds, key: "speed", min: 0, max: 2, step: 0.05 },
@@ -1738,7 +1744,8 @@ async function main() {
       TUN.dyn.heightScale,
     );
     ocean.setChop(TUN.chop.strength, TUN.chop.choppiness);
-    ocean.setReflStrength(TUN.gfx.reflection.strength);
+    ocean.setReflStrength(TUN.gfx.reflection.strength, TUN.gfx.reflection.clamp);
+    renderer.toneMappingExposure = TUN.gfx.tone.exposure; // live exposure knob
     islandGritUniforms.uGritStrength.value = TUN.gfx.islandGrit.strength;
     ocean.update(world.simTime, camera.position);
 

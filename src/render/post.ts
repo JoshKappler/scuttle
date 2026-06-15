@@ -171,6 +171,9 @@ export class Post {
   private clampPass: ShaderPass;
   private godray: ShaderPass;
   private grade: ShaderPass;
+  private _tmp = new THREE.Vector2();
+  private _lastW = 0;
+  private _lastH = 0;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
@@ -179,21 +182,26 @@ export class Post {
     camera: THREE.Camera,
     seam: SeamMask,
   ) {
-    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const size = this.targetSize();
+    this._lastW = size.x;
+    this._lastH = size.y;
 
     // HDR + stencil + MSAA render target. HalfFloat keeps linear highlights (the
     // sun, glints) un-clipped so the ACES rolloff in OutputPass reads nicely;
-    // stencilBuffer:true is REQUIRED for the seam mask; samples:4 keeps edges AA'd
-    // (the canvas's own antialias does nothing once we render to a target).
+    // stencilBuffer:true is REQUIRED for the seam mask; samples:2 keeps edges AA'd
+    // (the canvas's own antialias does nothing once we render to a target) — 2 not 4
+    // because MSAA-resolving a full-screen HalfFloat target is bandwidth-heavy and 4
+    // was a real share of the frame cost; 2 still removes the worst voxel-edge jaggies
+    // and bloom softens the rest.
     this.rt = new THREE.WebGLRenderTarget(size.x, size.y, {
       type: THREE.HalfFloatType,
       depthBuffer: true,
       stencilBuffer: true,
-      samples: 4,
+      samples: 2,
     });
 
     this.composer = new EffectComposer(renderer, this.rt);
-    // _pixelRatio stays 1 and we feed setSize device pixels directly (see setSize).
+    // _pixelRatio stays 1 and we feed setSize device pixels directly (see targetSize).
     this.composer.addPass(new ScenePass(bgScene, scene, camera, seam));
 
     // clamp the HDR before bloom so the sun's monster luminance can't white-wash
@@ -212,6 +220,10 @@ export class Post {
     this.composer.addPass(this.bloom);
 
     // god rays read the post-bloom HDR buffer (sun at its brightest) and add shafts.
+    // SAMPLES is the per-pixel march length and the pass's dominant cost (dependent
+    // texture fetches); bake it from TUN at construction (a compile-time #define, so
+    // changing it needs a reload). 60 was the original — far heavier than the look needs.
+    GodRayShader.defines.SAMPLES = Math.max(8, Math.round(TUN.gfx.godrays.samples));
     this.godray = new ShaderPass(GodRayShader);
     this.composer.addPass(this.godray);
 
@@ -227,15 +239,39 @@ export class Post {
     this.godray.uniforms.uSunVisible.value = visible ? 1 : 0;
   }
 
+  /** The pixel size the post chain renders at. The renderer's drawing buffer is
+   *  canvas × devicePixelRatio (capped at 2 in main.ts); we cap THAT again at
+   *  TUN.gfx.post.maxPixelRatio (1 = native res even on a 2× HiDPI display) and
+   *  optionally scale by TUN.gfx.post.scale. Every post pass runs at this size and
+   *  the final pass upscales to the full canvas — so a 2× display pays ~1× cost. */
+  private targetSize(): THREE.Vector2 {
+    const dbs = this.renderer.getDrawingBufferSize(this._tmp); // device px
+    const ratio = this.renderer.getPixelRatio() || 1;
+    const cap = Math.max(0.25, TUN.gfx.post.maxPixelRatio);
+    const factor = (Math.min(ratio, cap) / ratio) * Math.max(0.25, TUN.gfx.post.scale);
+    return this._tmp.set(Math.max(1, Math.round(dbs.x * factor)), Math.max(1, Math.round(dbs.y * factor)));
+  }
+
   /** Resize to match the renderer's drawing buffer (called from main's fitViewport
    *  AFTER renderer.setSize, so the drawing-buffer size is already current). */
   setSize(_w: number, _h: number): void {
-    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const size = this.targetSize();
+    this._lastW = size.x;
+    this._lastH = size.y;
     this.composer.setSize(size.x, size.y);
     this.bloom.setSize(size.x, size.y);
   }
 
   render(): void {
+    // re-derive the post resolution each frame so the maxPixelRatio / scale knobs are
+    // live (cheap: only actually resizes the RTs when the target size changes).
+    const t = this.targetSize();
+    if (t.x !== this._lastW || t.y !== this._lastH) {
+      this._lastW = t.x;
+      this._lastH = t.y;
+      this.composer.setSize(t.x, t.y);
+      this.bloom.setSize(t.x, t.y);
+    }
     // live dev-panel knobs
     this.clampPass.uniforms.uMax.value = TUN.gfx.bloom.clamp;
     this.bloom.enabled = TUN.gfx.bloom.enabled;

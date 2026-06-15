@@ -39,10 +39,14 @@ export function createSky(): SkySetup {
   sky.renderOrder = -1000;
 
   const uniforms = sky.material.uniforms;
-  uniforms.turbidity.value = 8;
-  uniforms.rayleigh.value = 2.2;
-  uniforms.mieCoefficient.value = 0.011;
-  uniforms.mieDirectionalG.value = 0.92;
+  // Calmed from the first visual pass (turbidity 8 / rayleigh 2.2 / mie 0.011 / g 0.92),
+  // which tonemapped the whole upper sky to a blinding white and wrapped the sun in a
+  // huge glowing halo. Lower turbidity clears the haze, lower mieCoefficient + g shrink
+  // the sun-glow to a disc instead of a screen-filling smear.
+  uniforms.turbidity.value = 5;
+  uniforms.rayleigh.value = 1.8;
+  uniforms.mieCoefficient.value = 0.005;
+  uniforms.mieDirectionalG.value = 0.84;
 
   const elevation = 14; // degrees above horizon — late afternoon
   const azimuth = 155;

@@ -81,8 +81,9 @@ export interface Ocean {
   /** Bind the live sky+cloud reflection cube (render/sky.ts envCube.texture). The
    *  surface then mirrors the real sky gradient, sun and clouds (Fresnel-weighted). */
   setSkyEnv(tex: THREE.Texture): void;
-  /** dev-panel reflection strength (0 = matte water, 1 = full Fresnel reflection). */
-  setReflStrength(strength: number): void;
+  /** dev-panel reflection strength (0 = matte water, 1 = full Fresnel reflection) +
+   *  the HDR clamp on the reflected sky (caps a bright sky from whiting out the sea). */
+  setReflStrength(strength: number, clamp?: number): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -305,6 +306,7 @@ uniform vec3 uSkyColor;
 uniform samplerCube uSkyEnv;   // live sky+cloud reflection cube (render/sky.ts)
 uniform float uHasEnv;         // 1 when uSkyEnv is bound, else fall back to uSkyColor
 uniform float uReflStrength;   // dev: overall reflection strength
+uniform float uReflClamp;      // dev: cap on reflected HDR (stops a bright sky → white water)
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 uniform float uAmpTotal;
@@ -490,6 +492,10 @@ void main() {
   vec3 R = reflect(-V, Nd);
   R.y = max(R.y, 0.02); // keep the reflected ray in the sky hemisphere
   vec3 skyRefl = (uHasEnv > 0.5) ? textureCube(uSkyEnv, R).rgb : uSkyColor;
+  // cap the reflected HDR: the sky env cube runs far past 1 near the sun, and a
+  // near-mirror grazing surface would otherwise reflect a sheet of white "liquid
+  // metal". Clamping keeps a bright sky reading as a bright sheen, not a blowout.
+  skyRefl = min(skyRefl, vec3(uReflClamp));
   float reflF = clamp((fresnel * 0.85 + 0.05) * uReflStrength, 0.0, 1.0);
   vec3 col = mix(water, skyRefl, reflF);
 
@@ -682,7 +688,8 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uSkyColor: { value: new THREE.Color(0x9fc4d4) }, // fresnel fallback only
       uSkyEnv: { value: dummyCube },
       uHasEnv: { value: 0 },
-      uReflStrength: { value: 0.9 },
+      uReflStrength: { value: 0.42 },
+      uReflClamp: { value: 2.0 },
       uFogColor: { value: new THREE.Color(0xc4d6d6) },
       uFogDensity: { value: 0.0016 },
       uAmpTotal: { value: ampTotal },
@@ -807,8 +814,9 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       mat.uniforms.uSkyEnv.value = tex;
       mat.uniforms.uHasEnv.value = 1;
     },
-    setReflStrength(strength) {
+    setReflStrength(strength, clamp) {
       mat.uniforms.uReflStrength.value = strength;
+      if (clamp !== undefined) mat.uniforms.uReflClamp.value = clamp;
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);
