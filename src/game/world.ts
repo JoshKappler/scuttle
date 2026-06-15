@@ -23,6 +23,10 @@ export class GameWorld {
    *  Rapier's solver, see physics.ts). main.ts may attach `.effects` for dust + read `.debug`. */
   readonly contact = new VoxelContact();
   simTime = 0;
+  /** Per-frame CPU timing breakdown in ms — pure diagnostics (perf HUD + DEBUG.world.timing),
+   *  never read by physics or the vitest oracle. `substeps` = fixed steps run this frame (1 at
+   *  60 fps, up to 2 when the frame is slow and the accumulator saturates → the work multiplier). */
+  readonly timing = { flood: 0, buoy: 0, fixed: 0, contact: 0, flush: 0, rapier: 0, visual: 0, total: 0, substeps: 0 };
   /** Called every fixed step after buoyancy, before the physics step —
    *  sailing forces, AI, projectiles hook in here. */
   onFixedStep?: (simTime: number, dt: number) => void;
@@ -61,26 +65,48 @@ export class GameWorld {
     this.physics.world.removeRigidBody(ship.body);
   }
 
-  /** Advance simulation by real dt (seconds), in fixed steps (max 5/frame). */
+  /** Advance simulation by real dt (seconds), in fixed steps (max 2/frame). */
   step(dt: number): void {
-    this.accumulator = Math.min(this.accumulator + dt, FIXED_DT * 5);
+    // Per-frame CPU timing (pure diagnostics): reset, then accumulate each phase across however
+    // many fixed substeps run this frame. performance.now() is sub-µs; ~70 calls/frame is noise.
+    const tm = this.timing;
+    tm.flood = tm.buoy = tm.fixed = tm.contact = tm.flush = tm.rapier = tm.visual = tm.substeps = 0;
+    const tStart = performance.now();
+    // Cap catch-up at 2 substeps (was 5): a slow frame must NOT be allowed to run 5× the physics,
+    // which only makes the next frame slower — a positive-feedback spiral that pinned the fleet at
+    // ~10 fps. Capping at 2 trades a touch of slow-motion under extreme load for a stable frame.
+    this.accumulator = Math.min(this.accumulator + dt, FIXED_DT * 2);
     while (this.accumulator >= FIXED_DT) {
       this.accumulator -= FIXED_DT;
       this.simTime += FIXED_DT;
+      tm.substeps++;
       for (const ship of this.ships) {
+        const a = performance.now();
         ship.updateFlooding(FIXED_DT, this.physWaves, this.simTime);
+        const b = performance.now();
         ship.applyForces(this.physWaves, this.simTime);
+        tm.flood += b - a;
+        tm.buoy += performance.now() - b;
       }
+      let a = performance.now();
       this.onFixedStep?.(this.simTime, FIXED_DT);
+      tm.fixed += performance.now() - a;
       // deformable ship-vs-ship crunch: reads the real voxel overlap, carves both hulls, cancels the
       // closing velocity (inelastic) and de-penetrates by POSITION so they can't phase through. Runs
       // BEFORE the Rapier step so its velocity + position fixes integrate this step. Sets damageDirty.
+      a = performance.now();
       this.contact.stepAll(this.ships, FIXED_DT);
+      tm.contact += performance.now() - a;
+      a = performance.now();
       for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute
+      tm.flush += performance.now() - a;
       // hooks: filterContactPair pulls ship-vs-ship pairs out of the rigid solver (physics.ts).
       // The EventQueue is REQUIRED for the hooks to fire in this Rapier build (see Physics.events).
+      a = performance.now();
       this.physics.world.step(this.physics.events, this.physics.hooks);
+      tm.rapier += performance.now() - a;
     }
+    const v = performance.now();
     for (const ship of this.ships) {
       ship.visual.refresh();
       // syncVisual FIRST: the flood fluid reads the ship group's world
@@ -91,5 +117,7 @@ export class GameWorld {
       ship.syncVisual();
       ship.visual.updateWater(ship.build.compartments, undefined, dt);
     }
+    tm.visual = performance.now() - v;
+    tm.total = performance.now() - tStart;
   }
 }

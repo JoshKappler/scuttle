@@ -97,6 +97,8 @@ export class Ship {
   private breachCells = new Map<number, [number, number, number][]>();
   /** Holes shot through bulkheads connecting compartments. */
   private openings: Opening[] = [];
+  /** Substep counter throttling the (expensive) per-cell flood-geometry recompute to ~20 Hz. */
+  private floodGeomTick = 0;
   /** Per-compartment flood geometry, recomputed each step for compartments that hold water or
    *  have a breach: the world-horizontal POOL surface height (for two-reservoir breach heads) and
    *  the WET-cell local centroid (where the floodwater weight bears → free-surface list/capsize).
@@ -404,8 +406,11 @@ export class Ship {
    * later stage gated on lost reserve buoyancy — a single waterline nick just settles her.
    */
   updateFlooding(dt: number, waves: Wave[], t: number): void {
-    // pool surfaces + wet centroids for every compartment that holds water or is breached
-    this.updateFloodGeom();
+    // Pool surfaces + wet centroids drift slowly, but this recompute runs an O(n·log n) per-cell
+    // world-Y sort over every WET compartment — the dominant CPU cost (~60 ms/frame with a fleet).
+    // Throttle it to ~20 Hz instead of every substep; the inflow calc below reuses the cached poolY
+    // between recomputes (imperceptible — the pool surface barely moves in 50 ms).
+    if (this.floodGeomTick++ % 3 === 0) this.updateFloodGeom();
 
     const breaches: BreachInput[] = [];
     const p = this.tmpV;
