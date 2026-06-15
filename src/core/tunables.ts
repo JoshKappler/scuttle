@@ -225,7 +225,7 @@ export const TUN = {
     post: { enabled: true },
     /** UnrealBloomPass — glows the sun disc, the sun-glint path and bright foam.
      *  Mild by design ("grounded realism with punch", not a bloom-fest). */
-    bloom: { enabled: true, strength: 0.14, radius: 0.5, threshold: 1.5 },
+    bloom: { enabled: true, strength: 0.14, radius: 0.5, threshold: 1.5, clamp: 12 },
     /** screen-space god rays (render/post.ts GodRayPass) anchored at the sun's
      *  projected position; occlusion is free (dark geometry blocks the shafts). */
     godrays: { enabled: true, strength: 0.5, decay: 0.96, density: 0.85, weight: 0.5, samples: 60 },

@@ -8,6 +8,7 @@ import { createOceanField } from "./render/oceanField";
 import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
 import { createSky } from "./render/sky";
+import { CloudDome } from "./render/clouds";
 import { buildBrig, buildSloop } from "./sim/shipwright";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
@@ -62,11 +63,24 @@ async function main() {
   // series of waves repeating over and over"); physics rides the swell subset
   const waves = makeWaves(rng, 16);
 
+  // Background scene: the sky dome + cloud dome render FIRST as a flat backdrop
+  // (render/post.ts), then depth is cleared and the main scene draws over them, so
+  // the ship/ocean/islands occlude the clouds without a depth fight against the sky.
+  const bgScene = new THREE.Scene();
+
   const skySetup = createSky();
-  skySetup.addTo(scene);
+  skySetup.addTo(scene, bgScene); // lights → main scene, sky → bg scene
   // image-based skylight: PBR materials get ambient from the actual sky dome
   // (round 8: shade must read as shade, not a void)
-  skySetup.bakeEnvironment(renderer, scene);
+  skySetup.bakeEnvironment(renderer, scene, bgScene);
+
+  // procedural drifting clouds over the atmospheric sky; also rendered into the
+  // sky env cube (skySetup.updateEnv) so the sea reflects them. Follows the camera.
+  const clouds = new CloudDome(skySetup.sunDir, skySetup.sunColor);
+  bgScene.add(clouds.mesh);
+  // throttled re-bake of the sky+cloud reflection cube (clouds drift slowly)
+  let lastEnvBake = -1;
+  skySetup.updateEnv(renderer, bgScene, camera.position); // initial bake
 
   // Round 14: a MULTI-CASCADE Tessendorf ocean surface (the AC4 / Sea of Thieves
   // recipe) replaces the single band-limited chop tile that could only shimmer and
@@ -214,7 +228,7 @@ async function main() {
   // post-processing spine (bloom now; god rays + grade added in later tasks). It
   // owns the stencil seam-mask dance internally (see render/post.ts ScenePass), so
   // the ocean still never lands on the deck. Gated by TUN.gfx.post.enabled.
-  const post = new Post(renderer, scene, camera, seam);
+  const post = new Post(renderer, bgScene, scene, camera, seam);
 
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
@@ -1515,6 +1529,16 @@ async function main() {
     );
     ocean.setChop(TUN.chop.strength, TUN.chop.choppiness);
     ocean.update(world.simTime, camera.position);
+
+    // drifting clouds follow the camera; re-bake the sky+cloud reflection cube at
+    // TUN.gfx.reflection.rebakeHz so the sea's reflection keeps up with the drift.
+    clouds.update(world.simTime, camera.position);
+    const bakeInterval = 1 / Math.max(0.1, TUN.gfx.reflection.rebakeHz);
+    if (lastEnvBake < 0 || world.simTime - lastEnvBake >= bakeInterval) {
+      skySetup.updateEnv(renderer, bgScene, camera.position);
+      lastEnvBake = world.simTime;
+    }
+
     seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group), ...islandHulls]);
     if (TUN.gfx.post.enabled) {
       // the composer's ScenePass runs the same clear → seam-write → scene-render
@@ -1522,10 +1546,13 @@ async function main() {
       // to the screen via OutputPass.
       post.render();
     } else {
-      // legacy direct path — perf floor / safety valve, identical scene minus FX.
-      renderer.autoClear = true;
-      renderer.clear(); // clears color + depth + stencil
+      // legacy direct path — perf floor / safety valve. Same bg→clearDepth→main
+      // sequence as the composer's ScenePass, just straight to the screen.
+      renderer.setRenderTarget(null);
       renderer.autoClear = false;
+      renderer.clear(true, true, true);
+      renderer.render(bgScene, camera); // sky + clouds backdrop
+      renderer.clearDepth();
       seam.write(renderer, scene, camera); // hull+island → stencil (no color/depth)
       renderer.render(scene, camera); // full scene incl. ocean, stencil-tested
       renderer.autoClear = true;

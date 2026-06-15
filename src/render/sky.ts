@@ -9,20 +9,34 @@ import { Sky } from "three/addons/objects/Sky.js";
 export interface SkySetup {
   sky: Sky;
   sunDir: THREE.Vector3; // unit vector pointing FROM scene TOWARD the sun
+  sunColor: THREE.Color; // warm sun tint shared by the dir light, clouds, ocean
   sunLight: THREE.DirectionalLight;
   fillLight: THREE.HemisphereLight;
-  addTo(scene: THREE.Scene): void;
-  /** Bake the sky dome into a PMREM and set it as the scene's environment.
-   *  Hemisphere/directional lights alone leave PBR materials BLACK anywhere
-   *  the analytic lights don't reach (round 8: "shadows are still crazy dark
-   *  … there should be some level of ambient lighting") — image-based light
-   *  from the actual sky is what fills shade the way the real sky does. */
-  bakeEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Scene): void;
+  /** Live sky+cloud reflection cube the ocean samples (render/ocean.ts) — a real
+   *  reflection of the actual sky gradient, sun and drifting clouds, re-rendered
+   *  periodically by updateEnv() (clouds move slowly, so a couple Hz is plenty). */
+  envCube: THREE.WebGLCubeRenderTarget;
+  /** Add the SUN + FILL lights to the main scene, and the SKY dome to the separate
+   *  background scene (rendered first, behind everything — see render/post.ts). The
+   *  caller adds the cloud dome to the same bgScene. */
+  addTo(mainScene: THREE.Scene, bgScene: THREE.Scene): void;
+  /** Re-render the background scene (sky + clouds) into envCube from `center` (the
+   *  player camera position, so the camera-following cloud dome is sampled at its
+   *  own centre). */
+  updateEnv(renderer: THREE.WebGLRenderer, bgScene: THREE.Scene, center: THREE.Vector3): void;
+  /** Bake the sky dome into a PMREM and set it as the main scene's environment
+   *  (image-based fill so PBR materials aren't black in shade — round 8). Borrows
+   *  the sky out of bgScene and returns it there. */
+  bakeEnvironment(renderer: THREE.WebGLRenderer, mainScene: THREE.Scene, bgScene: THREE.Scene): void;
 }
 
 export function createSky(): SkySetup {
   const sky = new Sky();
   sky.scale.setScalar(450000);
+  // draw the sky FIRST (before the cloud dome at -999 and all scene geometry), so
+  // the opaque, depthTest-off cloud layer paints over it. render/clouds.ts relies
+  // on this ordering.
+  sky.renderOrder = -1000;
 
   const uniforms = sky.material.uniforms;
   uniforms.turbidity.value = 8;
@@ -37,7 +51,8 @@ export function createSky(): SkySetup {
   const sunDir = new THREE.Vector3().setFromSphericalCoords(1, phi, theta);
   uniforms.sunPosition.value.copy(sunDir);
 
-  const sunLight = new THREE.DirectionalLight(0xffd9b0, 2.6);
+  const sunColor = new THREE.Color(0xffd9b0);
+  const sunLight = new THREE.DirectionalLight(sunColor.getHex(), 2.6);
   sunLight.position.copy(sunDir.clone().multiplyScalar(120));
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(2048, 2048);
@@ -63,31 +78,48 @@ export function createSky(): SkySetup {
   // void without brightening the wood's overall tone.
   const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 0.95);
 
+  // Live sky+cloud reflection cube for the ocean. 256² is plenty for a near-mirror
+  // water surface whose wave normals smear the reflection anyway; mipmaps let the
+  // ocean fetch blurrier reflections at grazing/rough angles. The cube camera renders
+  // the BACKGROUND scene (sky + clouds) directly — no borrowing needed.
+  const envCube = new THREE.WebGLCubeRenderTarget(256, {
+    generateMipmaps: true,
+    minFilter: THREE.LinearMipmapLinearFilter,
+  });
+  // far must clear the 450000-unit sky dome; near small. Position is set per bake.
+  const cubeCam = new THREE.CubeCamera(1, 1_000_000, envCube);
+
   return {
     sky,
     sunDir,
+    sunColor,
     sunLight,
     fillLight,
-    addTo(scene: THREE.Scene) {
-      scene.add(sky);
-      scene.add(sunLight);
-      scene.add(sunLight.target);
-      scene.add(fillLight);
+    envCube,
+    addTo(mainScene: THREE.Scene, bgScene: THREE.Scene) {
+      bgScene.add(sky); // background layer (rendered first, then depth is cleared)
+      mainScene.add(sunLight);
+      mainScene.add(sunLight.target);
+      mainScene.add(fillLight);
     },
-    bakeEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
+    updateEnv(renderer, bgScene, center) {
+      cubeCam.position.copy(center);
+      cubeCam.update(renderer, bgScene); // renders sky + clouds (the whole bg scene)
+    },
+    bakeEnvironment(renderer: THREE.WebGLRenderer, mainScene: THREE.Scene, bgScene: THREE.Scene) {
       const pmrem = new THREE.PMREMGenerator(renderer);
       const env = new THREE.Scene();
       env.add(sky); // borrow the dome (re-parents it)
       const rt = pmrem.fromScene(env, 0.04);
-      scene.add(sky); // give it back
-      scene.environment = rt.texture;
+      bgScene.add(sky); // return it to the background scene
+      mainScene.environment = rt.texture;
       // IBL ambient bleached the dark oak hull to birch (round 8 v2) at every
       // level I tried (0.72 → 0.16). m10 had NO environment and its wood was
       // right, so the env is now barely-there — just enough to keep the metal
       // guns from going dead-flat. The shade is lifted by shadow.intensity +
       // the hemisphere instead, neither of which touches the lit wood's tone.
       // (IBL is baked ONCE here: only a full page reload re-bakes it.)
-      scene.environmentIntensity = 0.05;
+      mainScene.environmentIntensity = 0.05;
       pmrem.dispose();
     },
   };

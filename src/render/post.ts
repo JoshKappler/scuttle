@@ -55,6 +55,7 @@ const ClampShader = {
  *  exactly like the pre-composer loop in main.ts. */
 class ScenePass extends Pass {
   constructor(
+    private bgScene: THREE.Scene,
     private scene: THREE.Scene,
     private camera: THREE.Camera,
     private seam: SeamMask,
@@ -70,13 +71,18 @@ class ScenePass extends Pass {
   ): void {
     const prevAutoClear = renderer.autoClear;
     renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
-    // clear colour + depth + stencil once, then leave autoClear OFF so the two
-    // following renders (seam mask, then scene) accumulate into the same buffer.
-    renderer.autoClear = true;
-    renderer.clear();
     renderer.autoClear = false;
-    this.seam.write(renderer, this.scene, this.camera); // stencil = 1 on hulls/islands
-    renderer.render(this.scene, this.camera); // full scene incl. ocean, stencil-tested
+    // clear colour + depth + stencil once.
+    renderer.clear(true, true, true);
+    // 1) BACKGROUND: sky + clouds, as a flat backdrop (their own depthTest is off).
+    renderer.render(this.bgScene, this.camera);
+    // 2) clear DEPTH ONLY (keep the backdrop colour + the cleared stencil) so the
+    //    main scene gets a fresh depth buffer and every piece of geometry draws OVER
+    //    the clouds — which is how the ship/ocean/islands occlude them.
+    renderer.clearDepth();
+    // 3) seam-mask stencil, then the stencil-tested main scene (ocean off the deck).
+    this.seam.write(renderer, this.scene, this.camera);
+    renderer.render(this.scene, this.camera);
     renderer.autoClear = prevAutoClear;
   }
 }
@@ -85,9 +91,11 @@ export class Post {
   readonly composer: EffectComposer;
   private rt: THREE.WebGLRenderTarget;
   private bloom: UnrealBloomPass;
+  private clampPass: ShaderPass;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
+    bgScene: THREE.Scene,
     scene: THREE.Scene,
     camera: THREE.Camera,
     seam: SeamMask,
@@ -107,11 +115,14 @@ export class Post {
 
     this.composer = new EffectComposer(renderer, this.rt);
     // _pixelRatio stays 1 and we feed setSize device pixels directly (see setSize).
-    this.composer.addPass(new ScenePass(scene, camera, seam));
+    this.composer.addPass(new ScenePass(bgScene, scene, camera, seam));
 
     // clamp the HDR before bloom so the sun's monster luminance can't white-wash
-    // the frame (see ClampShader). Bloom then reads a bounded source.
-    this.composer.addPass(new ShaderPass(ClampShader));
+    // the frame (see ClampShader). The ceiling must stay HIGH enough not to flatten
+    // the sky/cloud HDR range (or clouds lose contrast against the sky) — it only
+    // needs to tame the sun's thousands. Tunable via TUN.gfx.bloom.clamp.
+    this.clampPass = new ShaderPass(ClampShader);
+    this.composer.addPass(this.clampPass);
 
     this.bloom = new UnrealBloomPass(
       new THREE.Vector2(size.x, size.y),
@@ -134,6 +145,7 @@ export class Post {
 
   render(): void {
     // live dev-panel knobs
+    this.clampPass.uniforms.uMax.value = TUN.gfx.bloom.clamp;
     this.bloom.enabled = TUN.gfx.bloom.enabled;
     this.bloom.strength = TUN.gfx.bloom.strength;
     this.bloom.radius = TUN.gfx.bloom.radius;
