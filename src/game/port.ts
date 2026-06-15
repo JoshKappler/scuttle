@@ -4,9 +4,9 @@
  * all of them; the economy stays engine-free and the UI stays dumb.
  *
  * Compatibility contract:
- *  - The wallet of record stays {@link BoardingSystem.gold} (the existing HUD reads
- *    it). After every economy mutation we mirror `economy.doubloons → boarding.gold`,
- *    so no HUD/index.html change is needed and sibling branches keep working.
+ *  - The wallet of record is a standalone {@link Wallet} (the HUD reads it). After
+ *    every economy mutation we mirror `economy.doubloons → wallet`, and surface
+ *    feedback through the {@link MessageBus} toast channel.
  *  - Docking depends only on the tiny {@link DockProvider} interface, which the
  *    islands branch's `IslandField.nearestDock(x,z)` already satisfies. On this
  *    branch we fall back to {@link DevDockProvider} so the loop is testable solo.
@@ -14,9 +14,14 @@
  */
 
 import { Economy, GOODS, UPGRADES, DEFAULT_CARGO_CAPACITY, repairQuote, rollLoot } from "../sim/economy";
+import { SHIP_TIERS, canBuy } from "./shipyard";
+import type { ShipTierId } from "./saveState";
 import { Rng } from "../core/rng";
 import type { Ship } from "./ship";
-import type { BoardingSystem } from "./boarding";
+import type { Wallet } from "./wallet";
+import type { MessageBus } from "./messageBus";
+import type { Cannons } from "./cannons";
+import type { SailingController } from "./sailing";
 import type { PortScreen, PortView } from "../render/portScreen";
 
 /** The world-space dock anchor lookup. `IslandField` satisfies this structurally. */
@@ -35,13 +40,21 @@ export class DevDockProvider implements DockProvider {
 export interface PortDeps {
   economy: Economy;
   ship: Ship; // the player ship — upgrade/repair effects land here
-  boarding: BoardingSystem; // gold mirror + toast messages
+  cannons: Cannons; // player battery — the reload upgrade tunes its reloadMul
+  sailing: SailingController; // player sailing — the speed upgrade tunes its boost
+  wallet: Wallet; // gold of record (mirrored from economy.doubloons)
+  msg: MessageBus; // toast channel for port feedback
   ui: PortScreen;
   getPlayerPos: () => { x: number; z: number };
   dock?: DockProvider; // omit on this branch → DevDockProvider
   rand?: () => number; // loot RNG (defaults to a seeded source)
   portName?: string;
   saveKey?: string;
+  onEnter?: () => void; // called when the port opens (the game-shell freezes the world + saves)
+  onLeave?: () => void; // called when the port closes (the game-shell resumes the world)
+  // shipyard glue (the game layer owns the unlock list + the actual hull swap)
+  getShipState?: () => { unlocked: ShipTierId[]; current: ShipTierId };
+  onSwapShip?: (id: ShipTierId) => void;
 }
 
 const DOCK_RANGE = 22; // metres within which you may make port
@@ -55,7 +68,10 @@ export class PortController {
 
   private economy: Economy;
   private ship: Ship;
-  private boarding: BoardingSystem;
+  private cannons: Cannons;
+  private sailing: SailingController;
+  private wallet: Wallet;
+  private msg: MessageBus;
   private ui: PortScreen;
   private getPlayerPos: () => { x: number; z: number };
   private dock: DockProvider;
@@ -63,11 +79,18 @@ export class PortController {
   private portName: string;
   private saveKey: string;
   private hintShown = false;
+  private onEnter?: () => void;
+  private onLeave?: () => void;
+  private getShipState?: () => { unlocked: ShipTierId[]; current: ShipTierId };
+  private onSwapShip?: (id: ShipTierId) => void;
 
   constructor(d: PortDeps) {
     this.economy = d.economy;
     this.ship = d.ship;
-    this.boarding = d.boarding;
+    this.cannons = d.cannons;
+    this.sailing = d.sailing;
+    this.wallet = d.wallet;
+    this.msg = d.msg;
     this.ui = d.ui;
     this.getPlayerPos = d.getPlayerPos;
     this.dock = d.dock ?? new DevDockProvider();
@@ -75,6 +98,15 @@ export class PortController {
     this.rand = d.rand ?? (() => rng.next());
     this.portName = d.portName ?? "Hidden Cove";
     this.saveKey = d.saveKey ?? SAVE_KEY;
+    this.onEnter = d.onEnter;
+    this.onLeave = d.onLeave;
+    this.getShipState = d.getShipState;
+    this.onSwapShip = d.onSwapShip;
+  }
+
+  /** Re-point repair/upgrade effects at a freshly-built hull (after a swap). */
+  setShip(ship: Ship): void {
+    this.ship = ship;
   }
 
   get isOpen(): boolean {
@@ -89,7 +121,7 @@ export class PortController {
     const near = !!d && Math.hypot(d.x - p.x, d.z - p.z) <= DOCK_RANGE;
     this.canDock = near;
     if (near && !this.hintShown) {
-      this.boarding.message = "press E — make port";
+      this.msg.post("press E — make port");
       this.hintShown = true;
     } else if (!near) {
       this.hintShown = false;
@@ -101,12 +133,12 @@ export class PortController {
   }
 
   openPort(): void {
-    this.save(); // making port banks your progress
+    this.onEnter?.(); // game-shell freezes the world + banks progress
     this.ui.open(this.view());
   }
 
   closePort(): void {
-    this.save();
+    this.onLeave?.(); // game-shell resumes the world
     this.ui.close();
   }
 
@@ -117,7 +149,7 @@ export class PortController {
     this.mirrorGold();
     const lost = Object.values(res.lost).reduce((a, b) => a + b, 0);
     const tail = lost > 0 ? ` (hold full — ${lost} lost to the deep)` : "";
-    this.boarding.message = `PLUNDER — ⛀ ${loot.doubloons} + cargo${tail}. Sail on.`;
+    this.msg.post(`PLUNDER — ⛀ ${loot.doubloons} + cargo${tail}. Sail on.`);
   }
 
   // ---- port actions (called by the UI) ----
@@ -144,6 +176,23 @@ export class PortController {
     this.ui.refresh(this.view());
   }
 
+  /** Buy a bigger hull: gold + unlocked-by-defeat gated. On success, spend the gold
+   *  and ask the game layer to swap the player onto the new tier. */
+  buyShip(id: ShipTierId): void {
+    const st = this.getShipState?.();
+    const tier = SHIP_TIERS.find((t) => t.id === id);
+    if (!st || !tier) return;
+    if (!canBuy(tier, { gold: this.economy.state.doubloons, unlocked: st.unlocked, current: st.current }).ok) {
+      this.ui.refresh(this.view());
+      return;
+    }
+    this.economy.spend(tier.price);
+    this.mirrorGold();
+    this.onSwapShip?.(id); // game layer rebuilds the hull + re-applies upgrades
+    this.msg.post(`She's yours — the ${tier.name} is fitted out and ready. Sail on.`);
+    this.ui.refresh(this.view());
+  }
+
   // ---- persistence ("save at the docks") ----
   save(): void {
     try {
@@ -162,6 +211,14 @@ export class PortController {
     }
     this.economy.state = Economy.deserialize(raw).state;
     this.applyUpgrades(); // re-derive capacity & re-apply owned buffs to the fresh ship
+    this.mirrorGold();
+  }
+
+  /** Re-apply owned upgrades to the current ship and mirror gold to the wallet.
+   *  Used after the game-shell swaps in a freshly-loaded economy (or a new hull),
+   *  without re-reading storage (the SaveManager owns persistence now). */
+  syncAfterLoad(): void {
+    this.applyUpgrades();
     this.mirrorGold();
   }
 
@@ -187,6 +244,15 @@ export class PortController {
         affordable: cost !== null && e.canAfford(cost),
       };
     });
+    const st = this.getShipState?.();
+    const ships = st
+      ? SHIP_TIERS.map((t) => {
+          const verdict = canBuy(t, { gold: e.state.doubloons, unlocked: st.unlocked, current: st.current });
+          const state: "owned" | "locked" | "buy" =
+            t.id === st.current ? "owned" : !st.unlocked.includes(t.id) ? "locked" : "buy";
+          return { id: t.id, name: t.name, price: t.price, state, affordable: verdict.ok };
+        })
+      : [];
     return {
       portName: this.portName,
       doubloons: e.state.doubloons,
@@ -196,12 +262,13 @@ export class PortController {
       cargoCap: e.state.cargoCapacity,
       repairCost: repairQuote(this.shipDamage01()),
       upgrades,
+      ships,
     };
   }
 
   // ---- ship glue ----
   private mirrorGold(): void {
-    this.boarding.gold = this.economy.state.doubloons;
+    this.wallet.set(this.economy.state.doubloons);
   }
 
   private maxPlanks(): number {
@@ -237,10 +304,17 @@ export class PortController {
     s.planks = this.maxPlanks();
   }
 
-  /** Map owned upgrade levels onto ship/economy buffs. Idempotent. */
+  /** Map owned upgrade levels onto ship/economy buffs. Account-wide and idempotent,
+   *  so it re-applies cleanly to whatever hull is current (after load or a ship swap). */
   private applyUpgrades(): void {
-    this.economy.state.cargoCapacity = DEFAULT_CARGO_CAPACITY + 20 * this.economy.upgradeLevel("hold");
+    const e = this.economy;
+    e.state.cargoCapacity = DEFAULT_CARGO_CAPACITY + 20 * e.upgradeLevel("hold");
     const maxP = this.maxPlanks();
     if (this.ship.planks < maxP) this.ship.planks = maxP;
+    // combat / sailing buffs — see the upgrade catalog descriptions in economy.ts
+    this.cannons.reloadMul = Math.pow(0.88, e.upgradeLevel("reload")); // −12%/level
+    this.ship.hullToughness = 1 + 0.25 * e.upgradeLevel("hull"); // +25%/level
+    this.ship.rudderPower = 1 + 0.15 * e.upgradeLevel("rudder"); // +15%/level
+    this.sailing.boost = 1 + 0.1 * e.upgradeLevel("speed"); // +10%/level
   }
 }

@@ -10,7 +10,9 @@ import { buildHullProfile } from "./sim/buoyancy";
 import { createSky } from "./render/sky";
 import { CloudDome } from "./render/clouds";
 import { islandGritUniforms } from "./render/islandVisual";
-import { buildBrig, buildSloop } from "./sim/shipwright";
+import { buildCutter, buildSloop, type ShipBuild } from "./sim/shipwright";
+import { tierById } from "./game/shipyard";
+import { pickEnemyTier } from "./sim/fleetSpawn";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
 import { Ship } from "./game/ship";
@@ -20,7 +22,17 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { FleetManager, type EnemyUnit } from "./game/fleet";
 import { MAXVIS } from "./core/constants";
-import { BoardingSystem } from "./game/boarding";
+import { GameState } from "./game/gameState";
+import { PlayerCharacter } from "./game/playerCharacter";
+import {
+  SaveManager,
+  defaultSave,
+  defaultSettings,
+  SAVE_VERSION,
+  type SaveState,
+  type Settings,
+  type ShipTierId,
+} from "./game/saveState";
 import { Cannons } from "./game/cannons";
 import { muzzleWorld } from "./game/gunnery";
 import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
@@ -34,6 +46,7 @@ import { createDevPanel } from "./render/devPanel";
 import { Economy } from "./sim/economy";
 import { createPortScreen } from "./render/portScreen";
 import { PortController } from "./game/port";
+import { createMenuScreen } from "./render/menuScreen";
 
 async function main() {
   // THROWAWAY (plan Task 0): ?spike=1 runs the voxel-collider perf gate and bails.
@@ -142,13 +155,23 @@ async function main() {
   }
   const world = new GameWorld(physics, waves, scene);
 
+  // game-shell state: the mode/phase machine + the wallet & toast of record, plus
+  // the save manager (career/sandbox slots). The render loop reads gs.isSimRunning().
+  const gs = new GameState();
+  const saves = new SaveManager(localStorage);
+
   // the player's brig splashes down and settles (round 6: "a realistically
   // sized sixteen-hundreds-era fighting vessel"); `sloop` names the player
   // ship throughout for history's sake
-  const sloopBuild = buildBrig();
-  const sloopVisual = new ShipVisual(sloopBuild);
-  const sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
+  // the player starts in the CUTTER — the cheap starter; bigger tiers are bought at
+  // the shipyard. `sloop`/`sloopVisual` stay mutable so a hull swap can reassign them.
+  const sloopBuild = buildCutter();
+  let sloopVisual = new ShipVisual(sloopBuild);
+  let sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
+  // the on-foot captain (deck-walk / kick / first-third person). He spends most of
+  // his time at the wheel; the old boarding system (grapple/crew/chest) is gone.
+  const character = new PlayerCharacter(physics, scene, sloop);
   // the cutaway hole in the sea matches the player hull's footprint
   ocean.setFootprint(sloopBuild.lengthM / 2 + 1.2, sloopBuild.beamM / 2 + 1.0);
 
@@ -195,10 +218,10 @@ async function main() {
     tex.needsUpdate = true;
     return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ };
   };
-  const sloopProfile = makeProfileTex(sloop.build.grid);
+  let sloopProfile = makeProfileTex(sloop.build.grid);
   ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
 
-  // the hostile fleet is set up below (it needs effects/cannons/debris/boarding);
+  // the hostile fleet is set up below (it needs effects/cannons/debris);
   // ocean slot 1's shared enemy profile is bound there too.
 
   // P5: the dynamic-wave INTERACTION field (Crest/Atlas FDTD ping-pong, GPU
@@ -253,17 +276,17 @@ async function main() {
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
 
   // ---- the hostile fleet (game/fleet.ts) ----
-  // every enemy is a buildSloop hull → they SHARE one profile texture for the premium
-  // voxel sea-cut; bind it to ocean slot 1 once. Only the live pose changes as the
-  // nearest (premium) enemy swaps.
+  // ocean slot 1 (the premium voxel sea-cut) is bound once to a SLOOP profile; mixed
+  // enemy tiers reuse it as an approximation (the cut is a visual nicety, not physics).
   const enemyProfile = makeProfileTex(buildSloop().grid);
   ocean.setHullProfile(1, enemyProfile.tex, enemyProfile.sizeX, enemyProfile.sizeZ);
+  // which tier each live enemy is (for unlock-on-defeat). WeakMap so culled ships GC.
+  const enemyTier = new WeakMap<Ship, ShipTierId>();
 
-  // boarding is forward-declared: the spawn factory's damage callbacks capture it,
-  // but they only fire on later hits, by which time it's assigned (just below).
-  let boarding: BoardingSystem;
   const spawnEnemy = (): EnemyUnit => {
-    const build = buildSloop();
+    // notoriety- and player-tier-scaled tier pick: small prey early, bigger hulls later.
+    const tierId = pickEnemyTier(economy.state.notoriety, currentTier, Math.random);
+    const build = tierById(tierId).build();
     const visual = new ShipVisual(build);
     // fan upwind around the player so multiple hulls don't stack (the old single
     // enemy spawned dead upwind at 85 m, bow turned toward you — generalized here).
@@ -279,11 +302,12 @@ async function main() {
     const ea = -Math.atan2(pc.z - etr.z, pc.x - etr.x);
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
     ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
-    ship.onMastFelled = () => (boarding.message = "her mast goes by the board!");
+    ship.onMastFelled = () => gs.msg.post("her mast goes by the board!");
     ship.onRudderHit = (hp) => {
       visual.chipRudder(hp / 3);
-      boarding.message = hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!";
+      gs.msg.post(hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!");
     };
+    enemyTier.set(ship, tierId);
     const captain = new AICaptain(ship, scene, effects);
     return { ship, captain };
   };
@@ -292,13 +316,10 @@ async function main() {
   let premiumSlot1: Ship | null = null; // which enemy holds premium ocean slot 1 (trail reset on swap)
   const salvaged = new WeakSet<Ship>(); // enemies that have paid salvage once
   let primaryEnemy: Ship | null = null; // nearest living enemy, for the HUD marker
-
-  // seed one enemy so boarding always starts with a valid target (default count 1).
-  fleet.reconcile();
-  boarding = new BoardingSystem(physics, scene, effects, sloop, fleet.enemies[0] ?? sloop);
+  // (the fleet is seeded AFTER the economy + currentTier exist — the spawner reads them.)
 
   // ---- plunder economy (framework): wallet/cargo/upgrades + dock-triggered port + save ----
-  // Wraps the existing boarding.gold (the HUD wallet); the port screen is a JS overlay.
+  // The wallet of record is gs.wallet (the HUD reads it); the port screen is a JS overlay.
   // The dock is the islands' real harbor: IslandField satisfies DockProvider, so "make port"
   // (press E within DOCK_RANGE) triggers at the town pier — not the DevDockProvider origin.
   const economy = new Economy();
@@ -306,27 +327,161 @@ async function main() {
     onSell: () => port.sell(),
     onRepair: () => port.repair(),
     onBuy: (id) => port.buy(id),
+    onBuyShip: (id) => port.buyShip(id),
     onClose: () => port.closePort(),
   });
   const port = new PortController({
     economy,
     ship: sloop,
-    boarding,
+    cannons,
+    sailing,
+    wallet: gs.wallet,
+    msg: gs.msg,
     ui: portScreen,
     getPlayerPos: () => {
       const t = sloop.body.translation();
       return { x: t.x, z: t.z };
     },
     dock: islands, // IslandField.nearestDock → port triggers at the real harbor pier
+    onEnter: () => {
+      gs.enterPort(); // freeze the world while the port screen is up
+      saveCurrent(); // making port banks your progress
+    },
+    onLeave: () => gs.leavePort(),
+    // sandbox unlocks everything so the whole ladder is buyable for free play
+    getShipState: () => ({
+      unlocked: gs.isSandbox() ? (["cutter", "sloop", "brig", "frigate"] as ShipTierId[]) : unlockedClasses,
+      current: currentTier,
+    }),
+    onSwapShip: (id) => swapPlayerShip(id),
   });
-  port.load(); // restore the saved empire (doubloons/cargo/upgrades) and mirror to boarding.gold
+
+  // ---- game-shell save/restore + the start / pause menu ----
+  // What the save carries beyond the economy. Ship tiers land in a later phase;
+  // for now the tier/unlocks are tracked + persisted but the hull is unchanged.
+  let currentTier: ShipTierId = "cutter";
+  let unlockedClasses: ShipTierId[] = ["cutter"];
+  let settings: Settings = defaultSettings();
+
+  const applySave = (s: SaveState) => {
+    economy.state = s.economy;
+    unlockedClasses = s.unlockedClasses.slice();
+    settings = { ...s.settings };
+    if (s.shipTier !== currentTier) {
+      swapPlayerShip(s.shipTier); // rebuild the saved hull (also sets currentTier + re-applies upgrades)
+    } else {
+      port.syncAfterLoad(); // same hull → just re-apply owned upgrades + mirror gold
+    }
+  };
+  const saveCurrent = () => {
+    saves.save(gs.mode, {
+      version: SAVE_VERSION,
+      mode: gs.mode,
+      economy: economy.state,
+      shipTier: currentTier,
+      unlockedClasses,
+      settings,
+    });
+  };
+
+  const menu = createMenuScreen({
+    onNewCareer: () => {
+      saves.wipe("career");
+      applySave(defaultSave("career"));
+      gs.startGame("career");
+      menu.hide();
+    },
+    onContinue: () => {
+      applySave(saves.load("career"));
+      gs.startGame("career");
+      menu.hide();
+    },
+    onSandbox: () => {
+      applySave(saves.load("sandbox"));
+      // free play: top up to a deep purse so every hull + upgrade is buyable
+      // (the whole tier ladder is already unlocked for sandbox via getShipState).
+      if (economy.state.doubloons < 50000) {
+        economy.state.doubloons = 50000;
+        gs.wallet.set(50000);
+      }
+      gs.startGame("sandbox");
+      menu.hide();
+    },
+    onResume: () => {
+      gs.resume();
+      menu.hide();
+    },
+    onQuitToMenu: () => {
+      saveCurrent();
+      gs.quitToMenu();
+      menu.showStart(saves.hasSave("career"));
+    },
+  });
+  // boot to the title screen — the world is built but frozen behind it (phase = menu).
+  menu.showStart(saves.hasSave("career"));
+
+  // ---- hull swap (shipyard purchase / save restore / respawn) ----
+  // Rebuild the player ship as a fresh hull, keeping world position/heading, and
+  // re-point every system that holds a player-ship reference. (function decls so the
+  // port/menu closures above can call them; only ever invoked at runtime.)
+  function swapPlayerShip(tierId: ShipTierId): void {
+    currentTier = tierId;
+    rebuildPlayerShip(tierById(tierId).build());
+    port.syncAfterLoad(); // account-wide upgrades land on the new hull
+  }
+  function rebuildPlayerShip(build: ShipBuild): void {
+    const at = sloop.body.translation();
+    const rot = sloop.body.rotation();
+    world.removeShip(sloop); // scene + geometry + rigid-body cleanup
+    const visual = new ShipVisual(build);
+    const fresh = new Ship(physics, build, visual, { x: at.x, y: Math.max(at.y, 0.5), z: at.z });
+    fresh.body.setRotation(rot, true);
+    fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
+    fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
+    fresh.onRudderHit = (hp) => {
+      visual.chipRudder(hp / 3);
+      gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
+    };
+    world.addShip(fresh);
+    sloop = fresh;
+    sloopVisual = visual;
+    port.setShip(fresh);
+    fleet.setTarget(fresh);
+    character.setShip(fresh);
+    rebindPlayerRenderHooks();
+  }
+  function rebindPlayerRenderHooks(): void {
+    sloopProfile = makeProfileTex(sloop.build.grid);
+    ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
+    ocean.setFootprint(sloop.build.lengthM / 2 + 1.2, sloop.build.beamM / 2 + 1.0);
+    spans[0] = hullSpan(sloop);
+    _dynShips[0].profileTex = sloopProfile.tex;
+    _dynShips[0].sizeX = sloopProfile.sizeX;
+    _dynShips[0].sizeZ = sloopProfile.sizeZ;
+  }
+  // Respawn a fresh hull of the current tier in clear water just seaward of the home
+  // dock, and re-seat the captain at the wheel. (Used by the sink penalty.)
+  function respawnPlayerAtPort(): void {
+    rebuildPlayerShip(tierById(currentTier).build());
+    const tr = sloop.body.translation();
+    const dock = islands.nearestDock(tr.x, tr.z);
+    if (dock) {
+      sloop.body.setTranslation({ x: dock.x + 54, y: 0.6, z: dock.z }, true);
+      sloop.body.setRotation({ x: 0, y: 1, z: 0, w: 0 }, true); // bow toward the town
+    }
+    sloop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    sloop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    port.syncAfterLoad();
+    character.reseat();
+    atWheel = true; // back at the helm
+  }
 
   // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
   // equivalents are wired per-spawn in the fleet factory above.
-  sloop.onMastFelled = () => (boarding.message = "YOUR MAST GOES BY THE BOARD!");
+  sloop.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
   sloop.onRudderHit = (hp) => {
     sloopVisual.chipRudder(hp / 3);
-    boarding.message = hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!";
+    gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
   };
 
   // hull-on-hull: meeting with way on carves voxels out of BOTH ships at the
@@ -354,6 +509,7 @@ async function main() {
   // — yours or the prize — no longer freezes the game or demands a reload; the voyage
   // just continues. Only the non-terminal man-overboard + enemy-salvage states remain.
   let manOverboard = false;
+  let respawning = false; // guards the one-shot sink → respawn handoff
   let plugChannel = 0; // seconds remaining on the current plank repair
 
   const isSunk = (s: Ship) =>
@@ -362,23 +518,20 @@ async function main() {
 
   world.onFixedStep = (t, dt) => {
     controls.modePressed = false; // legacy T — the wheel gates the helm now
+    controls.grapplePressed = false; // legacy G — boarding removed; consume so it can't queue
     port.update(dt); // dock proximity → canDock + "press E — make port" hint
-    if (controls.grapplePressed) {
-      controls.grapplePressed = false;
-      boarding.toggleGrapple();
-    }
 
     // wheel + ladder positions in world (for E proximity)
     sloop.localToWorld(sloopVisual.wheelLocal, wheelWorld);
     sloop.localToWorld(sloopVisual.ladderLocal, ladderWorld);
 
     // swimming near the stern ladder? surface the hint
-    if (boarding.player && boarding.player.swimming) {
-      const pp = boarding.player.body.translation();
+    if (character.player && character.player.swimming) {
+      const pp = character.player.body.translation();
       const nearLadder =
         Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4;
       if (nearLadder && !ladderHinted) {
-        boarding.message = "press E — stern ladder";
+        gs.msg.post("press E — stern ladder");
         ladderHinted = true;
       } else if (!nearLadder) {
         ladderHinted = false;
@@ -386,36 +539,33 @@ async function main() {
     }
 
     // E: take/leave the wheel when close to it; climb the stern ladder when
-    // swimming beside it; otherwise it's the interact key (chest)
-    let interact = false;
+    // swimming beside it; otherwise make port if at a dock.
     if (controls.interactPressed) {
       controls.interactPressed = false;
       if (atWheel) {
         atWheel = false;
         // sails and rudder HOLD as set — leaving the helm changes nothing
         // (playtest round 5); the ship-frame carry keeps deck walking safe
-        boarding.message = "you leave the wheel — she holds her course";
-      } else if (boarding.player) {
-        const pp = boarding.player.body.translation();
+        gs.msg.post("you leave the wheel — she holds her course");
+      } else if (character.player) {
+        const pp = character.player.body.translation();
         if (Math.hypot(pp.x - wheelWorld.x, pp.y - wheelWorld.y, pp.z - wheelWorld.z) < 2.4) {
           atWheel = true;
-          boarding.message = "you take the wheel";
+          gs.msg.post("you take the wheel");
         } else if (
-          boarding.player.swimming &&
+          character.player.swimming &&
           Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4
         ) {
-          boarding.player.ship = sloop;
-          boarding.player.teleport(
+          character.player.ship = sloop;
+          character.player.teleport(
             sloop.localToWorld(
               [2.6, (sloop.build.deckYAt(10) + 1) * 0.25 + 1.05, sloop.build.footprint.zC],
               climbTarget,
             ),
           );
-          boarding.message = "you haul yourself up the stern ladder";
+          gs.msg.post("you haul yourself up the stern ladder");
         } else if (port.canDock) {
           port.tryDock(); // make port — opens the economy screen, banks progress
-        } else {
-          interact = true;
         }
       }
     }
@@ -426,11 +576,11 @@ async function main() {
     // so she loses way and waits while you swim for the stern ladder. (r18: the
     // old gradual sail-back read as a "lost at sea" mechanic; the player wants a
     // hard cut to 0 throttle the instant you go over the side.)
-    if (boarding.player && boarding.player.swimming) {
+    if (character.player && character.player.swimming) {
       sailing.sailSet = 0;
       if (!manOverboard) {
         manOverboard = true;
-        boarding.message = "MAN OVERBOARD — sails dropped, she loses way!";
+        gs.msg.post("MAN OVERBOARD — sails dropped, she loses way!");
       }
     } else {
       manOverboard = false;
@@ -438,16 +588,6 @@ async function main() {
     sailing.apply(sloop, wind);
     fleet.updateAI(dt, t, waves, wind);
     fleet.reconcile();
-    // keep boarding pointed at a live enemy; release the grapple if its target was culled.
-    const liveEnemies = fleet.enemies;
-    boarding.hasTarget = liveEnemies.length > 0;
-    if (boarding.hasTarget && !liveEnemies.includes(boarding.currentEnemy())) {
-      boarding.grappled = false;
-      boarding.setEnemy(fleet.premiumEnemy ?? liveEnemies[0], true);
-    } else if (boarding.hasTarget && !boarding.grappled && !boarding.chestCarried && fleet.premiumEnemy) {
-      boarding.setEnemy(fleet.premiumEnemy);
-    }
-    fleet.boardingTarget = boarding.grappled ? boarding.currentEnemy() : null;
 
     // one action button (round 6): LMB fires the broadside while RMB-aiming
     // — from the wheel, the deck, first or third person, all identically —
@@ -461,7 +601,7 @@ async function main() {
           cannons.fireBroadside(sloop, aimBearing(), t, controls.elevationDeg, controls.traverseDeg);
         }
       } else if (onFoot) {
-        slash = boarding.canFight();
+        slash = true; // a cutlass flourish on deck — nothing to fight anymore
       }
     }
     let kick = false;
@@ -469,16 +609,16 @@ async function main() {
       controls.kickPressed = false;
       kick = onFoot;
     }
-    boarding.update(
+    character.update(
       dt,
       t,
       waves,
-      { moveX: mv.x, moveZ: mv.z, jump: mv.jump, sprint: mv.sprint, slash, kick, interact },
+      { moveX: mv.x, moveZ: mv.z, jump: mv.jump, sprint: mv.sprint, slash, kick },
       onFoot,
     );
 
     // pin the captain to the wheel while steering
-    if (atWheel && boarding.player) {
+    if (atWheel && character.player) {
       const rot2 = sloop.body.rotation();
       const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(
         new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w),
@@ -487,7 +627,7 @@ async function main() {
       stand.x -= fwd.x * 0.45; // close enough to put both hands on the rim
       stand.z -= fwd.z * 0.45;
       stand.y -= 0.2; // feet on the deck, not levitating at hub height
-      boarding.player.pin(stand, Math.atan2(fwd.z, fwd.x), sailing.rudder);
+      character.player.pin(stand, Math.atan2(fwd.z, fwd.x), sailing.rudder);
     }
 
     // plank repair channel: 4s, blocks firing
@@ -507,27 +647,47 @@ async function main() {
     cannons.update(dt, t, waves, fleet.enemies);
     // ship-vs-ship destruction now runs inside world.step (world.contact.stepAll), not here.
     debris.update(dt, t, waves);
-    character?.update(dt, controls.cameraYaw());
+    charSpike?.update(dt, controls.cameraYaw());
 
-    // r17: NO end-game. The prize sinking just yields salvage and the run continues; your
-    // own ship sinking is survivable too (swim clear, board the enemy, or respawn) — it is
-    // never a banner or a freeze. The game only ends when the player reloads.
+    // enemy sunk → plunder + unlock that class for the shipyard (proving your guns
+    // against a tier is what lets you buy one).
     for (const e of fleet.enemies) {
       if (isSunk(e) && !salvaged.has(e)) {
         salvaged.add(e);
-        port.plunder(e); // loot → economy → mirrors boarding.gold + toast (replaces the flat +150)
+        port.plunder(e); // loot → economy → mirrors gs.wallet + toast
+        const tid = enemyTier.get(e);
+        if (tid && !unlockedClasses.includes(tid)) {
+          unlockedClasses.push(tid);
+          gs.msg.post(`You've bested a ${tierById(tid).name} — the shipyard will sell you one now.`);
+        }
       }
+    }
+
+    // player sunk → respawn. Career: lose the cargo + a quarter of the gold; the ship
+    // tier, upgrades, unlocks and banked notoriety survive. Sandbox: a free fresh hull.
+    if (isSunk(sloop) && !respawning) {
+      respawning = true;
+      if (gs.mode === "career") {
+        economy.state.cargo = {};
+        economy.state.doubloons = Math.floor(economy.state.doubloons * 0.75);
+        gs.msg.post("YOUR SHIP IS LOST — you wash ashore at port; the hold and a quarter of your gold are gone.");
+      } else {
+        gs.msg.post("scuttled — a fresh hull awaits.");
+      }
+      respawnPlayerAtPort();
+      saveCurrent();
+      respawning = false;
     }
   };
 
   // character-on-deck spike (plan Task 13): ?spike=char, IJKL walk, U jump.
   // Spawns once the ship has settled from its splash-down.
-  let character: CharacterSpike | null = null;
+  let charSpike: CharacterSpike | null = null;
   if (new URLSearchParams(location.search).get("spike") === "char") {
     const trySpawn = setInterval(() => {
       if (world.simTime > 6) {
-        character = new CharacterSpike(physics, scene, sloop);
-        character.respawn();
+        charSpike = new CharacterSpike(physics, scene, sloop);
+        charSpike.respawn();
         clearInterval(trySpawn);
       }
     }, 500);
@@ -600,7 +760,7 @@ async function main() {
     };
     const reqFn = el.requestFullscreen || el.webkitRequestFullscreen;
     if (!reqFn) {
-      boarding.message = "fullscreen not supported by this browser";
+      gs.msg.post("fullscreen not supported by this browser");
       return;
     }
     // r18.1: do NOT exit pointer lock first. Chrome holds pointer-lock AND fullscreen at once
@@ -611,12 +771,12 @@ async function main() {
       const p = reqFn.call(el); // NO options arg — maximal compatibility
       if (p && typeof (p as Promise<void>).then === "function") {
         (p as Promise<void>).catch((err: Error) => {
-          boarding.message = `fullscreen refused: ${err.message} (already in F11?)`;
+          gs.msg.post(`fullscreen refused: ${err.message} (already in F11?)`);
           console.warn("[fullscreen]", err);
         });
       }
     } catch (err) {
-      boarding.message = `fullscreen error: ${(err as Error).message}`;
+      gs.msg.post(`fullscreen error: ${(err as Error).message}`);
       console.warn("[fullscreen]", err);
     }
   };
@@ -624,10 +784,21 @@ async function main() {
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
-    if (e.code === "KeyV" && boarding.player) {
+    if (e.code === "Escape") {
+      // Esc pauses mid-voyage and resumes from the pause screen. Ignored at the
+      // title screen and while the port is open (close the port with its own button).
+      if (gs.phase === "playing") {
+        gs.pause();
+        menu.showPause();
+      } else if (gs.phase === "paused") {
+        gs.resume();
+        menu.hide();
+      }
+    }
+    if (e.code === "KeyV" && character.player) {
       camMode = ((camMode + 1) % 3) as 0 | 1 | 2;
       firstPerson = camMode === 1;
-      boarding.player.setFirstPerson(firstPerson);
+      character.player.setFirstPerson(firstPerson);
       controls.syncFirstPerson(firstPerson);
       controls.charFollow = camMode === 0; // wheel zoom works the follow-cam in char 3rd-person
     }
@@ -642,11 +813,19 @@ async function main() {
 
   // dev console handle (also used by Playwright-driven verification)
   (window as unknown as Record<string, unknown>).DEBUG = {
-    sloop,
+    // getter: the player ship is reassigned on a hull swap, so expose it live
+    get sloop() {
+      return sloop;
+    },
+    get currentTier() {
+      return currentTier;
+    },
     fleet,
     world,
     cannons,
-    boarding,
+    character, // the on-foot captain (PlayerCharacter)
+    gs, // game-shell state (mode/phase, wallet, msg)
+    saves, // SaveManager (career/sandbox slots)
     controls,
     camera,
     sailing,
@@ -659,8 +838,8 @@ async function main() {
     economy,
     port,
     TUN, // live tunables (also lets Playwright tune crush/flood knobs during verification)
-    get character() {
-      return character;
+    get spike() {
+      return charSpike;
     },
   };
 
@@ -760,6 +939,8 @@ async function main() {
     gunBar: $("gun-bar"),
     gunSub: $("gun-sub"),
     gold: $("gold"),
+    infamy: $("infamy"),
+    tier: $("tier"),
     rose: $("rose"),
     hdg: $("hdg"),
     rudderInd: $("rudder-ind"),
@@ -801,9 +982,9 @@ async function main() {
     hudEls.rudderInd.style.left = `${50 - sailing.rudder * 42}%`;
 
     // toast lifecycle
-    if (boarding.message && boarding.message !== lastToast) {
-      lastToast = boarding.message;
-      hudEls.toast.textContent = boarding.message;
+    if (gs.msg.current && gs.msg.current !== lastToast) {
+      lastToast = gs.msg.current;
+      hudEls.toast.textContent = gs.msg.current;
       hudEls.toast.style.opacity = "1";
       toastTimer = 3.2;
     }
@@ -811,7 +992,7 @@ async function main() {
       toastTimer -= dt;
       if (toastTimer <= 0) {
         hudEls.toast.style.opacity = "0";
-        boarding.message = "";
+        gs.msg.clear();
         lastToast = "";
       }
     }
@@ -827,7 +1008,6 @@ async function main() {
     });
     hudEls.crewLine.textContent =
       `planks ${sloop.planks} · pump ${sloop.pumpOn ? "ON" : "off"}` +
-      `${boarding.grappled ? " · GRAPPLED" : ""}` +
       `${plugChannel > 0 ? ` · plugging ${plugChannel.toFixed(1)}s` : ""}`;
 
     const ready2 = cannons.sideReadiness(sloop, aimBearing(), world.simTime);
@@ -845,17 +1025,20 @@ async function main() {
     hudEls.gunSub.textContent =
       `elev ${controls.elevationDeg.toFixed(1)}° · trav ${controls.traverseDeg >= 0 ? "+" : ""}${controls.traverseDeg.toFixed(0)}°` +
       `${controls.aiming ? " — AIMING" : ""}`;
-    hudEls.gold.textContent = String(boarding.gold);
+    hudEls.gold.textContent = String(gs.wallet.gold);
+    hudEls.infamy.textContent = String(economy.state.notoriety);
+    hudEls.tier.textContent = currentTier.charAt(0).toUpperCase() + currentTier.slice(1);
 
     hudEls.hpRow.style.display = onFoot ? "flex" : "none";
-    if (onFoot) hudEls.hpBar.style.width = `${(boarding.playerHp / 5) * 100}%`;
+    if (onFoot) hudEls.hpBar.style.width = `${(character.playerHp / 5) * 100}%`;
     hudEls.stamRow.style.display = onFoot ? "flex" : "none";
-    if (onFoot && boarding.player) hudEls.stamBar.style.width = `${boarding.player.stamina * 100}%`;
+    if (onFoot && character.player) hudEls.stamBar.style.width = `${character.player.stamina * 100}%`;
 
     const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
+    const sandboxHint = gs.isSandbox() ? " · SANDBOX (` panel for enemies/sea)" : "";
     hudEls.hints.textContent = onFoot
-      ? `${lockHint}WASD move · Shift sprint · Space jump · LMB slash · hold RMB aim + LMB fire · C kick · E wheel/grab · V view · F fullscreen${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass (wheel zooms) · R plank · P pump · G grapple · F fullscreen · foes ${fleet.enemies.length}`;
+      ? `${lockHint}WASD move · Shift sprint · Space jump · C kick · hold RMB aim + LMB fire · E take wheel · V view · Esc menu${sandboxHint}`
+      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plank · P pump · Esc menu · foes ${fleet.enemies.length}${sandboxHint}`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
@@ -1184,7 +1367,7 @@ async function main() {
     };
     const enemy = fleet.enemies[0];
     if (!enemy) {
-      boarding.message = "no enemy to ram";
+      gs.msg.post("no enemy to ram");
       return;
     }
     const p = sloop.body.translation();
@@ -1386,7 +1569,9 @@ async function main() {
 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
-    world.step(dt);
+    // the sim only advances while PLAYING — the menu, pause and port screens freeze
+    // the world (the render loop still draws, so overlays composite over a still frame).
+    if (gs.isSimRunning()) world.step(dt);
     // ---- per-frame fleet LOD ----
     fleet.rankLOD(camera.position);
     const premium = fleet.premiumEnemy;
@@ -1415,7 +1600,7 @@ async function main() {
     effects.update(dt, world.simTime);
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")
-    boarding.player?.postPose();
+    character.player?.postPose();
     const bearNow = aimBearing();
     // r18: traverse must be SCREEN-RELATIVE for EVERY battery (mouse-right swings the muzzle
     // to screen-right), not just the broadside. With aimBearing's look dirs, screenRight =
@@ -1440,23 +1625,23 @@ async function main() {
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
-    if (firstPerson && boarding.player) {
+    if (firstPerson && character.player) {
       // eye-level camera — at the model's eye line, not its collar
       // (playtest round 5: "really only shows the inside of the uniform")
-      const pt = boarding.player.body.translation();
+      const pt = character.player.body.translation();
       // r18.1: seat the eye at the true eye line (the old 0.95 sat at the crown, which pushed the
       // body-attached arm + cutlass off the bottom of the frame). Lower brings the weapon into the
       // forward view; the head bone is collapsed in FP so the camera isn't inside any mesh.
       // the eye sits higher on the taller Universal base mesh than on the stocky
       // Quaternius captain — otherwise FP frames his collarbone.
       const eyeY =
-        pt.y + (boarding.player.rig ? (boarding.player.rig.kind === "universal" ? 1.05 : 0.74) : 0.95);
+        pt.y + (character.player.rig ? (character.player.rig.kind === "universal" ? 1.05 : 0.74) : 0.95);
       const yaw = controls.cameraYaw();
       const pitch = controls.lookPitch();
-      boarding.player.fpLookPitch = pitch; // carry pose lifts with the view (stays in frame)
+      character.player.fpLookPitch = pitch; // carry pose lifts with the view (stays in frame)
       // r18.1: feed the look yaw — crew.syncMesh faces the body to THIS (not the run direction) in
       // FP, so the arm/cutlass hold their screen spot when you strafe instead of clipping in.
-      boarding.player.fpLookYaw = yaw;
+      character.player.fpLookYaw = yaw;
       const lookX = Math.cos(yaw) * Math.cos(pitch);
       const lookZ = Math.sin(yaw) * Math.cos(pitch);
       // r18.1: with the REAL arm shown, seat the eye slightly BEHIND the shoulder so the right
@@ -1465,13 +1650,13 @@ async function main() {
       // collapsed in FP so there's no mesh to clip into back here.
       // pull back behind the shoulder ONLY when there's a real FP arm to frame
       // (Quaternius). The Universal mesh has no FP arm yet, so sit right at the eye.
-      const back = boarding.player.rig && boarding.player.rig.kind !== "universal" ? 0.42 : 0;
+      const back = character.player.rig && character.player.rig.kind !== "universal" ? 0.42 : 0;
       camera.position.set(pt.x - lookX * back, eyeY, pt.z - lookZ * back);
       camera.lookAt(camera.position.x + lookX, eyeY + Math.sin(pitch), camera.position.z + lookZ);
       // viewmodel: the procedural stand-in arm shows ONLY when there's no rigged model — the
       // rigged pirate now carries its REAL right arm + cutlass in first person (r18.1).
-      viewModel.visible = !boarding.player.rig;
-      const swingT = boarding.player.attackTimer ?? 0;
+      viewModel.visible = !character.player.rig;
+      const swingT = character.player.attackTimer ?? 0;
       const swingP = swingT > 0 ? Math.sin((1 - swingT / 0.7) * Math.PI) : 0;
       vmBob += dt * 3.2;
       const bob = Math.sin(vmBob) * 0.01;
@@ -1481,11 +1666,11 @@ async function main() {
       // a diagonal cutlass slash: the blade sweeps down-and-across the view (more roll +
       // yaw than the old straight chop) with a little follow-through, then recovers.
       vmArm.rotation.set(-0.12 - swingP * 1.7, 0.28 + swingP * 0.55, 0.78 - swingP * 0.95);
-    } else if (camMode === 0 && boarding.player) {
+    } else if (camMode === 0 && character.player) {
       // character third-person: a short follow-cam orbiting the player himself
       // (V's default view) instead of the whole ship.
       viewModel.visible = false;
-      const pp = boarding.player.body.translation();
+      const pp = character.player.body.translation();
       controls.updateFollowCamera(camera, new THREE.Vector3(pp.x, pp.y, pp.z));
     } else {
       viewModel.visible = false;

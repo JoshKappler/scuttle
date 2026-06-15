@@ -4,7 +4,7 @@
 
 > **THE RULE: when a doc disagrees with the code, the code wins.** Verify any file / flag / tunable in the source before relying on it. This file is the current-state index; keep it honest.
 
-_Last verified against code: 2026-06-14 — **post-consolidation**: every active dev branch merged into `main`._
+_Last verified against code: 2026-06-14 — **tycoon game layer** added on `dev/tycoon-game-layer` (start menu, career/sandbox modes + save, real upgrade tree, Cutter→Frigate shipyard, notoriety escalation, sink penalty; boarding removed, captain kept). Pre-this-branch baseline was the post-consolidation merge of every dev branch into `main`._
 
 ## What's in the build (consolidated 2026-06-14)
 All the parallel dev branches were merged into `main` in one pass:
@@ -12,8 +12,10 @@ All the parallel dev branches were merged into `main` in one pass:
 - **Voxel destruction (one rule, Teardown-style)** — cannonballs bore clean holes; on a ram the two hulls (kept OUT of Rapier's rigid solver) interpenetrate and `voxelContact` branches PER voxel-contact on the closing speed: **above `vBreak`** both voxels are destroyed (bounded cheapest-first by the collision KE ½·μ·v², so a ram lodges when its energy is spent instead of clipping out the far side) and that fracture energy is taken out of the closing motion (`crush.breakImpulse`) but shed as a **DRAG on whichever hull is driving in** (`crush.distributeClosingDrag`) — the crumbling layer carries its momentum off as debris, so a heavy ram spends its OWN speed and does **not** shove a stationary victim up to ramming speed (the old equal-and-opposite bite did → both reached a common velocity, the closing differential vanished, breaking stopped, and the ram coasted on through lodged). The hull PLOWS into the cleared space next step — non-penetration is free because the voxel in the way is gone (no "jar"); **below `vBreak`** it rests — DELETE the closing and de-penetrate by POSITION along the **horizontal COM→COM line** (the geometric push-out axis FLIPS on engulf → it would shove a lodged ram *deeper*, the "nose rotates straight through" bug), strong enough to EXPEL a lodge but position-only + closing-pre-zeroed so it can never re-penetrate or fling; this is the ONLY place positional separation runs (HORIZONTAL-only so a hit never shoves a hull up/down). The drag is horizontal at COM height (off-centre → yaw, never roll); heavier = harder to shove (each hull sheds Δv = its drag-share/its mass); the keel's water drag bleeds the struck hull's lurch; breached compartments flood and she founders. After damage the hull's REAL per-axis inertia is re-derived from the voxels (`ship.recomputeMassProperties`; a mass-only rescale used to leave a holed hull falsely symmetric → it turtled). Everything on the ship is real grid voxels (hull, deck, quarterdeck, cabin, bulwark, ballast, bow armor — bow armor is only ~50% tougher than oak now); cannons/wheel/masts/sails are separate meshes, never in the grid, so the carve can't touch them.
 - **Hostile fleet** — 0..6 enemies (dev-panel slider), sunk ships auto-replaced.
 - **Voxel archipelago** — seeded islands + cliffs + a harbor town with a dock; solid static collision (hulls ground on the shore).
-- **Plunder economy** — wallet / cargo / upgrades, a dock-triggered port screen, `localStorage` save.
-- **On-foot character** — Quaternius Universal (default) with clothing; walk/board the deck in 1st or 3rd person.
+- **Tycoon game layer** (`game/gameState.ts`) — a start menu (New Career / Continue / Sandbox), `GameState` mode/phase machine that GATES `world.step` (menu/pause/port freeze the sim — the render loop keeps drawing), Esc pause, and a versioned `SaveManager` (`game/saveState.ts`) with separate **career / sandbox** localStorage slots (migrates the legacy economy key). Career: sinking is non-terminal but COSTS — respawn a fresh current-tier hull at the home port, lose the cargo + 25% gold. Sandbox: all tiers unlocked, a deep purse, no penalty.
+- **Plunder economy + upgrades** — wallet (`game/wallet.ts`) / cargo / a real upgrade tree wired to physics (Faster Reload→`cannons.reloadMul`, Hull Reinforcement→`ship.hullToughness`, Tall Canvas→`sailing.boost`, Sharper Rudder→`ship.rudderPower`, plus Hold + Repair Stores), linear cost scaling, dock-triggered port screen (`render/portScreen.ts`).
+- **Ship tiers + shipyard** (`game/shipyard.ts`) — Cutter→Sloop→Brig→Frigate; start in the Cutter, **buy bigger hulls at the port gated by gold + having SUNK that class** (`canBuy`). The swap rebuilds the hull live and re-points every player-ship reference (`main.ts swapPlayerShip`). Enemy spawns are **notoriety-scaled** (`sim/fleetSpawn.ts pickEnemyTier`): small prey early, brigs/frigates as infamy climbs.
+- **On-foot captain** — Quaternius Universal (default) with clothing; walk the deck, kick, swim, 1st/3rd person. He mostly stands at the wheel; the old boarding system is GONE.
 - **AAA ocean** — 3-cascade GPU FFT + analytic swell + dynamic-wave FDTD.
 
 ## Run / build / test
@@ -23,13 +25,14 @@ All the parallel dev branches were merged into `main` in one pass:
 - **⚠️ `npm run test` (vitest) does NOT type-check** — it strips types. A red `tsc` hides behind green tests, so **run `npm run build` to catch type errors before merging.**
 - **Dev panel:** backtick `` ` `` toggles it (releases pointer-lock). It live-edits `TUN` in `src/core/tunables.ts`.
 - **In-browser verify (GPU/shaders):** GLSL bugs pass `tsc` + unit tests and fail only at runtime — verify shaders live via Playwright MCP at `:5173` + a readback oracle. Screenshots land in the **projects ROOT** (`projects/<name>.png`), Read them from there.
-- `window.DEBUG` (set in `src/main.ts`) exposes: `sloop, fleet, world, cannons, boarding, controls, camera, sailing, contact, debris, oceanField, dynWaves, spray, islands, economy, port, TUN, character`. (Old docs say `enemy`/`hulk` — it's the `fleet` now.)
+- `window.DEBUG` (set in `src/main.ts`) exposes: `sloop` (getter — the LIVE player ship, reassigned on a hull swap), `currentTier` (getter), `fleet, world, cannons, character, gs, saves, controls, camera, sailing, contact, debris, oceanField, dynWaves, spray, islands, economy, port, TUN`, plus `spike` (the dev `?spike=char` character). (`boarding` is GONE; `character` is the on-foot captain `PlayerCharacter`.)
 - **Repo:** `scuttle/` is its own git repo. The parent `projects/` is **not** a repo — never `git init` at root.
 - **Concurrent instances share this ONE working dir.** Safe git = branch-create + push only; never `checkout`/`reset`/`stash`/`rebase` that clobbers a sibling mid-task. There is **NO CI** — verify big merges in your own *detached throwaway worktree* (build + test) and then `git push origin HEAD:main`.
 
 ## Controls
-- **Helm (ship):** `W`/`S` sail set, `A`/`D` steer · `T` toggle helm ↔ on-foot.
-- **On foot:** `W`/`A`/`S`/`D` move · `E` interact (also opens the **port** at a dock) · `C` kick · `G` grapple toggle.
+- **Menu:** boots to the start menu; **`Esc`** pauses/resumes mid-voyage (menu/pause/port freeze the sim).
+- **Helm (ship):** `W`/`S` sail set, `A`/`D` steer · `E` leave the wheel.
+- **On foot:** `W`/`A`/`S`/`D` move · `Shift` sprint · `Space` jump · `E` take the wheel / make **port** at a dock / climb the stern ladder · `C` kick. (Boarding/grapple is GONE.)
 - **Damage control:** `R` plug a breach (costs a plank) · `P` pump toggle.
 - **Camera:** `V` cycles char-3rd / char-1st / ship-3rd person; mouse-wheel zoom in char follow-cam.
 - `F` fullscreen · `X` cutaway clip-plane · `` ` `` dev panel.
@@ -45,9 +48,9 @@ All the parallel dev branches were merged into `main` in one pass:
 
 ## Architecture (source-of-truth modules)
 - `src/core/` — `constants` (`MAXVIS 6`, `FIXED_DT`, `G`, `VOXEL_SIZE`), `rng` (deterministic), `tunables`.
-- `src/sim/` — deterministic physics (the test oracle): `voxelGrid`, `shipwright` (hull voxels) + `weld`, `buoyancy` (TRUE per-voxel), `compartments` + `connectivity` (flooding), `gerstner` (swell), `oceanSpectrum`/`fft`, `ballistics`, `aiBrain`, `heel`, `materials`, `rigDamage`; **destruction:** `carve`, `crush`, `voxelOverlap`, `surfaceSet`; **world:** `islandwright` (islands; uses `simplex-noise`), `economy` (pure wallet/cargo/upgrades).
-- `src/game/` — `ship`, `world` (fixed-step loop; owns `world.contact` = the deformable crunch), `physics` (Rapier + contact hooks), `voxelContact` (ship-vs-ship mutual crush), `hullCollider`, `crew` (+ FP viewmodel), `boarding`, `cannons`, `gunnery`, `player`, `sailing`, `ai`, `fleet` (FleetManager), `debris`, `character` (deck spike) + `characterPack`, `port` (PortController: dock proximity + sell/repair/buy + save), `islandField`.
-- `src/render/` — ocean: `ocean` + `oceanCascade` + `oceanFFT` + `oceanField` + `dynamicWaves`; `shipVisual`, `compartmentFluid`, `voxelMesher`, `islandVisual`, `spray`, `seamMask`, `sky`, `effects`, `devPanel`, `portScreen`; character models: `universalModel` (default), `bugrimovModel`, `kaykitModel`, `pirateModel`.
+- `src/sim/` — deterministic physics (the test oracle): `voxelGrid`, `shipwright` (hull voxels — `buildCutter`/`buildSloop`/`buildBrig`/`buildFrigate`) + `weld`, `buoyancy` (TRUE per-voxel), `compartments` + `connectivity` (flooding), `gerstner` (swell), `oceanSpectrum`/`fft`, `ballistics`, `aiBrain`, `heel`, `materials`, `rigDamage`; **destruction:** `carve`, `crush`, `voxelOverlap`, `surfaceSet`; **world:** `islandwright` (islands; uses `simplex-noise`), `economy` (pure wallet/cargo/upgrade catalog + cost scaling), `fleetSpawn` (notoriety-scaled tier weighting).
+- `src/game/` — `ship`, `world` (fixed-step loop; owns `world.contact` = the deformable crunch), `physics` (Rapier + contact hooks), `voxelContact` (ship-vs-ship mutual crush), `hullCollider`, `crew` (+ FP viewmodel), `playerCharacter` (the on-foot captain — replaced `boarding`), `cannons`, `gunnery`, `player`, `sailing`, `ai`, `fleet` (FleetManager + `setTarget`), `debris`, `character` (dev deck spike) + `characterPack`, `gameState` (mode/phase + `Wallet`/`MessageBus`), `wallet`, `messageBus`, `saveState` (SaveManager: career/sandbox slots), `shipyard` (tier catalog + buy/unlock rules), `port` (PortController: dock proximity + sell/repair/buy-upgrade/buy-ship + the game-shell save hooks), `islandField`.
+- `src/render/` — ocean: `ocean` + `oceanCascade` + `oceanFFT` + `oceanField` + `dynamicWaves`; `shipVisual`, `compartmentFluid`, `voxelMesher`, `islandVisual`, `spray`, `seamMask`, `sky`, `effects`, `devPanel`, `portScreen` (sell/repair/upgrades/shipyard), `menuScreen` (start + pause overlays); character models: `universalModel` (default), `bugrimovModel`, `kaykitModel`, `pirateModel`.
 - `src/main.ts` — entry / main loop / camera / FP viewmodel / `window.DEBUG`.
 
 ## THE LAW — invariants that must not be broken
@@ -57,21 +60,23 @@ All the parallel dev branches were merged into `main` in one pass:
 4. **Destruction is ONE rule.** Cannons, ramming, ship-ship crunch and terrain all emerge from breaking voxels against an energy budget (`sim/crush.ts` + `game/voxelContact.ts`), never preset damage amounts. Judge any change by *"does the rest fall out for free?"*
 
 ## GONE — intentionally removed, do NOT "restore"
-- **Enemy crew** (`game/boarding.ts`) — `ensureCrew` posts `[]`.
-- **LOST-AT-SEA / PRIZE end-game** — sinking is non-terminal; the voyage just continues, no banner.
+- **Boarding** (`game/boarding.ts`, deleted) — grapple (`G`), enemy crew, cross-ship melee, and the carry-home prize chest are all gone. The on-foot **captain survived** as `game/playerCharacter.ts` (deck-walk / kick / swim / FP-3P); the gold wallet + toast that boarding used to own moved to `Wallet`/`MessageBus` on `GameState`. There are no enemy on-foot characters.
+- **LOST-AT-SEA / PRIZE end-game** — sinking is non-terminal; Career respawns you at port (with a cargo + 25%-gold penalty), no banner/freeze.
 - **The 6 physics levers** (`pitchDamp, rollDamp, trim, keelDepth, heelVelCap, turnHeelArm`) — replaced by per-voxel buoyancy + the one `heaveDamp` ζ.
 - **The single band-limited 14 m FFT chop tile** — replaced by the 3-cascade Tessendorf ocean.
 - **The emissive "blue cube" flood** — replaced by real, sloshing compartment fluid (`render/compartmentFluid.ts`).
 - **The rigid-reaction ram path** (`game/ramming.ts`, `collisionDestruction`, `TUN.ram`) — retired for the deformable `voxelContact` crunch (`TUN.crush`, lives in `world.contact`).
 - **The single `enemy`** — replaced by the `fleet` (`DEBUG.fleet`, `FleetManager`).
 
-## Open follow-ups (left deliberately at consolidation)
-- **Wire dock → port:** in `main.ts` the `PortController` has `// dock: islands` commented out; `IslandField.nearestDock` already satisfies the `DockProvider` interface — a one-line wire, left for a pass where the in-game flow can be verified in-browser.
+## Open follow-ups (the tycoon game layer is in; these are tuning / polish)
+- **Balance pass (feel-test):** upgrade costs, ship-tier prices (0/600/1800/4200), the 25% sink penalty, and the escalation rate (`sim/fleetSpawn.ts` threat divisor 120) are sensible STARTING values — tune them by playing. `rollLoot` pays infamy ∝ hull cell-count (tens/kill), so notoriety numbers are large; the divisor is the escalation knob.
+- **Premium ocean cut for non-sloop enemies:** the slot-1 voxel sea-cut + `spans[1]` assume a sloop hull; mixed enemy tiers reuse it as a visual approximation.
+- **Settings:** `SaveState.settings` (masterVolume, defaultCamera) is persisted but there's no settings UI / audio system yet to apply it.
 - **Islands polish:** hulls ground ~1 ship-length offshore on the shoal; the harbor palette / cliff drama are starting values.
-- **Character:** clothing is in; still open — a cutlass on the model, wall-clip collision, mast-climb to a crow's nest.
+- **Character:** a cutlass on the model, wall-clip collision, mast-climb to a crow's nest.
 
 ## Roadmap / North Star
-`docs/superpowers/specs/2026-06-12-scuttle-design.md`: **M1 floats → M2 sinks → M3 fights back → M4 board her → M5 the run → M6 ship it.** M1–M4 are substantially in (float / sink / fight, fleet, boarding + on-foot, islands, economy framework); the persistent **plunder-tycoon** loop is the active framing.
+`docs/superpowers/specs/2026-06-14-tycoon-game-layer-design.md` is the CURRENT framing: a structured **plunder-tycoon** (menu → career: sink → plunder → port → upgrade/buy bigger ships → escalate; or sandbox). It supersedes the roguelite/leaderboard framing of the older `2026-06-12-scuttle-design.md` for the game-loop layer (the sim/ocean/destruction foundations there still hold).
 
 ## Doc map (what to trust)
 - **Trust (current):** this file and the code. The `docs/` specs + worklogs (ocean rebuild, voxel destruction / masts, multi-ship-fleet, voxel-islands, plunder-economy designs) are dated history — good for the *why*, but the code wins on the *what*.

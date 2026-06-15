@@ -44,7 +44,7 @@ export class FleetManager {
   boardingTarget: Ship | null = null;
 
   private readonly world: FleetWorld;
-  private readonly target: Ship;
+  private target: Ship; // the player ship — reassigned when the player swaps hulls
   private readonly spawn: () => EnemyUnit;
   private readonly isWreck: (ship: Ship) => boolean;
   private readonly maxVis: number;
@@ -60,6 +60,11 @@ export class FleetManager {
     // so it's a true sinking signal. (De-pen is now horizontal too, removing the shove path.)
     this.isWreck = opts.isWreck ?? ((s) => (s.body.translation().y < -12 && s.waterlog > 0.05) || s.waterlog >= 0.45);
     this.maxVis = opts.maxVis ?? MAXVIS;
+  }
+
+  /** Re-point the fleet at a freshly-built player ship (after a hull swap). */
+  setTarget(ship: Ship): void {
+    this.target = ship;
   }
 
   /** Living + sinking enemy ships, in spawn order. */

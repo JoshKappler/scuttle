@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Economy, GOODS, UPGRADES, rollLoot, repairQuote } from "../src/sim/economy";
+import { Economy, GOODS, UPGRADES, upgradeCost, rollLoot, repairQuote } from "../src/sim/economy";
 import { Rng } from "../src/core/rng";
 
 const firstGood = Object.keys(GOODS)[0];
@@ -80,7 +80,7 @@ describe("Economy — transactions", () => {
   });
 
   it("buyUpgrade blocks at max level and nextCost goes null", () => {
-    const e = new Economy({ doubloons: firstUpgrade.cost * (firstUpgrade.maxLevel + 2) });
+    const e = new Economy({ doubloons: firstUpgrade.cost * 100 }); // plenty for the scaled ramp
     for (let i = 0; i < firstUpgrade.maxLevel; i++) {
       expect(e.buyUpgrade(firstUpgrade.id).ok).toBe(true);
     }
@@ -92,6 +92,37 @@ describe("Economy — transactions", () => {
   it("buyUpgrade rejects an unknown upgrade id", () => {
     const e = new Economy({ doubloons: 9999 });
     expect(e.buyUpgrade("no-such-upgrade")).toEqual({ ok: false, reason: "unknown" });
+  });
+});
+
+describe("Economy — tycoon upgrade catalog & cost scaling", () => {
+  it("ships the six tycoon upgrades", () => {
+    const ids = UPGRADES.map((u) => u.id).sort();
+    expect(ids).toEqual(["hold", "hull", "planks", "reload", "rudder", "speed"].sort());
+  });
+
+  it("cost scales linearly with the level currently owned", () => {
+    const reload = UPGRADES.find((u) => u.id === "reload")!;
+    expect(upgradeCost(reload, 0)).toBe(reload.cost); // first level = base
+    expect(upgradeCost(reload, 2)).toBe(reload.cost * 3); // third level = 3× base
+  });
+
+  it("nextCost reflects the ramp and spends the scaled amount", () => {
+    const e = new Economy({ doubloons: 100000 });
+    const base = UPGRADES.find((u) => u.id === "reload")!.cost;
+    expect(e.nextCost("reload")).toBe(base);
+    e.buyUpgrade("reload"); // spent `base`, now own level 1
+    expect(e.nextCost("reload")).toBe(base * 2);
+    expect(e.state.doubloons).toBe(100000 - base);
+    e.buyUpgrade("reload"); // spent 2×base
+    expect(e.state.doubloons).toBe(100000 - base - base * 2);
+  });
+
+  it("blocks a buy when the scaled cost is unaffordable even if the base was affordable", () => {
+    const base = UPGRADES.find((u) => u.id === "reload")!.cost;
+    const e = new Economy({ doubloons: base }); // exactly one base level
+    expect(e.buyUpgrade("reload").ok).toBe(true); // affords level 0→1
+    expect(e.buyUpgrade("reload")).toEqual({ ok: false, reason: "broke" }); // 1→2 costs 2×base
   });
 });
 

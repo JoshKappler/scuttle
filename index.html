@@ -34,7 +34,9 @@
       #gun-status { font: 700 21px/1.1 Georgia, serif; color: #d8b24a; letter-spacing: 0.1em; font-variant: small-caps; }
       #gun-status.ready { color: #93b56b; }
       #gun-sub { color: #a8895c; font-size: 11px; margin-top: 4px; font-style: italic; }
-      #gold-panel { right: 14px; top: 14px; font: 700 18px Georgia, serif; color: #d8b24a; }
+      #gold-panel { right: 14px; top: 14px; font: 700 18px Georgia, serif; color: #d8b24a; text-align: right; }
+      #infamy-line { font: 600 11px Georgia, serif; color: #a8895c; margin-top: 3px; }
+      #infamy-line .tier { color: #d8c9a3; font-variant: small-caps; letter-spacing: 0.05em; }
       #compass { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); width: 104px; height: 104px; pointer-events: none; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.55)); }
       #compass .ring { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(44,32,17,0.85) 48%, rgba(20,14,8,0.95)); border: 3px solid #b08d3c; box-shadow: 0 0 0 1px #5e4516, inset 0 0 0 2px rgba(0,0,0,0.65), inset 0 0 0 3px rgba(201,162,39,0.4), inset 0 0 18px rgba(0,0,0,0.6); }
       #compass .rose { position: absolute; inset: 7px; border-radius: 50%; transition: transform 0.1s linear; }
@@ -94,7 +96,7 @@
       <div class="bar" style="margin-top:6px"><div id="gun-bar"></div></div>
       <div id="gun-sub">elevation 4.0°</div>
     </div>
-    <div id="gold-panel" class="panel">⛀ <span id="gold">0</span></div>
+    <div id="gold-panel" class="panel">⛀ <span id="gold">0</span><div id="infamy-line">infamy <span id="infamy">0</span> · <span id="tier" class="tier">Cutter</span></div></div>
     <div id="fs-btn" title="fullscreen (F)">⛶</div>
     <div id="spyglass"><div class="mask"></div><div class="lens"></div></div>
     <div id="compass">
