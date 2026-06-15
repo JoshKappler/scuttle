@@ -672,8 +672,12 @@ export function buildManOfWar(): ShipBuild {
   cutDoorAndStairs(fcX0, -1);  // forward forecastle: stairs aft of the break, climbing forward
 
   // iron ballast — deep z/t-bands following the fuller-aft centre of buoyancy,
-  // like the brig but more of it (three gun decks = more top-weight). STARTER
-  // pattern; Task 2 tunes the rows live until draft ≈ 0.45 with positive GM.
+  // like the brig but more iron in the lower hold (three gun decks = more
+  // top-weight to counter). Tuned live against tests/manOfWarFloat.ts: nine
+  // tiers, WIDEST at the keel (zHalf 8) and tapering up to a narrow tier-8
+  // spine, all packed into the lower hold well below the lower gun deck (y21).
+  // Lands draft ≈ 0.455 of the envelope with COM ≈ 2.25 (very low), so GM ≈ 4.1
+  // and she stays restoring out past 15° — a stiff first-rate, not a Vasa.
   const ballastZ = (k: number) => {
     const zs: number[] = [];
     for (let z = Math.ceil(cz - k); z <= Math.floor(cz + k); z++) zs.push(z);
@@ -681,15 +685,15 @@ export function buildManOfWar(): ShipBuild {
   };
   // each row: [tier above keel, tMin, tMax, zHalf]
   const ballastRows: [number, number, number, number][] = [
-    [0, 0.05, 0.90, 6],
-    [1, 0.07, 0.88, 6],
-    [2, 0.10, 0.85, 5],
-    [3, 0.14, 0.82, 5],
-    [4, 0.18, 0.78, 4],
-    [5, 0.22, 0.74, 4],
-    [6, 0.27, 0.69, 3],
-    [7, 0.32, 0.64, 3],
-    [8, 0.38, 0.58, 2],
+    [0, 0.05, 0.90, 8],
+    [1, 0.06, 0.89, 8],
+    [2, 0.08, 0.87, 7],
+    [3, 0.10, 0.85, 7],
+    [4, 0.13, 0.82, 6],
+    [5, 0.16, 0.79, 5],
+    [6, 0.20, 0.75, 4],
+    [7, 0.25, 0.70, 3],
+    [8, 0.31, 0.64, 2],
   ];
   for (let x = 0; x < nx; x++) {
     const t = stationT(x);
@@ -717,7 +721,7 @@ export function buildManOfWar(): ShipBuild {
   // voxel stays solid — the render frames it, shipVisual.ts:674); the weather
   // deck fires over the rail through fence embrasures like the brig's waist.
   const lowerXs = [0.26, 0.33, 0.40, 0.47, 0.54, 0.61, 0.68, 0.74].map((f) => x0 + Math.round(L * f));
-  const midXs = lowerXs.slice();
+  const midXs = lowerXs;
   const upperXs = [0.30, 0.38, 0.46, 0.54, 0.62, 0.70].map((f) => x0 + Math.round(L * f));
 
   // bulwark fence at each deck's own edge (waist + quarterdeck + forecastle),
