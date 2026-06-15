@@ -202,10 +202,13 @@ async function main() {
     maxShips: 2,
   });
 
-  // stencil seam mask: each frame, paint both hull silhouettes into the
-  // stencil buffer before the ocean draws; the ocean's NotEqual stencil test
-  // then rejects those pixels (no sea on the deck, in the hold, or bow void).
-  const seam = new SeamMask([sloop.visual.group]); // hull list refreshed each frame from the fleet
+  // stencil seam mask: each frame, paint every hull AND island silhouette into
+  // the stencil buffer before the ocean draws; the ocean's NotEqual stencil test
+  // then rejects those pixels (no sea on the deck, in the hold, the bow void — and
+  // no wave-crests poking up through the shoreline: an island is a solid mass to
+  // the sea, exactly like a hull). Islands are static, so capture their groups once.
+  const islandHulls = islands.islands.map((i) => i.visual.group);
+  const seam = new SeamMask([sloop.visual.group, ...islandHulls]); // hull+island list refreshed each frame from the fleet
 
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
@@ -1508,8 +1511,8 @@ async function main() {
     renderer.autoClear = true;
     renderer.clear(); // clears color + depth + stencil
     renderer.autoClear = false;
-    seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group)]);
-    seam.write(renderer, scene, camera); // hull → stencil (no color/depth)
+    seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group), ...islandHulls]);
+    seam.write(renderer, scene, camera); // hull+island → stencil (no color/depth)
     renderer.render(scene, camera);      // full scene incl. ocean, stencil-tested
     renderer.autoClear = true;
 
