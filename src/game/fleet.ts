@@ -53,7 +53,12 @@ export class FleetManager {
     this.world = opts.world;
     this.target = opts.target;
     this.spawn = opts.spawn;
-    this.isWreck = opts.isWreck ?? ((s) => s.body.translation().y < -12);
+    // A ship is a wreck only when it has genuinely FOUNDERED — deep under AND waterlogged, or
+    // fully saturated outright. The old pure y<-12 check fired on transients: a ram's de-pen shove,
+    // a heeling hull whose grid-corner origin swings low, or a deep swell trough — so a still-afloat
+    // victim got replaced before it sank. `waterlog` only climbs after a compartment is ~90% full,
+    // so it's a true sinking signal. (De-pen is now horizontal too, removing the shove path.)
+    this.isWreck = opts.isWreck ?? ((s) => (s.body.translation().y < -12 && s.waterlog > 0.05) || s.waterlog >= 0.45);
     this.maxVis = opts.maxVis ?? MAXVIS;
   }
 

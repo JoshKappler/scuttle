@@ -152,10 +152,10 @@ export const TUN = {
      *  apart per step when too slow to break. Re-solved from the fresh overlap each step (never
      *  accumulates), and rate-capped by maxDepenSpeed, so it settles rather than flings. */
     depen: 0.3,
-    /** hard cap (m/s) on the REST positional separation — the anti-fling safety net. Even a
-     *  pathological deep overlap (teleport, or a ram that lodged then dropped below vBreak) eases
-     *  apart gently instead of being shot out. */
-    maxDepenSpeed: 3.0,
+    /** hard cap (m/s) on the REST positional separation (HORIZONTAL only) — the anti-fling safety
+     *  net. Two massive hulls should EASE apart, not shove each other across the sea, so this is
+     *  deliberately low; a lodged ram works free slowly. Raise for snappier separation. */
+    maxDepenSpeed: 1.0,
     /** per-step cap (m/s) on the closing speed the BREAK bite may remove in one step — a stability /
      *  NaN backstop and a clamp on a huge single-step slab. The plow is inherently multi-step, so
      *  this just keeps any one step's momentum trade smooth. */

@@ -40,9 +40,13 @@ describe("material break energy", () => {
     expect(breakEnergy(PINE)).toBe(MATERIALS[PINE].strength * STRENGTH_TO_JOULES);
     expect(breakEnergy(IRON)).toBeGreaterThan(breakEnergy(OAK));
   });
-  it("ram is the toughest hull material (so a bow-first ram wins)", () => {
+  it("ram bow is reinforced oak — only modestly tougher than the hull it strikes (~50%), NOT armor plate", () => {
+    // a bow-first ram is modestly favoured (RAM > OAK) but the prow still chips; it is NOT the
+    // toughest material on the ship (iron ballast is) — that made it punch through victims without
+    // taking damage (playtest: "front of boat strength enhancements are too much").
     expect(MATERIALS[RAM].strength).toBeGreaterThan(MATERIALS[OAK].strength);
-    expect(MATERIALS[RAM].strength).toBeGreaterThan(MATERIALS[IRON].strength);
+    expect(MATERIALS[RAM].strength).toBeLessThan(MATERIALS[IRON].strength);
+    expect(MATERIALS[RAM].strength / MATERIALS[OAK].strength).toBeCloseTo(1.5, 1); // ~50% tougher
   });
   it("empty / unknown material costs nothing to break", () => {
     expect(breakEnergy(0)).toBe(0);

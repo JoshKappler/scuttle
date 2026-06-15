@@ -138,7 +138,7 @@ export class VoxelContact {
     const tough = TUN.crush.toughness;
 
     // ---- classify each contact: BREAK (closing > vBreak) vs REST ----
-    let breakCount = 0, bSumX = 0, bSumY = 0, bSumZ = 0, costSum = 0;
+    let breakCount = 0, bSumX = 0, bSumY = 0, bSumZ = 0;
     const brokenA: [number, number, number][] = [];
     const brokenB: [number, number, number][] = [];
     if (moving) {
@@ -153,7 +153,6 @@ export class VoxelContact {
         const bx = sc.bCells[o], by = sc.bCells[o + 1], bz = sc.bCells[o + 2];
         brokenA.push([ax, ay, az]);
         brokenB.push([bx, by, bz]);
-        costSum += (breakEnergy(gA.get(ax, ay, az)) + breakEnergy(gB.get(bx, by, bz))) * tough;
         bSumX += px; bSumY += py; bSumZ += pz; breakCount++;
       }
     }
@@ -161,23 +160,20 @@ export class VoxelContact {
     let removedA = 0, removedB = 0, energy = 0, force = 0, vClose = 0;
 
     if (breakCount > 0) {
-      // ---- BREAK regime: carve the overlapping layer, take its energy out of the closing motion ----
-      // The geometry already limits the layer to ~one advance per step; maxStepEnergy is only an
-      // anti-vaporize clamp for a pathological deep overlap, so the common path carves the whole
-      // layer. The carve clears the path, so NO de-penetration runs (that was the jar).
-      if (costSum <= TUN.crush.maxStepEnergy) {
-        removedA = shipA.carveCells(brokenA);
-        removedB = shipB.carveCells(brokenB);
-        energy = costSum;
-      } else {
-        energy = this.carveWithinBudget(shipA, shipB, brokenA, brokenB, gA, gB, tough, TUN.crush.maxStepEnergy);
-        removedA = this.lastRemovedA; removedB = this.lastRemovedB;
-      }
-
+      // ---- BREAK regime: destruction is BOUNDED by the collision energy ----
+      // Carve cheapest-first up to ½·μ·vClose² (the closing KE): a ram can only break as much wood
+      // as its energy can pay for, so it bites a hole and LODGES once that energy is spent instead of
+      // carving the whole overlap for free and clipping out the far side. The broken wood's energy is
+      // then taken straight out of the closing motion (breakImpulse). The carve clears the wood in the
+      // way, so NO position de-penetration runs here (running it while breaking was the jar). maxStepEnergy
+      // is only an anti-vaporize clamp for a pathological (teleport) deep overlap.
       const bcx = bSumX / breakCount, bcy = bSumY / breakCount, bcz = bSumZ / breakCount;
       this.velAt(this.comA, lvA, avA, bcx, bcy, bcz, this.vA);
       this.velAt(this.comB, lvB, avB, bcx, bcy, bcz, this.vB);
       vClose = (this.vA.x - this.vB.x) * dhx + (this.vA.z - this.vB.z) * dhz;
+      const budget = Math.min(0.5 * mu * vClose * vClose, TUN.crush.maxStepEnergy);
+      energy = this.carveWithinBudget(shipA, shipB, brokenA, brokenB, gA, gB, tough, budget);
+      removedA = this.lastRemovedA; removedB = this.lastRemovedB;
       const j = breakImpulse(mu, vClose, energy, TUN.crush.biteDvCap);
       this.pushAtComHeight(shipA, bcx, bcz, this.comA.y, -dhx, -dhz, j); // slow A (closing +d̂)
       this.pushAtComHeight(shipB, bcx, bcz, this.comB.y, dhx, dhz, j);   // shove B along +d̂
@@ -190,26 +186,33 @@ export class VoxelContact {
         this.effects.impactDebris(this.pt2, this.imp, Math.min(removed * TUN.crush.fling, 40));
       }
     } else if (depth >= TUN.crush.minDepth) {
-      // ---- REST regime: too slow to break → cancel the closing + de-penetrate by POSITION ----
-      // Direction = the geometric push-out axis (reliable for the SHALLOW overlaps this branch sees;
-      // deep engulfing overlap only happens while breaking, which uses d̂ instead).
-      const nx = ov.axis[0], ny = ov.axis[1], nz = ov.axis[2];
-      this.velAt(this.comA, lvA, avA, cx, cy, cz, this.vA);
-      this.velAt(this.comB, lvB, avB, cx, cy, cz, this.vB);
-      vClose = (this.vA.x - this.vB.x) * nx + (this.vA.y - this.vB.y) * ny + (this.vA.z - this.vB.z) * nz;
-      if (vClose > 0) {
-        const jv = mu * Math.min(vClose, TUN.crush.biteDvCap);
-        this.pushAtComHeight(shipA, cx, cz, this.comA.y, -nx, -nz, jv);
-        this.pushAtComHeight(shipB, cx, cz, this.comB.y, nx, nz, jv);
-        force = jv / dt;
+      // ---- REST regime: too slow to break → cancel the closing + gently de-penetrate by POSITION ----
+      // HORIZONTAL ONLY: ships separate sideways, never get shoved up into the air or DOWN under the
+      // sea. A downward shove used to ram a holed victim past the −12 m "sunk" line before it had
+      // actually foundered (premature respawn) and tip survivors toward a capsize; buoyancy owns the
+      // vertical. Uses the horizontal push-out axis (reliable for the shallow overlaps this branch sees).
+      const nx = ov.axis[0], nz = ov.axis[2];
+      const hlen = Math.hypot(nx, nz);
+      if (hlen > 1e-4) {
+        const hnx = nx / hlen, hnz = nz / hlen;
+        this.velAt(this.comA, lvA, avA, cx, cy, cz, this.vA);
+        this.velAt(this.comB, lvB, avB, cx, cy, cz, this.vB);
+        vClose = (this.vA.x - this.vB.x) * hnx + (this.vA.z - this.vB.z) * hnz;
+        if (vClose > 0) {
+          const jv = mu * Math.min(vClose, TUN.crush.biteDvCap);
+          this.pushAtComHeight(shipA, cx, cz, this.comA.y, -hnx, -hnz, jv);
+          this.pushAtComHeight(shipB, cx, cz, this.comB.y, hnx, hnz, jv);
+          force = jv / dt;
+        }
+        // POSITION de-penetration, inverse-mass split, rate-capped (maxDepenSpeed) so it eases the
+        // hulls apart instead of flinging them. Re-solved from the fresh overlap each step.
+        const corr = Math.min(depth * TUN.crush.depen, TUN.crush.maxDepenSpeed * dt);
+        const moveA = corr * (mB / (mA + mB)), moveB = corr * (mA / (mA + mB));
+        const ta = shipA.body.translation();
+        shipA.body.setTranslation({ x: ta.x - hnx * moveA, y: ta.y, z: ta.z - hnz * moveA }, true);
+        const tb = shipB.body.translation();
+        shipB.body.setTranslation({ x: tb.x + hnx * moveB, y: tb.y, z: tb.z + hnz * moveB }, true);
       }
-      // POSITION de-penetration, inverse-mass split, rate-capped so it can never fling.
-      const corr = Math.min(depth * TUN.crush.depen, TUN.crush.maxDepenSpeed * dt);
-      const moveA = corr * (mB / (mA + mB)), moveB = corr * (mA / (mA + mB));
-      const ta = shipA.body.translation();
-      shipA.body.setTranslation({ x: ta.x - nx * moveA, y: ta.y - ny * moveA, z: ta.z - nz * moveA }, true);
-      const tb = shipB.body.translation();
-      shipB.body.setTranslation({ x: tb.x + nx * moveB, y: tb.y + ny * moveB, z: tb.z + nz * moveB }, true);
     }
 
     return { overlapCount: count, depth, force, energy, removedA, removedB, vClose };

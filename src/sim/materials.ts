@@ -49,15 +49,13 @@ export const MATERIALS: Record<number, Material> = {
   [OAK]: { name: "oak", density: 430, color: [0.055, 0.032, 0.017], strength: 3 },
   [PINE]: { name: "pine", density: 310, color: [0.1, 0.066, 0.036], strength: 2 },
   [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
-  // Reinforced bow timber — strength 12 (4× oak, 1.5× iron), laid over the forward shell by
-  // armorBow() so a bow-first ram mechanically WINS: under the symmetric-energy crunch the
-  // armored prow loses far fewer voxels per joule than the oak it strikes. NOTE: it is tough,
-  // not invincible — the prow still CHIPS (takes light, visible damage) where it bites, which is
-  // the whole point of "the front takes lighter damage where it's touching." (An earlier value
-  // of 24 sat above the per-step carve budget, so the bow took zero damage; 12 lets it chip.)
-  // Density matched to oak so the OAK→RAM armor swap is mass-neutral: it changes toughness,
-  // never the hull's tuned draft/trim (THE LAW #2 — attitude is emergent).
-  [RAM]: { name: "ram", density: 430, color: [0.04, 0.025, 0.015], strength: 12 },
+  // Reinforced bow timber — strength 4.5, only ~50% tougher than the oak hull (3). Laid over the
+  // forward shell by armorBow() so a bow-first ram is modestly favoured WITHOUT being a battering
+  // ram: the prow chips readily as it bites (playtest: "front of boat strength enhancements are
+  // too much — should only be maybe 50% stronger than the rest"; was 12 = 4× oak, which punched
+  // through victims without itself taking damage). Density matched to oak so the OAK→RAM swap is
+  // mass-neutral: it changes toughness only, never the hull's tuned draft/trim (THE LAW #2).
+  [RAM]: { name: "ram", density: 430, color: [0.04, 0.025, 0.015], strength: 4.5 },
   // Terrain palette — linear RGB, brighter than the ship woods because islands
   // render with a plain vertex-color material (no plank-texture darkening pass).
   // Starting values; tuned in-browser under the ACES tonemap.
