@@ -11,6 +11,7 @@
 //     (multi-core) later — the actual "use more of my CPU" lever.
 const { app, BrowserWindow } = require("electron");
 const path = require("node:path");
+const fs = require("node:fs");
 
 // ---- correct GPU utilisation — these MUST be set before the app 'ready' event ----
 app.commandLine.appendSwitch("force_high_performance_gpu"); // pick the dGPU on hybrid-GPU rigs
@@ -28,6 +29,11 @@ function createWindow() {
     backgroundColor: "#05080a",
     title: "SCUTTLE",
     autoHideMenuBar: true,
+    // Dev-only window icon (build/ is on disk in dev). The packaged exe already carries
+    // the icon — electron-builder embeds build/icon.ico — so this resolves to undefined there.
+    icon: fs.existsSync(path.join(__dirname, "..", "build", "icon.ico"))
+      ? path.join(__dirname, "..", "build", "icon.ico")
+      : undefined,
     webPreferences: {
       // first-party, local, trusted game code — no remote content and no Node in the page.
       contextIsolation: true,

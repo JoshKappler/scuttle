@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="65%">
+      <stop offset="0%" stop-color="#1d3850"/>
+      <stop offset="68%" stop-color="#0f2030"/>
+      <stop offset="100%" stop-color="#070f18"/>
+    </radialGradient>
+    <linearGradient id="oak" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7e5d33"/>
+      <stop offset="45%" stop-color="#553a1d"/>
+      <stop offset="100%" stop-color="#2c1d0d"/>
+    </linearGradient>
+    <radialGradient id="parch" cx="50%" cy="42%" r="62%">
+      <stop offset="0%" stop-color="#efe7d6"/>
+      <stop offset="100%" stop-color="#d8cdb4"/>
+    </radialGradient>
+    <radialGradient id="vig" cx="50%" cy="48%" r="52%">
+      <stop offset="62%" stop-color="#3a2a14" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#2a1d0c" stop-opacity="0.55"/>
+    </radialGradient>
+    <clipPath id="med"><circle cx="128" cy="128" r="52"/></clipPath>
+  </defs>
+
+  <!-- badge coin -->
+  <circle cx="128" cy="128" r="124" fill="#060c13"/>
+  <circle cx="128" cy="128" r="120" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="120" fill="none" stroke="url(#oak)" stroke-width="5"/>
+  <circle cx="128" cy="128" r="116" fill="none" stroke="#241405" stroke-width="1.5" opacity="0.6"/>
+
+  <!-- ship's wheel: 8 capsule handles radiating from centre -->
+  <g fill="url(#oak)" stroke="#241405" stroke-width="1.5">
+    <rect x="121" y="18" width="14" height="80" rx="7" transform="rotate(0 128 128)"/>
+    <rect x="121" y="18" width="14" height="80" rx="7" transform="rotate(45 128 128)"/>
+    <rect x="121" y="18" width="14" height="80" rx="7" transform="rotate(90 128 128)"/>
+    <rect x="121" y="18" width="14" height="80" rx="7" transform="rotate(135 128 128)"/>
+    <rect x="121" y="18" width="14" height="80" rx="7" transform="rotate(180 128 128)"/>
+    <rect x="121" y="18" width="14" height="80" rx="7" transform="rotate(225 128 128)"/>
+    <rect x="121" y="18" width="14" height="80" rx="7" transform="rotate(270 128 128)"/>
+    <rect x="121" y="18" width="14" height="80" rx="7" transform="rotate(315 128 128)"/>
+  </g>
+
+  <!-- wheel rim -->
+  <circle cx="128" cy="128" r="80" fill="none" stroke="url(#oak)" stroke-width="14"/>
+  <circle cx="128" cy="128" r="86.5" fill="none" stroke="#241405" stroke-width="1.5" opacity="0.7"/>
+  <circle cx="128" cy="128" r="73.5" fill="none" stroke="#241405" stroke-width="1.5" opacity="0.7"/>
+
+  <!-- centre medallion: parchment cameo of a public-domain anatomical skull engraving -->
+  <circle cx="128" cy="128" r="52" fill="url(#parch)"/>
+  <g clip-path="url(#med)">
+    <image href="__SKULL_DATA_URI__" xlink:href="__SKULL_DATA_URI__"
+           x="88.4" y="77" width="79.2" height="102" preserveAspectRatio="xMidYMid meet"/>
+    <circle cx="128" cy="128" r="52" fill="url(#vig)"/>
+  </g>
+  <circle cx="128" cy="128" r="52" fill="none" stroke="url(#oak)" stroke-width="5"/>
+  <circle cx="128" cy="128" r="55" fill="none" stroke="#241405" stroke-width="1.5" opacity="0.5"/>
+</svg>
