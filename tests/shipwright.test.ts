@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { buildSloop } from "../src/sim/shipwright";
+import { buildSloop, buildCutter, buildFrigate, type ShipBuild } from "../src/sim/shipwright";
 import { findCompartments } from "../src/sim/compartments";
-import { WATER_DENSITY } from "../src/core/constants";
+import { WATER_DENSITY, VOXEL_SIZE } from "../src/core/constants";
 import { RAM } from "../src/sim/materials";
 
 const ship = buildSloop();
@@ -85,3 +85,53 @@ describe("shipwright sloop", () => {
     expect(again.grid.data).toEqual(ship.grid.data);
   });
 });
+
+// ---- the new tycoon tiers: same structural invariants as the proven hulls ----
+function tierInvariants(name: string, build: () => ShipBuild, broadside: number, chasers: number) {
+  describe(`shipwright ${name}`, () => {
+    const s = build();
+
+    it("is port/starboard symmetric", () => {
+      const { grid } = s;
+      const [nx, ny, nz] = grid.dims;
+      for (let x = 0; x < nx; x++)
+        for (let y = 0; y < ny; y++)
+          for (let z = 0; z < nz; z++) expect(grid.get(x, y, z)).toBe(grid.get(x, y, nz - 1 - z));
+    });
+
+    it("floats but sits in the water (density between 0.12 and 0.68 of seawater)", () => {
+      expect(s.grid.totalMass()).toBeLessThan(0.68 * s.envelopeVolume * WATER_DENSITY);
+      expect(s.grid.totalMass()).toBeGreaterThan(0.12 * s.envelopeVolume * WATER_DENSITY);
+    });
+
+    it("rides upright: COM sits below the main deck and near amidships", () => {
+      const mp = s.grid.massProperties();
+      // COM low → stiff (won't turtle). Below ~60% of deck height keel-up.
+      expect(mp.com[1]).toBeLessThan(s.deckY * VOXEL_SIZE * 0.6);
+      // COM near amidships fore-aft → won't plough bow- or stern-down.
+      const lo = 0.3 * s.lengthM,
+        hi = 0.65 * s.lengthM;
+      const comXFromBow = mp.com[0] - 4 * VOXEL_SIZE; // x0 = 4 on every hull
+      expect(comXFromBow).toBeGreaterThan(lo);
+      expect(comXFromBow).toBeLessThan(hi);
+    });
+
+    it("hull shell is watertight below deck and has watertight compartments", () => {
+      expect(s.interiorLeaks).toEqual([]);
+      expect(s.compartments.length).toBeGreaterThan(0);
+    });
+
+    it(`carries ${broadside} broadside guns + ${chasers} chasers, ≥1 mast`, () => {
+      expect(s.cannonPorts.filter((p) => !p.facing).length).toBe(broadside);
+      expect(s.cannonPorts.filter((p) => p.facing).length).toBe(chasers);
+      expect(s.masts.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("deterministic: building twice yields identical grids", () => {
+      expect(build().grid.data).toEqual(s.grid.data);
+    });
+  });
+}
+
+tierInvariants("cutter", buildCutter, 4, 2); // 2 guns/side + bow & stern chasers
+tierInvariants("frigate", buildFrigate, 12, 4); // 6 guns/side + 2 bow + 2 stern chasers
