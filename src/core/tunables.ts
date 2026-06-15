@@ -212,6 +212,37 @@ export const TUN = {
   fleet: {
     enemyCount: 1,
   },
+
+  /** Visual-pass-1 graphics knobs — read by render/post.ts, render/sky.ts,
+   *  render/clouds.ts and render/ocean.ts. Pure VISUALS: none of these are read
+   *  by the deterministic vitest oracle, and none feed physics (THE LAW #1).
+   *  Every effect is independently togglable so the browser demo can dial down
+   *  while the Steam build runs full. */
+  gfx: {
+    /** master switch for the whole post-processing composer. Off → main.ts uses
+     *  the legacy direct renderer.render path (no bloom/god rays/grade) — a perf
+     *  floor + safety valve if the composer ever misbehaves. */
+    post: { enabled: true },
+    /** UnrealBloomPass — glows the sun disc, the sun-glint path and bright foam.
+     *  Mild by design ("grounded realism with punch", not a bloom-fest). */
+    bloom: { enabled: true, strength: 0.14, radius: 0.5, threshold: 1.5 },
+    /** screen-space god rays (render/post.ts GodRayPass) anchored at the sun's
+     *  projected position; occlusion is free (dark geometry blocks the shafts). */
+    godrays: { enabled: true, strength: 0.5, decay: 0.96, density: 0.85, weight: 0.5, samples: 60 },
+    /** final color grade (render/post.ts GradePass): contrast + saturation +
+     *  a subtle vignette for the cinematic punch. */
+    grade: { contrast: 1.06, saturation: 1.1, vignette: 0.2 },
+    /** water reflection of the sky env cube (render/ocean.ts): strength scales the
+     *  Fresnel-weighted reflection; rebakeHz throttles re-rendering the sky+cloud
+     *  cube (clouds drift slowly, so a couple of bakes a second is plenty). */
+    reflection: { strength: 0.9, rebakeHz: 2 },
+    /** procedural cloud dome (render/clouds.ts): coverage = how much sky is cloud,
+     *  density = opacity/contrast of each puff, speed = drift rate. */
+    clouds: { coverage: 0.5, density: 0.7, speed: 0.6 },
+    /** triplanar procedural grit on island voxels (render/islandVisual.ts) — 0 =
+     *  flat vertex color, 1 = full weathered variation. Silhouettes stay crisp. */
+    islandGrit: { strength: 0.65 },
+  },
 };
 
 export type Tunables = typeof TUN;

@@ -3,6 +3,7 @@ import { Rng } from "./core/rng";
 import { makeWaves, surfaceHeight } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
 import { SeamMask } from "./render/seamMask";
+import { Post } from "./render/post";
 import { createOceanField } from "./render/oceanField";
 import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
@@ -209,6 +210,11 @@ async function main() {
   // the sea, exactly like a hull). Islands are static, so capture their groups once.
   const islandHulls = islands.islands.map((i) => i.visual.group);
   const seam = new SeamMask([sloop.visual.group, ...islandHulls]); // hull+island list refreshed each frame from the fleet
+
+  // post-processing spine (bloom now; god rays + grade added in later tasks). It
+  // owns the stencil seam-mask dance internally (see render/post.ts ScenePass), so
+  // the ocean still never lands on the deck. Gated by TUN.gfx.post.enabled.
+  const post = new Post(renderer, scene, camera, seam);
 
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
@@ -517,6 +523,7 @@ async function main() {
     camera.updateProjectionMatrix();
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
+    post.setSize(w, h); // keep the composer's targets in lockstep with the canvas
   };
   window.addEventListener("resize", fitViewport);
   document.addEventListener("fullscreenchange", fitViewport);
@@ -1508,13 +1515,21 @@ async function main() {
     );
     ocean.setChop(TUN.chop.strength, TUN.chop.choppiness);
     ocean.update(world.simTime, camera.position);
-    renderer.autoClear = true;
-    renderer.clear(); // clears color + depth + stencil
-    renderer.autoClear = false;
     seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group), ...islandHulls]);
-    seam.write(renderer, scene, camera); // hull+island → stencil (no color/depth)
-    renderer.render(scene, camera);      // full scene incl. ocean, stencil-tested
-    renderer.autoClear = true;
+    if (TUN.gfx.post.enabled) {
+      // the composer's ScenePass runs the same clear → seam-write → scene-render
+      // stencil dance, then bloom (+ god rays/grade in later tasks), then tonemaps
+      // to the screen via OutputPass.
+      post.render();
+    } else {
+      // legacy direct path — perf floor / safety valve, identical scene minus FX.
+      renderer.autoClear = true;
+      renderer.clear(); // clears color + depth + stencil
+      renderer.autoClear = false;
+      seam.write(renderer, scene, camera); // hull+island → stencil (no color/depth)
+      renderer.render(scene, camera); // full scene incl. ocean, stencil-tested
+      renderer.autoClear = true;
+    }
 
     updateHud(dt, tr);
     updateDevReadout();
