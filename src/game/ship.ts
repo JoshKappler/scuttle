@@ -79,6 +79,10 @@ export class Ship {
 
   private keelAnchor: [number, number, number];
   private inertia: [number, number, number];
+  /** the TUNED box inertia at full health (carries the 1.6× added-mass) — the calibration we keep. */
+  private inertiaBox: [number, number, number] = [1, 1, 1];
+  /** the REAL voxel inertia of the intact hull — denominator for the per-axis damage ratio. */
+  private inertia0Real: [number, number, number] = [1, 1, 1];
 
   /** cell index → compartment id, for breach detection. */
   private cellComp = new Map<number, number>();
@@ -153,6 +157,8 @@ export class Ship {
     const iyy = (mass / 12) * (l * l + w * w) * 1.6;
     const izz = (mass / 12) * (l * l + h * h) * 1.6;
     this.inertia = [ixx, iyy, izz];
+    this.inertiaBox = [ixx, iyy, izz];
+    this.inertia0Real = build.grid.massProperties().inertia;
 
     const desc = R.RigidBodyDesc.dynamic()
       .setTranslation(spawn.x, spawn.y, spawn.z)
@@ -928,16 +934,21 @@ export class Ship {
   /** Refresh rapier mass props + buoyancy probes from the current grid. */
   recomputeMassProperties(): void {
     const grid = this.build.grid;
-    const mass = Math.max(grid.totalMass(), 1);
-    const com = grid.centerOfMass();
-    this.comLocal = com;
-    const [ix, iy, iz] = this.inertia;
-    // rescale the box inertia with the new mass (shape change is second-order)
-    const scale = mass / Math.max(this.body.mass(), 1);
-    this.inertia = [ix * scale, iy * scale, iz * scale];
+    const mp = grid.massProperties();
+    const mass = Math.max(mp.mass, 1);
+    this.comLocal = mp.com;
+    // Keep the hull's TUNED rotational feel (the box inertia + its 1.6× added-mass) but track the
+    // REAL per-axis change as it's carved: scale each tuned axis by how that axis's true voxel
+    // inertia has shifted from the intact hull. The old mass-only rescale left an asymmetrically
+    // holed hull with a falsely-symmetric tensor → wrong righting dynamics → it turtled.
+    this.inertia = [
+      this.inertiaBox[0] * (mp.inertia[0] / this.inertia0Real[0]),
+      this.inertiaBox[1] * (mp.inertia[1] / this.inertia0Real[1]),
+      this.inertiaBox[2] * (mp.inertia[2] / this.inertia0Real[2]),
+    ];
     this.body.setAdditionalMassProperties(
       mass,
-      { x: com[0], y: com[1], z: com[2] },
+      { x: mp.com[0], y: mp.com[1], z: mp.com[2] },
       { x: this.inertia[0], y: this.inertia[1], z: this.inertia[2] },
       { x: 0, y: 0, z: 0, w: 1 },
       true,

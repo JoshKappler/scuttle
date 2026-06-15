@@ -3,7 +3,7 @@ import { TUN } from "../core/tunables";
 import { VOXEL_SIZE } from "../core/constants";
 import { detectContacts, type HullView, type ContactScratch } from "../sim/voxelOverlap";
 import { breakEnergy } from "../sim/materials";
-import { breakImpulse } from "../sim/crush";
+import { breakImpulse, distributeClosingDrag } from "../sim/crush";
 import type { VoxelGrid } from "../sim/voxelGrid";
 import type { Ship } from "./ship";
 import type { Effects } from "../render/effects";
@@ -14,19 +14,26 @@ import type { Effects } from "../render/effects";
  * visible. Each fixed step `stepPair` finds the overlapping voxel-pairs (detectContacts) and
  * branches PER CONTACT on the closing speed at that point:
  *
- *   • CLOSING > vBreak  → BREAK both voxels. The fracture energy is taken straight out of the
- *     closing motion (breakImpulse: destruction and deceleration are one inelastic event). Only the
- *     thin currently-overlapping layer breaks each step, so the hull keeps most of its speed and
- *     advances into the cleared space next step — it PLOWS in, shedding a little per layer, until
- *     closing falls under vBreak. Non-penetration is free here: the voxel in the way is GONE, so
- *     nothing pushes back (no "jar"). The bite is applied HORIZONTALLY at COM height → an off-centre
- *     hit yaws her, never rolls; the keel's own ~42×-sideways water drag bleeds the struck hull's
- *     gain ("in molasses"). Heavier hull → smaller Δv = J/m → it barely slows and guts a light one.
+ *   • CLOSING > vBreak  → BREAK both voxels. The fracture energy is taken straight out of the closing
+ *     motion (breakImpulse: destruction and deceleration are one inelastic event), but it is shed as a
+ *     DRAG on the hull(s) DRIVING into the contact (distributeClosingDrag) — the crumbling layer
+ *     carries its momentum off as debris and pushes the body behind it ~nothing. So a heavy ram spends
+ *     its OWN speed boring through and does NOT shove a dead-in-the-water victim up to ramming speed
+ *     (the old equal-and-opposite bite did → both hit a common velocity, the closing differential
+ *     vanished, breaking stopped, and the ram coasted on through lodged). Only the thin overlapping
+ *     layer breaks each step, so the hull keeps most of its speed and PLOWS into the cleared space next
+ *     step, shedding a little per layer, until its approach falls under vBreak. Non-penetration is free
+ *     here: the voxel in the way is GONE, so nothing pushes back (no "jar"). The drag is applied
+ *     HORIZONTALLY at COM height → an off-centre hit yaws her, never rolls. Heavier hull → smaller
+ *     Δv = J/m → it barely slows and guts a light one ("heavier = harder to shove").
  *
- *   • CLOSING ≤ vBreak  → REST. No damage. Cancel the (small) closing and push the bodies apart in
- *     POSITION by the overlap depth (rate-capped) so two solid hulls can't share space. This is the
- *     ONLY place positional separation runs — the previous design ran it every step EVEN WHILE
- *     breaking, and that unconditional shove WAS the "jar the other ship out of the way" bug.
+ *   • CLOSING ≤ vBreak  → REST. No damage. DELETE the (small) remaining closing and push the bodies
+ *     apart in POSITION until no two voxels share space — the "final layer it can't break stops the ram
+ *     dead". Direction is the horizontal COM→COM line (the geometric push-out axis FLIPS when one hull
+ *     engulfs another → it would shove a lodged ram deeper, "the nose rotates straight through"). The
+ *     separation is strong enough to actually EXPEL a lodged hull, but position-only (no velocity
+ *     added) and only ever shrinks the overlap (closing zeroed first), so it can never re-penetrate or
+ *     "jar" — the previous design ran a shove every step EVEN WHILE breaking, and THAT was the jar.
  *
  * Everything destructible is grid voxels (hull, deck, quarterdeck, cabin, bulwark, bulkheads,
  * ballast, bow armor); cannons / wheel / masts / sails are separate render meshes, never in the
@@ -138,7 +145,7 @@ export class VoxelContact {
     const tough = TUN.crush.toughness;
 
     // ---- classify each contact: BREAK (closing > vBreak) vs REST ----
-    let breakCount = 0, bSumX = 0, bSumY = 0, bSumZ = 0, costSum = 0;
+    let breakCount = 0, bSumX = 0, bSumY = 0, bSumZ = 0;
     const brokenA: [number, number, number][] = [];
     const brokenB: [number, number, number][] = [];
     if (moving) {
@@ -153,7 +160,6 @@ export class VoxelContact {
         const bx = sc.bCells[o], by = sc.bCells[o + 1], bz = sc.bCells[o + 2];
         brokenA.push([ax, ay, az]);
         brokenB.push([bx, by, bz]);
-        costSum += (breakEnergy(gA.get(ax, ay, az)) + breakEnergy(gB.get(bx, by, bz))) * tough;
         bSumX += px; bSumY += py; bSumZ += pz; breakCount++;
       }
     }
@@ -161,27 +167,33 @@ export class VoxelContact {
     let removedA = 0, removedB = 0, energy = 0, force = 0, vClose = 0;
 
     if (breakCount > 0) {
-      // ---- BREAK regime: carve the overlapping layer, take its energy out of the closing motion ----
-      // The geometry already limits the layer to ~one advance per step; maxStepEnergy is only an
-      // anti-vaporize clamp for a pathological deep overlap, so the common path carves the whole
-      // layer. The carve clears the path, so NO de-penetration runs (that was the jar).
-      if (costSum <= TUN.crush.maxStepEnergy) {
-        removedA = shipA.carveCells(brokenA);
-        removedB = shipB.carveCells(brokenB);
-        energy = costSum;
-      } else {
-        energy = this.carveWithinBudget(shipA, shipB, brokenA, brokenB, gA, gB, tough, TUN.crush.maxStepEnergy);
-        removedA = this.lastRemovedA; removedB = this.lastRemovedB;
-      }
-
+      // ---- BREAK regime: destruction is BOUNDED by the collision energy ----
+      // Carve cheapest-first up to ½·μ·vClose² (the closing KE): a ram can only break as much wood
+      // as its energy can pay for, so it bites a hole and LODGES once that energy is spent instead of
+      // carving the whole overlap for free and clipping out the far side. The broken wood's energy is
+      // then taken straight out of the closing motion (breakImpulse). The carve clears the wood in the
+      // way, so NO position de-penetration runs here (running it while breaking was the jar). maxStepEnergy
+      // is only an anti-vaporize clamp for a pathological (teleport) deep overlap.
       const bcx = bSumX / breakCount, bcy = bSumY / breakCount, bcz = bSumZ / breakCount;
       this.velAt(this.comA, lvA, avA, bcx, bcy, bcz, this.vA);
       this.velAt(this.comB, lvB, avB, bcx, bcy, bcz, this.vB);
-      vClose = (this.vA.x - this.vB.x) * dhx + (this.vA.z - this.vB.z) * dhz;
-      const j = breakImpulse(mu, vClose, energy, TUN.crush.biteDvCap);
-      this.pushAtComHeight(shipA, bcx, bcz, this.comA.y, -dhx, -dhz, j); // slow A (closing +d̂)
-      this.pushAtComHeight(shipB, bcx, bcz, this.comB.y, dhx, dhz, j);   // shove B along +d̂
-      force = j / dt;
+      const sA = this.vA.x * dhx + this.vA.z * dhz; // A's speed along the closing axis d̂
+      const sB = this.vB.x * dhx + this.vB.z * dhz; // B's speed along d̂
+      vClose = sA - sB;
+      const budget = Math.min(0.5 * mu * vClose * vClose, TUN.crush.maxStepEnergy);
+      energy = this.carveWithinBudget(shipA, shipB, brokenA, brokenB, gA, gB, tough, budget);
+      removedA = this.lastRemovedA; removedB = this.lastRemovedB;
+      // The fracture energy is shed as a DRAG on the hull(s) driving INTO the contact — the crumbling
+      // layer carries its momentum off as debris and pushes the body behind it ~nothing, so a heavy
+      // ram spends its OWN speed boring through and a dead-in-the-water victim is NOT accelerated up to
+      // ramming speed. The old equal-and-opposite bite did exactly that → both ships ended at the same
+      // speed, the closing differential vanished, breaking stopped, and the ram coasted on through,
+      // lodged. Slowing only the aggressor keeps the differential alive so it chews until IT stops.
+      const dvClose = breakImpulse(mu, vClose, energy, TUN.crush.biteDvCap) / mu; // closing-speed to remove
+      const { dvA, dvB } = distributeClosingDrag(sA, sB, dvClose);
+      this.pushAtComHeight(shipA, bcx, bcz, this.comA.y, -dhx, -dhz, mA * dvA); // slow A's approach (+d̂)
+      this.pushAtComHeight(shipB, bcx, bcz, this.comB.y, dhx, dhz, mB * dvB);   // slow B's approach (−d̂)
+      force = (mA * dvA + mB * dvB) / dt;
 
       const removed = removedA + removedB;
       if (this.effects && TUN.crush.fling > 0 && removed > 0) {
@@ -190,26 +202,42 @@ export class VoxelContact {
         this.effects.impactDebris(this.pt2, this.imp, Math.min(removed * TUN.crush.fling, 40));
       }
     } else if (depth >= TUN.crush.minDepth) {
-      // ---- REST regime: too slow to break → cancel the closing + de-penetrate by POSITION ----
-      // Direction = the geometric push-out axis (reliable for the SHALLOW overlaps this branch sees;
-      // deep engulfing overlap only happens while breaking, which uses d̂ instead).
-      const nx = ov.axis[0], ny = ov.axis[1], nz = ov.axis[2];
-      this.velAt(this.comA, lvA, avA, cx, cy, cz, this.vA);
-      this.velAt(this.comB, lvB, avB, cx, cy, cz, this.vB);
-      vClose = (this.vA.x - this.vB.x) * nx + (this.vA.y - this.vB.y) * ny + (this.vA.z - this.vB.z) * nz;
-      if (vClose > 0) {
-        const jv = mu * Math.min(vClose, TUN.crush.biteDvCap);
-        this.pushAtComHeight(shipA, cx, cz, this.comA.y, -nx, -nz, jv);
-        this.pushAtComHeight(shipB, cx, cz, this.comB.y, nx, nz, jv);
-        force = jv / dt;
+      // ---- REST regime: too slow to break → DELETE the closing velocity + push the hulls apart so no
+      // two voxels share space. This is the "the final voxel that won't break stops the ram dead" the
+      // player asked for: once breaking has bled the approach below vBreak, the solid layer it can't
+      // pay to break cancels the rest of the closing and expels the lodged hull.
+      //
+      // Direction is the HORIZONTAL line between the two COMs — NOT the geometric push-out axis, which
+      // FLIPS when one hull engulfs another (a deep-lodged ram would then be shoved further IN, the
+      // bug behind "the nose rotates straight through the voxels"). The COM line never flips and points
+      // sensibly along the ram for any lodge. HORIZONTAL only so buoyancy keeps owning the vertical (a
+      // downward shove used to ram a holed victim past the −12 m "sunk" line → premature respawn).
+      let nx = this.comB.x - this.comA.x, nz = this.comB.z - this.comA.z;
+      const hlen = Math.hypot(nx, nz);
+      if (hlen > 1e-4) {
+        nx /= hlen; nz /= hlen;
+        this.velAt(this.comA, lvA, avA, cx, cy, cz, this.vA);
+        this.velAt(this.comB, lvB, avB, cx, cy, cz, this.vB);
+        vClose = (this.vA.x - this.vB.x) * nx + (this.vA.z - this.vB.z) * nz;
+        if (vClose > 0) {
+          // full inelastic cancel of the (sub-vBreak) closing — they stop moving INTO each other.
+          const jv = mu * Math.min(vClose, TUN.crush.biteDvCap);
+          this.pushAtComHeight(shipA, cx, cz, this.comA.y, -nx, -nz, jv);
+          this.pushAtComHeight(shipB, cx, cz, this.comB.y, nx, nz, jv);
+          force = jv / dt;
+        }
+        // POSITION de-penetration, inverse-mass split. Strong enough to actually EXPEL a lodged hull
+        // (depen + maxDepenSpeed raised) — the overlap only ever decreases because the closing above is
+        // zeroed first, so it can't re-penetrate: the two hulls converge to "pressed together, not
+        // sharing space" within a few steps instead of the ram coasting through forever. Position-only
+        // (no velocity added) so a hard separation still can't "jar" / fling them.
+        const corr = Math.min(depth * TUN.crush.depen, TUN.crush.maxDepenSpeed * dt);
+        const moveA = corr * (mB / (mA + mB)), moveB = corr * (mA / (mA + mB));
+        const ta = shipA.body.translation();
+        shipA.body.setTranslation({ x: ta.x - nx * moveA, y: ta.y, z: ta.z - nz * moveA }, true);
+        const tb = shipB.body.translation();
+        shipB.body.setTranslation({ x: tb.x + nx * moveB, y: tb.y, z: tb.z + nz * moveB }, true);
       }
-      // POSITION de-penetration, inverse-mass split, rate-capped so it can never fling.
-      const corr = Math.min(depth * TUN.crush.depen, TUN.crush.maxDepenSpeed * dt);
-      const moveA = corr * (mB / (mA + mB)), moveB = corr * (mA / (mA + mB));
-      const ta = shipA.body.translation();
-      shipA.body.setTranslation({ x: ta.x - nx * moveA, y: ta.y - ny * moveA, z: ta.z - nz * moveA }, true);
-      const tb = shipB.body.translation();
-      shipB.body.setTranslation({ x: tb.x + nx * moveB, y: tb.y + ny * moveB, z: tb.z + nz * moveB }, true);
     }
 
     return { overlapCount: count, depth, force, energy, removedA, removedB, vClose };

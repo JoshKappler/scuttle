@@ -122,16 +122,19 @@ export const TUN = {
    *  voxel overlap is visible. Each fixed step voxelContact finds the overlapping voxel-pairs and
    *  branches PER CONTACT on the closing speed at that point:
    *   • closing FASTER than vBreak → BREAK both voxels; the fracture energy is removed from the
-   *     closing motion (an inelastic bite, see crush.breakImpulse). Only the thin overlapping layer
-   *     breaks each step, so the hull keeps most of its speed and advances into the cleared space
-   *     next step → it PLOWS in, shedding a little speed per layer, until closing drops under vBreak.
-   *     Non-penetration here is free: the voxel in the way is gone, so there is nothing to push
-   *     against (no "jar"). Impulse is applied HORIZONTALLY at COM height → an off-centre hit yaws
-   *     (PIT), never rolls; the keel's ~42×-sideways water drag then bleeds the struck hull's gain.
-   *   • closing SLOWER than vBreak → REST: no damage; cancel the closing and de-penetrate by POSITION
-   *     (rate-capped) so two solid hulls can't share space. This is the ONLY place positional
-   *     separation runs — the old bug ran it even while breaking, which WAS the jar.
-   *  Heavier = harder to shove: the bite impulse is split by mass (Δv = J/m). Replaces the retired
+   *     closing motion (an inelastic bite, see crush.breakImpulse) but shed as a DRAG on the hull
+   *     DRIVING in (crush.distributeClosingDrag) — the crumbling layer carries its momentum off as
+   *     debris, so a heavy ram spends its OWN speed and does NOT shove a stationary victim up to
+   *     ramming speed. Only the thin overlapping layer breaks each step, so the hull PLOWS into the
+   *     cleared space next step, shedding a little per layer, until its approach drops under vBreak.
+   *     Non-penetration here is free: the voxel in the way is gone, nothing to push against (no "jar").
+   *     The drag is HORIZONTAL at COM height → an off-centre hit yaws (PIT), never rolls.
+   *   • closing SLOWER than vBreak → REST: no damage; DELETE the closing and de-penetrate by POSITION
+   *     along the horizontal COM→COM line (the geometric push-out axis FLIPS on engulf → shoves a
+   *     lodged ram deeper) so two solid hulls can't share space — strong enough to EXPEL a lodge but
+   *     position-only + closing-pre-zeroed, so it can't re-penetrate or fling. This is the ONLY place
+   *     positional separation runs — the old bug ran it even while breaking, which WAS the jar.
+   *  Heavier = harder to shove: each hull sheds Δv = (its drag share)/its mass. Replaces the retired
    *  3-part "carve/cancel/de-penetrate-every-step" rule (and the older rigid-reaction ram). */
   crush: {
     /** master enable — off → ship-vs-ship does nothing (hulls would ghost; see physics.ts hook). */
@@ -148,14 +151,18 @@ export const TUN = {
      *  touching/eligible to break. The voxels are a coarse hull approximation, so a little slack
      *  reads as "sufficiently close" without needing a half-voxel of real interpenetration first. */
     buffer: 0.4,
-    /** REST de-penetration relaxation (0..1): fraction of the interpenetration depth the hulls ease
+    /** REST de-penetration relaxation (0..1): fraction of the interpenetration depth the hulls move
      *  apart per step when too slow to break. Re-solved from the fresh overlap each step (never
-     *  accumulates), and rate-capped by maxDepenSpeed, so it settles rather than flings. */
-    depen: 0.3,
-    /** hard cap (m/s) on the REST positional separation — the anti-fling safety net. Even a
-     *  pathological deep overlap (teleport, or a ram that lodged then dropped below vBreak) eases
-     *  apart gently instead of being shot out. */
-    maxDepenSpeed: 3.0,
+     *  accumulates) and rate-capped by maxDepenSpeed. Raised 0.3→0.5 so a lodged ram is EXPELLED in a
+     *  few steps rather than coasting through — the closing is zeroed first, so the overlap only ever
+     *  shrinks (this can't re-penetrate or fling). */
+    depen: 0.5,
+    /** hard cap (m/s) on the REST positional separation (HORIZONTAL only) — the per-step ceiling on
+     *  how fast a deep overlap clears. Raised 1.0→6.0: at 1.0 (≈1.7 cm/step) a deeply lodged hull
+     *  could never be pushed out before it clipped through; 6.0 expels a metre-deep lodge in a handful
+     *  of steps. It is position-only with the closing pre-zeroed, so even at 6 it eases (never flings)
+     *  — for shallow everyday contacts depth·depen is far below this cap, so they still barely move. */
+    maxDepenSpeed: 6.0,
     /** per-step cap (m/s) on the closing speed the BREAK bite may remove in one step — a stability /
      *  NaN backstop and a clamp on a huge single-step slab. The plow is inherently multi-step, so
      *  this just keeps any one step's momentum trade smooth. */

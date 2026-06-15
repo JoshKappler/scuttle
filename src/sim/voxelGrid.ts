@@ -19,6 +19,11 @@ export interface VoxelGrid {
   totalMass(): number;
   /** Local-space center of mass in meters (cell centers). */
   centerOfMass(): [number, number, number];
+  /** One pass: mass (kg), local-space COM (m), and the principal-DIAGONAL inertia (kg·m²)
+   *  about that COM — the EXACT tensor for the current voxels, not a box approximation. Used
+   *  after carving so an asymmetrically-holed hull gets honest roll/pitch/yaw inertia (a
+   *  mass-only rescale leaves it stable-looking but actually unstable → it turtles). */
+  massProperties(): { mass: number; com: [number, number, number]; inertia: [number, number, number] };
   forEachSolid(fn: (x: number, y: number, z: number, mat: number) => void): void;
 }
 
@@ -110,6 +115,32 @@ export function createGrid(nx: number, ny: number, nz: number): VoxelGrid {
       }
       if (m === 0) return [0, 0, 0];
       return [(cx / m) * VOXEL_SIZE, (cy / m) * VOXEL_SIZE, (cz / m) * VOXEL_SIZE];
+    },
+
+    massProperties() {
+      let m = 0, mx = 0, my = 0, mz = 0; // mass + first moments (about origin)
+      let sxx = 0, syy = 0, szz = 0;     // second moments about origin
+      for (let z = 0; z < nz; z++) {
+        for (let y = 0; y < ny; y++) {
+          for (let x = 0; x < nx; x++) {
+            const mat = data[idx(x, y, z)];
+            if (mat === 0) continue;
+            const wgt = MATERIALS[mat].density * VOXEL_VOLUME;
+            const px = (x + 0.5) * VOXEL_SIZE, py = (y + 0.5) * VOXEL_SIZE, pz = (z + 0.5) * VOXEL_SIZE;
+            m += wgt; mx += wgt * px; my += wgt * py; mz += wgt * pz;
+            sxx += wgt * (py * py + pz * pz);
+            syy += wgt * (px * px + pz * pz);
+            szz += wgt * (px * px + py * py);
+          }
+        }
+      }
+      if (m === 0) return { mass: 0, com: [0, 0, 0] as [number, number, number], inertia: [1, 1, 1] as [number, number, number] };
+      const cx = mx / m, cy = my / m, cz = mz / m;
+      // parallel-axis shift to the COM: I_com = I_origin − m·d²  (clamped ≥1 to stay positive-definite)
+      const ixx = Math.max(sxx - m * (cy * cy + cz * cz), 1);
+      const iyy = Math.max(syy - m * (cx * cx + cz * cz), 1);
+      const izz = Math.max(szz - m * (cx * cx + cy * cy), 1);
+      return { mass: m, com: [cx, cy, cz], inertia: [ixx, iyy, izz] };
     },
 
     forEachSolid(fn) {
