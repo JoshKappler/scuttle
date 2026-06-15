@@ -228,7 +228,7 @@ export const TUN = {
     bloom: { enabled: true, strength: 0.14, radius: 0.5, threshold: 1.5, clamp: 12 },
     /** screen-space god rays (render/post.ts GodRayPass) anchored at the sun's
      *  projected position; occlusion is free (dark geometry blocks the shafts). */
-    godrays: { enabled: true, strength: 0.5, decay: 0.96, density: 0.85, weight: 0.5, samples: 60 },
+    godrays: { enabled: true, strength: 0.8, decay: 0.96, density: 0.9, weight: 0.5, threshold: 4, samples: 60 },
     /** final color grade (render/post.ts GradePass): contrast + saturation +
      *  a subtle vignette for the cinematic punch. */
     grade: { contrast: 1.06, saturation: 1.1, vignette: 0.2 },

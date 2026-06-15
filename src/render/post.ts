@@ -30,6 +30,54 @@ const ClampShader = {
   `,
 };
 
+/** Screen-space god rays (GPU-Gems "volumetric light scattering as a post-process").
+ *  Radially marches from each pixel toward the sun's projected screen position,
+ *  accumulating only genuinely BRIGHT samples (the sun, thresholded) with distance
+ *  decay — so light shafts fan out from the sun and dark geometry (sails, hull,
+ *  islands) occludes them for free. Reads the post-bloom HDR buffer; added on top. */
+const GodRayShader = {
+  defines: { SAMPLES: 60 },
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    uSunScreen: { value: new THREE.Vector2(0.5, 0.5) },
+    uStrength: { value: 0.5 },
+    uDensity: { value: 0.85 },
+    uDecay: { value: 0.96 },
+    uWeight: { value: 0.5 },
+    uThreshold: { value: 4.0 },
+    uSunVisible: { value: 0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform vec2 uSunScreen;
+    uniform float uStrength, uDensity, uDecay, uWeight, uThreshold, uSunVisible;
+    varying vec2 vUv;
+    void main() {
+      vec4 base = texture2D(tDiffuse, vUv);
+      if (uSunVisible < 0.5) { gl_FragColor = base; return; }
+      vec2 delta = (vUv - uSunScreen) * (uDensity / float(SAMPLES));
+      vec2 coord = vUv;
+      float illum = 1.0;
+      vec3 accum = vec3(0.0);
+      for (int i = 0; i < SAMPLES; i++) {
+        coord -= delta;
+        vec3 s = texture2D(tDiffuse, coord).rgb;
+        // only the sun (brightest pixels) seeds the shafts, not the whole sky
+        float l = max(max(s.r, s.g), s.b);
+        accum += s * step(uThreshold, l) * illum * uWeight;
+        illum *= uDecay;
+      }
+      // fade out as the sun leaves the frame, so shafts don't pop at the edges
+      float edgeFade = 1.0 - smoothstep(0.5, 1.15, length(uSunScreen - vec2(0.5)));
+      gl_FragColor = vec4(base.rgb + accum * (uStrength / float(SAMPLES)) * edgeFade, base.a);
+    }
+  `,
+};
+
 /**
  * Post-processing spine for the visual pass.
  *
@@ -92,6 +140,7 @@ export class Post {
   private rt: THREE.WebGLRenderTarget;
   private bloom: UnrealBloomPass;
   private clampPass: ShaderPass;
+  private godray: ShaderPass;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
@@ -132,7 +181,17 @@ export class Post {
     );
     this.composer.addPass(this.bloom);
 
+    // god rays read the post-bloom HDR buffer (sun at its brightest) and add shafts.
+    this.godray = new ShaderPass(GodRayShader);
+    this.composer.addPass(this.godray);
+
     this.composer.addPass(new OutputPass());
+  }
+
+  /** Feed the sun's projected screen position (UV 0..1) + whether it's on-screen. */
+  setSun(x: number, y: number, visible: boolean): void {
+    (this.godray.uniforms.uSunScreen.value as THREE.Vector2).set(x, y);
+    this.godray.uniforms.uSunVisible.value = visible ? 1 : 0;
   }
 
   /** Resize to match the renderer's drawing buffer (called from main's fitViewport
@@ -150,6 +209,12 @@ export class Post {
     this.bloom.strength = TUN.gfx.bloom.strength;
     this.bloom.radius = TUN.gfx.bloom.radius;
     this.bloom.threshold = TUN.gfx.bloom.threshold;
+    this.godray.enabled = TUN.gfx.godrays.enabled;
+    this.godray.uniforms.uStrength.value = TUN.gfx.godrays.strength;
+    this.godray.uniforms.uDensity.value = TUN.gfx.godrays.density;
+    this.godray.uniforms.uDecay.value = TUN.gfx.godrays.decay;
+    this.godray.uniforms.uWeight.value = TUN.gfx.godrays.weight;
+    this.godray.uniforms.uThreshold.value = TUN.gfx.godrays.threshold;
     this.composer.render();
   }
 

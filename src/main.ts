@@ -230,6 +230,9 @@ async function main() {
   // owns the stencil seam-mask dance internally (see render/post.ts ScenePass), so
   // the ocean still never lands on the deck. Gated by TUN.gfx.post.enabled.
   const post = new Post(renderer, bgScene, scene, camera, seam);
+  // reused each frame to project the sun to screen space for the god-ray pass
+  const _sunWorld = new THREE.Vector3();
+  const _sunView = new THREE.Vector3();
 
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
@@ -1540,6 +1543,14 @@ async function main() {
       skySetup.updateEnv(renderer, bgScene, camera.position);
       lastEnvBake = world.simTime;
     }
+
+    // project the sun to screen space for the god-ray pass; gate on it being in
+    // front of the camera AND above the horizon (no shafts from a sun behind us).
+    _sunWorld.copy(camera.position).addScaledVector(skySetup.sunDir, 1000);
+    _sunView.copy(_sunWorld).applyMatrix4(camera.matrixWorldInverse);
+    const sunOnScreen = _sunView.z < 0 && skySetup.sunDir.y > 0;
+    _sunWorld.project(camera); // → NDC in place
+    post.setSun(_sunWorld.x * 0.5 + 0.5, _sunWorld.y * 0.5 + 0.5, sunOnScreen);
 
     seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group), ...islandHulls]);
     if (TUN.gfx.post.enabled) {
