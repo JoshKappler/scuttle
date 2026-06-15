@@ -18,8 +18,9 @@ import { VoxelContact } from "./voxelContact";
  */
 export class GameWorld {
   readonly ships: Ship[] = [];
-  /** The deformable ship-vs-ship contact (replaces the rigid-reaction path). main.ts may
-   *  attach `.effects` for pulverization dust + read `.debug` for the tuning harness. */
+  /** The deformable ship-vs-ship contact: lets the hulls interpenetrate, carves the real voxel
+   *  overlap, then resolves non-penetration + inelastic momentum itself (ship-ship is out of
+   *  Rapier's solver, see physics.ts). main.ts may attach `.effects` for dust + read `.debug`. */
   readonly contact = new VoxelContact();
   simTime = 0;
   /** Called every fixed step after buoyancy, before the physics step —
@@ -71,8 +72,9 @@ export class GameWorld {
         ship.applyForces(this.physWaves, this.simTime);
       }
       this.onFixedStep?.(this.simTime, FIXED_DT);
-      // deformable ship-vs-ship crunch: reads the real voxel overlap, applies the capped
-      // penalty push, and carves both hulls at the contact (sets damageDirty for flushDamage).
+      // deformable ship-vs-ship crunch: reads the real voxel overlap, carves both hulls, cancels the
+      // closing velocity (inelastic) and de-penetrates by POSITION so they can't phase through. Runs
+      // BEFORE the Rapier step so its velocity + position fixes integrate this step. Sets damageDirty.
       this.contact.stepAll(this.ships, FIXED_DT);
       for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute
       // hooks: filterContactPair pulls ship-vs-ship pairs out of the rigid solver (physics.ts).

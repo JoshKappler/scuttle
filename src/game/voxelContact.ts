@@ -7,46 +7,39 @@ import type { Ship } from "./ship";
 import type { Effects } from "../render/effects";
 
 /**
- * The deformable ship-vs-ship contact — ONE emergent rule (stepPair below).
+ * The deformable ship-vs-ship contact — ONE rule (stepPair below). Ship-ship pairs are pulled OUT
+ * of Rapier's rigid solver (physics.ts), so the hulls are FREE to interpenetrate; this routine then
+ * reads that real voxel overlap each fixed step and resolves it in three coupled parts:
  *
- * THE MENTAL MODEL: two loosely-assembled Lego ships, each ROOTED in the sea. A hull half in
- * the water has enormous keel drag (ship.ts), so for a brief collision it is nearly anchored —
- * this is NOT a free two-body collision. Crucially we therefore do NOT conserve momentum
- * between the hulls (the old reduced-mass, equal-and-opposite μ·Δv impulse is exactly what
- * FLUNG the lighter ship — there is no way around that with momentum conservation). Instead:
+ *   1. CARVE — where the hulls' solid voxels overlap AND they're closing faster than vBreak, break
+ *      the cheapest contacting voxels of BOTH hulls on a budget of the closing KE ½·μ·vClose².
+ *      voxelOverlap returns the EXACT overlapping solid cells of each hull, so the struck hull holes
+ *      and the rammer's bow chips with no rammer/target special case (a heavier/faster hull keeps
+ *      vClose high → guts a lighter one; the toughness sort spares the RAM prow).
+ *   2. CANCEL — an inelastic impulse along the overlap's push-out axis drives the hulls toward their
+ *      COMMON velocity (the faster slows, the struck one is shoved), at COM HEIGHT so an off-centre
+ *      hit YAWS her (the PIT) but never ROLLS her. The keel's own anisotropic water drag (ship.ts,
+ *      ~42× stronger sideways) then bleeds the velocity the struck hull gained — the "molasses" feel.
+ *   3. DE-PENETRATE — the hard part the old soft spring got wrong: the two bodies are pushed apart
+ *      in POSITION by the interpenetration depth (inverse-mass split, relaxed), so two solid hulls
+ *      can NEVER end a step occupying the same space. THIS is what stops a hull sailing clean through
+ *      another; carving just decides how much wood that costs.
  *
- *   1. Where the hulls' voxels overlap AND close faster than vBreak, the cheapest contacting
- *      voxels of BOTH hulls break, on a budget of each hull's OWN approach KE (½m·v²). So a
- *      heavier or faster rammer breaks MORE (a heavy ship guts a light one), and the toughness
- *      sort spares the RAM prow — the struck oak holes while the bow only chips.
- *   2. Breaking SAPS the speed of whichever hull drove into the wood — each hull loses the KE
- *      it spent splintering (computed against its OWN mass, like driving into sand). A still
- *      target plows through nothing, so it is retarded by ~nothing → it CANNOT be flung; a
- *      heavier target slows the rammer less per voxel, so the rammer eats MORE damage. That
- *      one-sided energy loss is the whole feel.
- *   3. Only a tiny `transfer` fraction is actually shoved into the other hull — a nudge + yaw,
- *      never a roll-away. Every shove acts at COM HEIGHT, so a corner hit can YAW her (the PIT)
- *      but can never ROLL her. The keel's lateral drag eats most of even that nudge.
- *   4. Below vBreak the wood just springs (a capped, gentle de-penetration). Bumps and
- *      side-by-side rafting do nothing.
- *
- * Carving the whole contact layer every step keeps the bow sitting in a FRESH cavity, so it
- * never embeds in solid material and never needs a stiff shove-out (the second old fling
- * source). Everything else falls out: a big ship rams a small one and tears deep until it has
- * shed enough speed to drop below vBreak; equals head-on disintegrate into each other; a
- * diagonal hit spins the target out. Per voxel, ALL materials follow the same rule — toughness
- * is just each cell's break energy, so the RAM bow outlasts the oak with no special case.
+ * Because cancel stops the closing and de-penetrate clears the overlap every step, a hull can never
+ * ghost through. A coasting impact is one speed-proportional crunch then they ride along at the
+ * common velocity; under sustained sail the bow keeps closing, so it keeps carving and grinds in.
+ * Per voxel ALL materials follow the same break-energy rule, so cannons (also a carve) reuse it.
  */
 
-/** Live per-step readback for the dev harness. Reflects the most-overlapping pair. */
+/** Live per-step readback for the dev harness. Reflects the most-damaged pair this step. */
 export interface ContactDebug {
-  overlapCount: number; // A-cells in contact
+  overlapCount: number; // A-cells in solid-solid contact
   depth: number;        // m, interpenetration depth
-  force: number;        // N, effective contact force this step (impulse/dt)
+  force: number;        // N-ish, contact response this step (impulse/dt)
   energy: number;       // J spent breaking voxels this step (both hulls)
-  removedA: number;     // voxels removed from hull A
+  removedA: number;     // voxels removed from hull A (the smaller hull)
   removedB: number;     // voxels removed from hull B
-  vClose: number;       // m/s closing speed at the contact (>0 = closing)
+  vClose: number;       // m/s closing speed along the push-out axis (>0 = closing)
 }
 
 function zeroDebug(): ContactDebug {
@@ -54,12 +47,11 @@ function zeroDebug(): ContactDebug {
 }
 
 export class VoxelContact {
-  /** Latest readback (the most-overlapping pair this step), for the dev harness. */
+  /** Latest readback (the most-damaged pair this step), for the dev harness. */
   debug: ContactDebug = zeroDebug();
-
-  // public so main.ts can attach pulverization dust after construction (Task 8). Optional, so
-  // a headless `new VoxelContact()` still runs — dust just no-ops, like DebrisManager.
-  constructor(public effects?: Effects) {}
+  /** main.ts attaches this after construction for pulverization dust. Optional, so a headless
+   *  `new VoxelContact()` still runs — dust just no-ops. */
+  effects?: Effects;
 
   // ---- temps (no per-step allocation) ----
   private aabbs: { min: THREE.Vector3; max: THREE.Vector3 }[] = [];
@@ -69,8 +61,8 @@ export class VoxelContact {
   private vB = new THREE.Vector3();
   private pt = new THREE.Vector3();
   private imp = new THREE.Vector3();
-  private tmpc = new THREE.Vector3();
   private pt2 = new THREE.Vector3();
+  private tmpc = new THREE.Vector3();
   private hvA: HullView = { surface: new Int32Array(0), isSolid: () => false, dims: [0, 0, 0], pos: [0, 0, 0], quat: [0, 0, 0, 1] };
   private hvB: HullView = { surface: new Int32Array(0), isSolid: () => false, dims: [0, 0, 0], pos: [0, 0, 0], quat: [0, 0, 0, 1] };
 
@@ -80,7 +72,6 @@ export class VoxelContact {
       this.debug = zeroDebug();
       return;
     }
-    // ensure an AABB temp per ship
     while (this.aabbs.length < ships.length) this.aabbs.push({ min: new THREE.Vector3(), max: new THREE.Vector3() });
     for (let i = 0; i < ships.length; i++) ships[i].aabbWorld(this.aabbs[i]);
 
@@ -89,7 +80,9 @@ export class VoxelContact {
       for (let j = i + 1; j < ships.length; j++) {
         if (!aabbIntersect(this.aabbs[i], this.aabbs[j])) continue; // broad cull
         const d = this.stepPair(ships[i], ships[j], dt);
-        if (d && d.overlapCount > best.overlapCount) best = d;
+        if (!d) continue;
+        const dRem = d.removedA + d.removedB, bRem = best.removedA + best.removedB;
+        if (dRem > bRem || (dRem === bRem && d.overlapCount > best.overlapCount)) best = d;
       }
     }
     this.debug = best;
@@ -97,7 +90,7 @@ export class VoxelContact {
 
   /** One pair, one fixed step. Returns its debug, or null if the hulls don't overlap. */
   private stepPair(s1: Ship, s2: Ship, dt: number): ContactDebug | null {
-    // walk the SMALLER hull's surface against the larger's occupancy.
+    // walk the SMALLER hull's surface against the larger's occupancy (voxelOverlap's convention).
     const aSmaller = s1.surfaceCells().length <= s2.surfaceCells().length;
     const shipA = aSmaller ? s1 : s2;
     const shipB = aSmaller ? s2 : s1;
@@ -107,48 +100,35 @@ export class VoxelContact {
     const ov = voxelOverlap(this.hvA, this.hvB, VOXEL_SIZE);
     if (!ov) return null;
 
-    // ===== THE RULE (anchored destructible contact — see file header) =====
-    // Everything is computed from each hull's OWN centre-of-mass→contact direction and its OWN
-    // velocity. We deliberately do NOT use a centre-to-centre normal — it flips/degenerates when a
-    // big hull engulfs a small one, which produced single-step velocity spikes. The retard always
-    // opposes a hull's OWN velocity (it can only ever SLOW it, never add energy, whatever the
-    // geometry); the target gets only a small, hard-capped nudge. So nothing can ever be flung.
+    const nx = ov.axis[0], ny = ov.axis[1], nz = ov.axis[2]; // unit push-out, world, A→B
+    const depth = ov.depth;
+    const point = this.pt.set(ov.centroid[0], ov.centroid[1], ov.centroid[2]);
     shipA.localToWorld(shipA.comLocal, this.comA);
     shipB.localToWorld(shipB.comLocal, this.comB);
-    const point = this.pt.set(ov.centroid[0], ov.centroid[1], ov.centroid[2]);
-    const depth = ov.depth;
+
+    // closing speed = relative velocity at the contact, projected on the push-out axis (>0 = the
+    // hulls are converging). Uses voxelOverlap's axis, which is the thin overlap normal oriented
+    // A→B — it never flips/degenerates the way a centre-to-centre normal does when a big hull
+    // engulfs a small one (the old single-step spike source).
     velAtPoint(shipA, point, this.tmpc, this.vA);
     velAtPoint(shipB, point, this.tmpc, this.vB);
+    const vClose = (this.vA.x - this.vB.x) * nx + (this.vA.y - this.vB.y) * ny + (this.vA.z - this.vB.z) * nz;
 
-    // contact axis ≈ A's horizontal aim at the contact (A→B-ish; built from ONE com, so it stays
-    // stable at deep overlap where a centre-to-centre normal flips). vClose is the RELATIVE closing
-    // speed along it, (vA−vB)·aim — POSITIVE only while the hulls actually converge. (An absolute
-    // per-ship approach would stay >0 for two hulls sailing LOCKED together at a common velocity and
-    // chew them forever; relative closing reads ≈0 there, so the breaking and grinding stop.)
-    const dax = point.x - this.comA.x, daz = point.z - this.comA.z, dal = Math.hypot(dax, daz) || 1;
-    const ahx = dax / dal, ahz = daz / dal;
-    const vrx = this.vA.x - this.vB.x, vrz = this.vA.z - this.vB.z; // horizontal relative velocity
-    const vrl = Math.hypot(vrx, vrz);
-    const vClose = vrx * ahx + vrz * ahz; // relative closing speed (>0 = converging)
-    // below a sub-voxel graze → no contact response (kills flicker on a glancing touch).
-    if (depth < TUN.crush.minDepth) return { overlapCount: ov.aCells.length, depth, force: 0, energy: 0, removedA: 0, removedB: 0, vClose };
+    const base: ContactDebug = { overlapCount: ov.aCells.length, depth, force: 0, energy: 0, removedA: 0, removedB: 0, vClose };
+    if (depth < TUN.crush.minDepth) return base; // sub-voxel graze → ignore (kills flicker)
 
     const mA = Math.max(shipA.body.mass(), 1);
     const mB = Math.max(shipB.body.mass(), 1);
     const mu = (mA * mB) / (mA + mB); // reduced mass — the collision's effective mass
     const gA = shipA.build.grid, gB = shipB.build.grid;
 
-    // BREAK: only when closing faster than vBreak (the wood's give). Budget = the collision energy
-    // ½·μ·vClose² (what an inelastic impact dissipates), capped by maxStepEnergy as an anti-vaporize
-    // backstop. Spend it on the cheapest contacting voxels, POOLED cheapest-first across BOTH hulls,
-    // so the soft oak in the path breaks before the dear RAM prow → the path clears (nothing embeds)
-    // and the bow only chips. Per-step count is really bounded by GEOMETRY (only the thin contact
-    // layer overlaps); the budget just decides how far down the toughness sort it reaches. Faster /
-    // heavier closing → bigger μv² → more breaks; and a heavy hull keeps vClose high (it barely
-    // slows) so it guts a lighter one over the whole impact — emergent, with NO "rammer" special case.
+    // ---- 1. CARVE (only while closing hard enough to splinter wood) ----
+    // Budget = the closing KE ½·μ·vClose², capped by maxStepEnergy. Spend it cheapest-first POOLED
+    // across BOTH hulls (the EXACT overlapping solid cells from voxelOverlap), so soft oak gives
+    // before the dear RAM prow → the struck hull holes, the bow only chips. Faster/heavier closing
+    // → bigger budget → deeper bite; a heavy hull keeps vClose high so it guts a lighter one.
     let removedA = 0, removedB = 0, spent = 0;
-    const breaking = vClose >= TUN.crush.vBreak;
-    if (breaking) {
+    if (vClose >= TUN.crush.vBreak) {
       const budget = Math.min(0.5 * mu * vClose * vClose * TUN.crush.yield, TUN.crush.maxStepEnergy);
       const cand: { s: 0 | 1; c: [number, number, number]; e: number }[] = [];
       for (let i = 0; i < ov.aCells.length; i++) { const c = ov.aCells[i]; const m = gA.get(c[0], c[1], c[2]); if (m) cand.push({ s: 0, c, e: breakEnergy(m) }); }
@@ -162,50 +142,32 @@ export class VoxelContact {
     }
     const removed = removedA + removedB;
 
-    // still-solid interpenetration after the carve? (drives the gentle de-penetration below)
-    let residual = 0;
-    for (let i = 0; i < ov.aCells.length; i++) { const a = ov.aCells[i]; if (gA.isSolid(a[0], a[1], a[2])) residual++; }
-    for (let i = 0; i < ov.bCells.length; i++) { const b = ov.bCells[i]; if (gB.isSolid(b[0], b[1], b[2])) residual++; }
-
-    // ---- MOMENTUM: ONE rule, NO "rammer" vs "target". An INELASTIC impulse along the relative-
-    // velocity direction drives both hulls toward their COMMON velocity (the faster slows, the slower
-    // speeds up) until their relative motion — and so the breaking — stops. It's symmetric and
-    // SELF-LIMITING: as vRel → 0 the impulse → 0, so it can't accumulate or fling, and using the
-    // velocity direction (not a centre-to-centre normal) means it never flips/spikes at deep overlap.
-    // We do NOT root the struck hull — the keel's own water drag (ship.ts, ~42× stronger sideways
-    // than fore/aft) bleeds the velocity it gains, so a broadsided hull lurches then is held by the
-    // sea while a rear-ended one slides more: the "in molasses" feel, fully emergent. Applied at COM
-    // HEIGHT so an off-centre hit YAWS them (a PIT) but never ROLLS them. ----
+    // ---- 2. CANCEL the closing velocity (inelastic, toward a common velocity) ----
+    // jv = μ·Δv brings the relative closing to zero (capped per step as a smoothing/NaN backstop —
+    // the de-penetration below holds them apart meanwhile, so capping can't cause a phase-through).
+    // Applied at COM HEIGHT along the horizontal push-out, so an off-centre hit yaws (PIT) not rolls.
     let force = 0;
-    if (breaking && vrl > 1e-3) {
-      const nx = vrx / vrl, nz = vrz / vrl; // A relative to B (robust direction, never flips)
-      // inelastic cancel of the relative velocity (transfer = 1 → full common velocity), per step
-      // capped only as a smoothing / NaN backstop — the impact still completes over a few steps.
-      const jmag = mu * Math.min(vrl * TUN.crush.transfer, TUN.crush.maxDvPerStep);
-      this.pushAtComHeight(shipA, point, this.comA.y, -nx, -nz, jmag); // −μ·vRel on A
-      this.pushAtComHeight(shipB, point, this.comB.y, nx, nz, jmag);   // +μ·vRel on B → common velocity
-      force = jmag / dt;
-    } else if (residual > 0) {
-      // Overlapping but NOT breaking (matched velocity / sub-vBreak / an unbreakable belt) → push the
-      // hulls apart so they can't occupy the same space. Two solids can't interpenetrate, so the
-      // target separation speed RAMPS with how deep they sit — firm when deeply embedded (otherwise
-      // two ships pinned on one line ghost together into a 450-cell mush and the buoyancy goes wild),
-      // gentle for a light bump — capped at maxDvPerStep so it still can't fling. Along A's aim,
-      // equal-and-opposite at the COM (no roll). One-shot: never pulls them together (add ≤ 0 if
-      // they're already separating faster than the target).
-      const sepTarget = Math.min(TUN.crush.separate * (1 + depth * 4), TUN.crush.maxDvPerStep);
-      const add = Math.min(sepTarget + vClose, sepTarget); // sepNow = −vClose; bring it UP TO sepTarget
-      if (add > 0) {
-        const jSep = mu * add;
-        this.imp.set(-ahx * jSep, 0, -ahz * jSep); shipA.body.applyImpulse(this.imp, true); // A away from B
-        this.imp.set(ahx * jSep, 0, ahz * jSep); shipB.body.applyImpulse(this.imp, true);   // B away from A
-        force = jSep / dt;
-      }
+    if (vClose > 0) {
+      const jv = mu * Math.min(vClose, TUN.crush.maxDvPerStep);
+      this.pushAtComHeight(shipA, point, this.comA.y, -nx, -nz, jv); // slow A (it was closing +axis)
+      this.pushAtComHeight(shipB, point, this.comB.y, nx, nz, jv);   // shove B along +axis
+      force = jv / dt;
     }
 
+    // ---- 3. DE-PENETRATE by POSITION (the hard non-penetration; can't phase through) ----
+    // Push the two bodies apart along the axis by the interpenetration depth, split by inverse mass
+    // (the lighter hull yields more) and relaxed by `depen` (a fraction per step → smooth, and it
+    // re-solves next step from the fresh overlap, so it never accumulates into a fling). Two solid
+    // hulls therefore can never end a step inside each other, whatever the closing speed.
+    const corr = depth * TUN.crush.depen;
+    const moveA = corr * (mB / (mA + mB)), moveB = corr * (mA / (mA + mB));
+    const ta = shipA.body.translation();
+    shipA.body.setTranslation({ x: ta.x - nx * moveA, y: ta.y - ny * moveA, z: ta.z - nz * moveA }, true);
+    const tb = shipB.body.translation();
+    shipB.body.setTranslation({ x: tb.x + nx * moveB, y: tb.y + ny * moveB, z: tb.z + nz * moveB }, true);
+
     if (this.effects && TUN.crush.fling > 0 && removed > 0) {
-      const dl = vrl > 1e-3 ? vrl : 1;
-      this.effects.impactDebris(point, this.tmpc.set(vrx / dl, 0, vrz / dl), Math.min(removed * TUN.crush.fling, 40));
+      this.effects.impactDebris(point, this.tmpc.set(nx, 0, nz), Math.min(removed * TUN.crush.fling, 40));
     }
 
     return { overlapCount: ov.aCells.length, depth, force, energy: spent, removedA, removedB, vClose };

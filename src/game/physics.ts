@@ -5,10 +5,11 @@ import { FIXED_DT, G } from "../core/constants";
 export interface Physics {
   world: RAPIER.World;
   RAPIER: typeof RAPIER;
-  /** Rigid-body handles of every live ship. A contact pair where BOTH bodies are ships is
-   *  pulled OUT of Rapier's rigid solver (the hook below returns null), so the deformable
-   *  voxelContact owns the ship-vs-ship response — mutual crunch, not rigid plow-and-shove.
-   *  Ships must remove their handle here on despawn (handles are recycled by Rapier). */
+  /** Rigid-body handles of every live ship. A contact pair where BOTH bodies are ships is pulled
+   *  OUT of Rapier's rigid solver (the hook below returns null), so the deformable voxelContact
+   *  owns the ship-vs-ship response — it lets the hulls interpenetrate (so the real voxel overlap
+   *  is visible to carve), then carves + resolves non-penetration itself. Ships must remove their
+   *  handle here on despawn (handles are recycled by Rapier). */
   shipBodies: Set<number>;
   /** Passed to world.step each fixed step. Only fires for pairs involving a collider that has
    *  ActiveHooks.FILTER_CONTACT_PAIRS set (we set it on hull colliders), so the common case
@@ -28,11 +29,12 @@ export async function initPhysics(): Promise<Physics> {
   const shipBodies = new Set<number>();
   const hooks: RAPIER.PhysicsHooks = {
     filterContactPair(_c1, _c2, body1, body2) {
-      // Two distinct ship hulls: generate NO rigid contact. voxelContact reads the real voxel
-      // overlap itself and applies a soft, capped, carve-bled response — returning null here
-      // is what stops Rapier from rigidly shoving them apart before they can crunch.
+      // Two distinct ships: generate NO rigid contact. voxelContact reads the real voxel overlap
+      // (which needs the hulls to actually interpenetrate) and applies its own carve + hard
+      // position-based de-penetration + inelastic velocity cancel. Returning null is what lets the
+      // hulls overlap enough to crunch instead of Rapier rigidly shoving them apart first.
       if (body1 !== body2 && shipBodies.has(body1) && shipBodies.has(body2)) return null;
-      // everything else (hull↔debris, hull↔player, …) solves normally.
+      // everything else (hull↔debris, hull↔player, deck↔character, …) solves normally.
       return RAPIER.SolverFlags.COMPUTE_IMPULSE;
     },
     filterIntersectionPair() {

@@ -117,58 +117,46 @@ export const TUN = {
     crushEfficiency: 13,
   },
 
-  /** Ship-vs-ship DEFORMABLE contact — ONE emergent rule, no "rammer" vs "target" (game/
-   *  voxelContact.ts). The hull-hull pair is out of Rapier's rigid solver (physics.ts); each fixed
-   *  step, where the hulls' voxels overlap and CLOSE faster than vBreak, the cheapest contacting
-   *  voxels of BOTH hulls break on a budget of the collision energy ½·μ·vClose². The momentum is a
-   *  plain INELASTIC impulse along the relative-velocity direction that drives both hulls toward
-   *  their COMMON velocity (faster slows, slower speeds up) until the relative motion — and the
-   *  breaking — stop. It is symmetric and self-limiting (vRel→0 ⇒ impulse→0), so it can't fling, and
-   *  it uses the velocity direction, NOT a centre-to-centre normal (which flipped/spiked at deep
-   *  overlap). The struck ship is NOT rooted — the keel's own anisotropic water drag (ship.ts, ~42×
-   *  stronger sideways than fore/aft) bleeds the velocity it gains, so a broadsided hull lurches
-   *  then settles while a rear-ended one slides more: "in molasses", fully emergent. Replaces the
-   *  retired penalty-spring (k/damping/fMax) and TUN.ram. */
+  /** Ship-vs-ship DEFORMABLE contact (game/voxelContact.ts). Ship-ship pairs are OUT of Rapier's
+   *  rigid solver (physics.ts), so the hulls are free to interpenetrate and the real voxel overlap
+   *  is visible; each fixed step voxelContact resolves it in three coupled parts: (1) CARVE — where
+   *  the hulls' solid voxels overlap and they close faster than vBreak, break the cheapest of those
+   *  EXACT overlapping cells of BOTH hulls on a budget of the closing KE ½·μ·vClose²; (2) CANCEL —
+   *  an inelastic impulse along the overlap push-out axis drives them to a common velocity at COM
+   *  height (off-centre → yaw/PIT, never roll), then the keel's own ~42×-sideways water drag bleeds
+   *  the struck hull's gain → "in molasses"; (3) DE-PENETRATE — push the bodies apart in POSITION by
+   *  the interpenetration depth (inverse-mass split, relaxed by `depen`), so two solid hulls can
+   *  NEVER end a step inside each other. Part 3 is the hard non-penetration that stops a hull sailing
+   *  through another; carving only decides how much wood that costs. Replaces the retired
+   *  rigid-reaction ram (TUN.ram) and the too-weak soft penalty-spring that let hulls phase through. */
   crush: {
-    /** master enable — off → ship-vs-ship does nothing (hulls ghost; see physics.ts hook). */
+    /** master enable — off → ship-vs-ship does nothing (hulls would ghost; see physics.ts hook). */
     enabled: true,
-    /** per-step break-energy CEILING (J, whole pair) — an anti-vaporize backstop, NOT the
-     *  every-step rate. The real per-step limiter is GEOMETRY (only the voxels actually in the
-     *  thin contact layer can break); this just clamps a pathologically deep overlap (e.g. a
-     *  teleport) from deleting a huge slab in one frame. At sail-ram speeds it never binds. */
+    /** per-step break-energy CEILING (J, whole pair) — an anti-vaporize backstop. The real per-step
+     *  limiter is GEOMETRY (only the thin overlapping layer can break); this just clamps a
+     *  pathologically deep overlap (e.g. a teleport) from deleting a huge slab in one frame. */
     maxStepEnergy: 5.0e6,
     /** closing speed (m/s) below which NOTHING breaks — the wood's "give" before it fractures
-     *  ("more than say 4 knots"; 2.0 m/s ≈ 3.9 kn). Under it, a slow bump / side-by-side raft
-     *  just springs apart (capped, gentle) with no damage; over it, the contact face crushes. */
+     *  ("more than say 4 knots"; 2.0 m/s ≈ 3.9 kn). Under it a slow bump just de-penetrates +
+     *  cancels momentum with no damage; over it the contact face crushes. */
     vBreak: 2.0,
-    /** fraction of the collision energy ½·μ·vClose² made available to break voxels (1 = all). Lower
-     *  → tougher hulls (fewer voxels break per hit, a ram penetrates less). */
+    /** fraction of the closing KE ½·μ·vClose² made available to break voxels (1 = all). Lower →
+     *  tougher hulls (fewer voxels break per hit, a ram penetrates less). */
     yield: 1,
-    /** INELASTIC transfer fraction (0..1). 1 = a fully inelastic collision: the impulse cancels the
-     *  hulls' relative velocity, so they reach a common velocity (the faster slows, the slower speeds
-     *  up) — honest momentum transfer with NO rammer/target distinction. Lower → less velocity
-     *  trades hands (stiffer, more rooted). NOT a fling knob: the transfer only ever closes the gap
-     *  to the common velocity, never past it; what makes a struck ship "only move a bit" is the
-     *  keel's water drag, not this. The struck hull's gain is applied at COM height → yaw (PIT),
-     *  never roll. Raise toward 1 for a more epic, fully-inelastic exchange; lower for "not pushed as
-     *  easily" (stiffer, the struck ship lurches less and the sea stops it sooner). 0.5 = a clear
-     *  shove that still settles quickly. */
-    transfer: 0.5,
-    /** de-penetration separation speed (m/s) for the sub-vBreak case ONLY: when the hulls overlap
-     *  but nothing is breaking (a slow bump, or lodged together after an impact), they're eased apart
-     *  until they part at this speed — one-shot, never pulling together, equal-and-opposite at the COM
-     *  (no roll), tiny so it can't fling. Never fires while a ram is breaking. */
-    separate: 0.6,
     /** dust motes flung per voxel broken at the contact (visual; 0 = none). */
     fling: 1,
-    /** minimum penetration (m) before any contact response — kills voxel flicker on a grazing
-     *  touch / a calm side-by-side raft. */
+    /** minimum penetration (m) before any contact response — kills voxel flicker on a grazing touch
+     *  / a calm side-by-side raft. */
     minDepth: 0.06,
-    /** per-step cap (m/s) on the RELATIVE velocity the inelastic impulse may cancel in one step — a
-     *  smoothing + NaN backstop. A real impact closes its gap over several steps anyway, so this
-     *  rarely binds; it just keeps a single freak frame from applying a huge impulse. 4 ≈ snappy but
-     *  spike-proof. */
+    /** per-step cap (m/s) on how much closing the inelastic CANCEL impulse may remove in one step —
+     *  a smoothing / NaN backstop. The POSITION de-penetration holds the hulls apart regardless, so
+     *  capping this can't cause a phase-through; it just makes the momentum trade feel less instant. */
     maxDvPerStep: 4,
+    /** POSITION de-penetration relaxation (0..1): the fraction of the interpenetration depth the
+     *  hulls are shoved apart each step (inverse-mass split). 1 = clear it in one step (firm, can
+     *  jitter); lower = ease apart over a few steps (smoother). Re-solved from the fresh overlap each
+     *  step, so it never accumulates into a fling. This is the hard non-penetration knob. */
+    depen: 0.5,
   },
 
   /** Flooding — how fast the sea comes in through a breach. The deterministic floodStep oracle
