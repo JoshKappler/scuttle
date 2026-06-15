@@ -55,11 +55,24 @@ export const GOODS: Record<GoodId, Good> = {
   silk: { id: "silk", name: "Silk", basePrice: 40 },
 };
 
-/** Seed upgrades — placeholder content, pure data. Effects are applied in the game layer. */
+/**
+ * The upgrade catalog — pure data; the EFFECTS are applied in the game layer
+ * (`game/port.ts` → ship/cannons/sailing). `cost` is the base price of level 0→1;
+ * each further level costs `base × (currentLevel + 1)` (see {@link upgradeCost}).
+ */
 export const UPGRADES: Upgrade[] = [
+  { id: "reload", name: "Faster Reload", description: "−12% cannon reload per level", cost: 180, maxLevel: 4 },
+  { id: "hull", name: "Hull Reinforcement", description: "+25% hull toughness per level", cost: 220, maxLevel: 4 },
+  { id: "speed", name: "Tall Canvas", description: "+10% top speed per level", cost: 160, maxLevel: 4 },
+  { id: "rudder", name: "Sharper Rudder", description: "+15% turn rate per level", cost: 150, maxLevel: 3 },
   { id: "hold", name: "Larger Hold", description: "+20 cargo capacity per level", cost: 200, maxLevel: 3 },
-  { id: "planks", name: "Reinforced Planks", description: "+4 repair planks per level", cost: 150, maxLevel: 3 },
+  { id: "planks", name: "Repair Stores", description: "+4 repair planks per level", cost: 150, maxLevel: 3 },
 ];
+
+/** Cost of the NEXT level given the level currently owned: linear ramp `base × (level+1)`. */
+export function upgradeCost(u: Upgrade, currentLevel: number): number {
+  return u.cost * (currentLevel + 1);
+}
 
 export function defaultState(): EconomyState {
   return {
@@ -129,7 +142,8 @@ export class Economy {
   nextCost(id: UpgradeId): number | null {
     const u = UPGRADES.find((x) => x.id === id);
     if (!u) return null;
-    return this.upgradeLevel(id) >= u.maxLevel ? null : u.cost;
+    const lvl = this.upgradeLevel(id);
+    return lvl >= u.maxLevel ? null : upgradeCost(u, lvl);
   }
   canAfford(cost: number): boolean {
     return this.state.doubloons >= cost;
@@ -176,10 +190,12 @@ export class Economy {
   buyUpgrade(id: UpgradeId): { ok: boolean; reason?: "broke" | "maxed" | "unknown" } {
     const u = UPGRADES.find((x) => x.id === id);
     if (!u) return { ok: false, reason: "unknown" };
-    if (this.upgradeLevel(id) >= u.maxLevel) return { ok: false, reason: "maxed" };
-    if (!this.canAfford(u.cost)) return { ok: false, reason: "broke" };
-    this.state.doubloons -= u.cost;
-    this.state.upgrades[id] = this.upgradeLevel(id) + 1;
+    const lvl = this.upgradeLevel(id);
+    if (lvl >= u.maxLevel) return { ok: false, reason: "maxed" };
+    const cost = upgradeCost(u, lvl);
+    if (!this.canAfford(cost)) return { ok: false, reason: "broke" };
+    this.state.doubloons -= cost;
+    this.state.upgrades[id] = lvl + 1;
     return { ok: true };
   }
 
