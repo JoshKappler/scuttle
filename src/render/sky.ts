@@ -85,6 +85,11 @@ export function createSky(): SkySetup {
   const envCube = new THREE.WebGLCubeRenderTarget(256, {
     generateMipmaps: true,
     minFilter: THREE.LinearMipmapLinearFilter,
+    // HDR (HalfFloat): the sky is rendered LINEAR into the cube (no tonemap when
+    // rendering to a target), so its values run far past 1. An LDR cube would clamp
+    // the whole bright sky to white; HalfFloat preserves it so the water reflects a
+    // real sky gradient, and the ocean's own post chain tonemaps the result.
+    type: THREE.HalfFloatType,
   });
   // far must clear the 450000-unit sky dome; near small. Position is set per bake.
   const cubeCam = new THREE.CubeCamera(1, 1_000_000, envCube);

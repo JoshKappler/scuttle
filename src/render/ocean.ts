@@ -78,6 +78,11 @@ export interface Ocean {
   setDynamicField(tex: THREE.Texture | null, windowSize: number, originX: number, originZ: number, on: boolean, scale?: number): void;
   /** dev-panel chop controls: overall strength (0 = pure swell) + crest-pinch choppiness. */
   setChop(strength: number, choppiness: number): void;
+  /** Bind the live sky+cloud reflection cube (render/sky.ts envCube.texture). The
+   *  surface then mirrors the real sky gradient, sun and clouds (Fresnel-weighted). */
+  setSkyEnv(tex: THREE.Texture): void;
+  /** dev-panel reflection strength (0 = matte water, 1 = full Fresnel reflection). */
+  setReflStrength(strength: number): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -297,6 +302,9 @@ uniform vec3 uSunColor;
 uniform vec3 uDeepColor;
 uniform vec3 uShallowColor;
 uniform vec3 uSkyColor;
+uniform samplerCube uSkyEnv;   // live sky+cloud reflection cube (render/sky.ts)
+uniform float uHasEnv;         // 1 when uSkyEnv is bound, else fall back to uSkyColor
+uniform float uReflStrength;   // dev: overall reflection strength
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 uniform float uAmpTotal;
@@ -474,9 +482,16 @@ void main() {
   float facing = max(dot(N, V), 0.0);
   vec3 water = mix(uShallowColor, uDeepColor, facing);
 
-  // fresnel sky reflection
+  // fresnel reflection of the REAL sky: reflect the view across the wave-detailed
+  // normal Nd and sample the sky+cloud env cube (render/sky.ts), so the sea mirrors
+  // the actual sky gradient, sun and drifting clouds — distorted by the swell. The
+  // flat uSkyColor constant is the fallback when the cube isn't bound yet.
   float fresnel = pow(1.0 - facing, 5.0);
-  vec3 col = mix(water, uSkyColor, clamp(fresnel * 0.85 + 0.05, 0.0, 1.0));
+  vec3 R = reflect(-V, Nd);
+  R.y = max(R.y, 0.02); // keep the reflected ray in the sky hemisphere
+  vec3 skyRefl = (uHasEnv > 0.5) ? textureCube(uSkyEnv, R).rgb : uSkyColor;
+  float reflF = clamp((fresnel * 0.85 + 0.05) * uReflStrength, 0.0, 1.0);
+  vec3 col = mix(water, skyRefl, reflF);
 
   // sun glints — a BROAD glitter path, never a pinpoint. A tight pow-220 highlight
   // on the animated chop normal lit one texel and not its neighbour and flipped
@@ -604,6 +619,16 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
   const NCASC = Math.max(1, layers.length);
   const dummyTex: THREE.Texture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   dummyTex.needsUpdate = true;
+  // placeholder cube so the samplerCube is always bound before setSkyEnv() runs
+  // (uHasEnv gates whether it is actually sampled).
+  const dummyCube = new THREE.CubeTexture(
+    Array.from({ length: 6 }, () => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 1;
+      return c;
+    }),
+  );
+  dummyCube.needsUpdate = true;
   function padTex(arr: THREE.Texture[]): THREE.Texture[] {
     const out = arr.slice();
     while (out.length < NCASC) out.push(dummyTex);
@@ -650,9 +675,14 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uWaveB: { value: b },
       uSunDir: { value: sunDir.clone() },
       uSunColor: { value: new THREE.Color(1.0, 0.78, 0.55) },
-      uDeepColor: { value: new THREE.Color(0x0a3340) },
-      uShallowColor: { value: new THREE.Color(0x1a6a72) },
-      uSkyColor: { value: new THREE.Color(0x9fc4d4) },
+      // deepened to a teal→navy body (art direction: grounded realism w/ punch);
+      // the real sky reflection now supplies the lighter tones at grazing angles.
+      uDeepColor: { value: new THREE.Color(0x051a26) },
+      uShallowColor: { value: new THREE.Color(0x0f4a55) },
+      uSkyColor: { value: new THREE.Color(0x9fc4d4) }, // fresnel fallback only
+      uSkyEnv: { value: dummyCube },
+      uHasEnv: { value: 0 },
+      uReflStrength: { value: 0.9 },
       uFogColor: { value: new THREE.Color(0xc4d6d6) },
       uFogDensity: { value: 0.0016 },
       uAmpTotal: { value: ampTotal },
@@ -772,6 +802,13 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     setChop(strength, choppiness) {
       mat.uniforms.uChopScale.value = strength;
       mat.uniforms.uChoppiness.value = choppiness;
+    },
+    setSkyEnv(tex) {
+      mat.uniforms.uSkyEnv.value = tex;
+      mat.uniforms.uHasEnv.value = 1;
+    },
+    setReflStrength(strength) {
+      mat.uniforms.uReflStrength.value = strength;
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

@@ -115,6 +115,7 @@ async function main() {
     ],
   });
   const ocean = createOcean(waves, skySetup.sunDir, oceanField);
+  ocean.setSkyEnv(skySetup.envCube.texture); // mirror the live sky+cloud cube
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
@@ -1528,6 +1529,7 @@ async function main() {
       TUN.dyn.heightScale,
     );
     ocean.setChop(TUN.chop.strength, TUN.chop.choppiness);
+    ocean.setReflStrength(TUN.gfx.reflection.strength);
     ocean.update(world.simTime, camera.position);
 
     // drifting clouds follow the camera; re-bake the sky+cloud reflection cube at
