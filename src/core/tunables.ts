@@ -232,18 +232,18 @@ export const TUN = {
      *  sky/sun uniformly without touching the individual effects. Nested in its own
      *  flat object so the dev-panel slider's `obj` stays a Bag (the gfx root has
      *  sub-objects, which a Bag = Record<string, number|boolean> can't hold). */
-    tone: { exposure: 0.95 },
+    tone: { exposure: 0.78 },
     /** UnrealBloomPass — glows the sun disc, the sun-glint path and bright foam.
      *  Mild by design ("grounded realism with punch", not a bloom-fest). clamp caps
      *  the HDR fed to bloom so the sun's astronomical luminance can't white-wash. */
-    bloom: { enabled: true, strength: 0.09, radius: 0.5, threshold: 1.7, clamp: 7 },
+    bloom: { enabled: true, strength: 0.04, radius: 0.5, threshold: 1.7, clamp: 4 },
     /** screen-space god rays (render/post.ts GodRayPass) anchored at the sun's
      *  projected position; occlusion is free (dark geometry blocks the shafts).
      *  threshold gates which pixels seed shafts (high = only the sun disc, not the
      *  whole bright sky → no white haze). samples = the per-pixel march length, the
      *  pass's dominant cost; read ONCE at Post construction, so a reload is needed
      *  to change it (lower = much faster). */
-    godrays: { enabled: true, strength: 0.32, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 24 },
+    godrays: { enabled: true, strength: 0.15, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 24 },
     /** final color grade (render/post.ts GradePass): contrast + saturation +
      *  a subtle vignette for the cinematic punch. */
     grade: { contrast: 1.06, saturation: 1.08, vignette: 0.22 },
@@ -252,7 +252,7 @@ export const TUN = {
      *  as its own teal body with a sky SHEEN, not liquid metal). clamp caps the
      *  reflected HDR so a bright sky can't blow the water to white. rebakeHz throttles
      *  re-rendering the sky+cloud cube (clouds drift slowly — a couple bakes/s is plenty). */
-    reflection: { strength: 0.42, rebakeHz: 2, clamp: 2.0 },
+    reflection: { strength: 0.22, rebakeHz: 2, clamp: 1.6 },
     /** procedural cloud dome (render/clouds.ts): coverage = how much sky is cloud,
      *  density = opacity/contrast of each puff, speed = drift rate. */
     clouds: { coverage: 0.5, density: 0.7, speed: 0.6 },

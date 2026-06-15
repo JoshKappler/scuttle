@@ -506,7 +506,7 @@ void main() {
   // reads as a smooth sun-on-water path that holds still in motion.
   vec3 H = normalize(L + V);
   float ndh = max(dot(Nd, H), 0.0);
-  float spec = pow(ndh, 38.0) * 0.38 + pow(ndh, 11.0) * 0.12;
+  float spec = pow(ndh, 48.0) * 0.15 + pow(ndh, 14.0) * 0.04;
   col += uSunColor * spec;
 
   // subsurface light through wave crests facing the sun
@@ -681,15 +681,15 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uWaveB: { value: b },
       uSunDir: { value: sunDir.clone() },
       uSunColor: { value: new THREE.Color(1.0, 0.78, 0.55) },
-      // deepened to a teal→navy body (art direction: grounded realism w/ punch);
-      // the real sky reflection now supplies the lighter tones at grazing angles.
-      uDeepColor: { value: new THREE.Color(0x051a26) },
-      uShallowColor: { value: new THREE.Color(0x0f4a55) },
+      // a DARKER teal→navy body (round-2 tune: "the water needs to be a bit darker
+      // and slightly more matte"); the (now weaker) sky reflection only adds a sheen.
+      uDeepColor: { value: new THREE.Color(0x030f17) },
+      uShallowColor: { value: new THREE.Color(0x09303a) },
       uSkyColor: { value: new THREE.Color(0x9fc4d4) }, // fresnel fallback only
       uSkyEnv: { value: dummyCube },
       uHasEnv: { value: 0 },
-      uReflStrength: { value: 0.42 },
-      uReflClamp: { value: 2.0 },
+      uReflStrength: { value: 0.22 },
+      uReflClamp: { value: 1.6 },
       uFogColor: { value: new THREE.Color(0xc4d6d6) },
       uFogDensity: { value: 0.0016 },
       uAmpTotal: { value: ampTotal },

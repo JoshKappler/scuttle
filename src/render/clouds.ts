@@ -53,9 +53,12 @@ void main() {
   if (up < 0.02) discard; // below the horizon: leave the sky alone
 
   // cloud-PLANE projection: trace the view ray to a flat cloud deck overhead and
-  // sample noise at the hit point's XZ. This spreads cloud cells evenly across the
-  // sky and compresses them realistically toward the horizon (up→0 ⇒ far away).
-  vec2 uv = (d.xz / max(up, 0.18)) * 1.1;
+  // sample noise at the hit point's XZ. round 2: the OLD floor (0.18) let the
+  // projection stretch cloud cells into long horizontal SMEARS between up≈0.18..0.5
+  // — the "melts down at the edges" the player saw. A higher floor (0.30) clamps that
+  // stretch much sooner, and the *1.7 scale (was 1.1) makes the cells finer = less
+  // blobby / "higher resolution".
+  vec2 uv = (d.xz / max(up, 0.30)) * 1.7;
   uv += uTime * uSpeed * 0.01 * vec2(1.0, 0.6);
 
   float n = fbm(uv); // ~0.2..0.75, mean ~0.45
@@ -64,9 +67,11 @@ void main() {
   float t = mix(0.60, 0.28, clamp(uCoverage, 0.0, 1.0));
   float soft = mix(0.16, 0.05, clamp(uDensity, 0.0, 1.0));
   float alpha = smoothstep(t, t + soft, n);
-  // fade in just off the horizon so the dome rim never shows as a hard line, but
-  // low enough that clouds still fill the near-horizon sky a follow-cam mostly sees.
-  alpha *= smoothstep(0.02, 0.10, up);
+  // round 2: fade clouds OUT across up≈0.06..0.16 — the higher projection floor (0.30)
+  // already stops the smear, so clouds can fill most of the visible sky; this fade just
+  // keeps the very-near-horizon band (most stretch-prone) clear so no melt reaches the
+  // horizon line, while the follow-cam still sees a proper cloudscape above it.
+  alpha *= smoothstep(0.06, 0.16, up);
 
   // a second, finer FBM tints the puffs so they aren't flat
   float detail = fbm(uv * 2.7 + 11.0);

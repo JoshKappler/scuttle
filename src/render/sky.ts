@@ -45,8 +45,11 @@ export function createSky(): SkySetup {
   // the sun-glow to a disc instead of a screen-filling smear.
   uniforms.turbidity.value = 5;
   uniforms.rayleigh.value = 1.8;
-  uniforms.mieCoefficient.value = 0.005;
-  uniforms.mieDirectionalG.value = 0.84;
+  // round 2: shrink the sun's forward-scatter glow further (the disc still read as
+  // "blindingly bright" with a big bright halo). Lower mieCoefficient + g pull the
+  // glow into a tighter, dimmer disc instead of a screen-filling smear.
+  uniforms.mieCoefficient.value = 0.0026;
+  uniforms.mieDirectionalG.value = 0.8;
 
   const elevation = 14; // degrees above horizon — late afternoon
   const azimuth = 155;
@@ -82,11 +85,12 @@ export function createSky(): SkySetup {
   // void without brightening the wood's overall tone.
   const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 0.95);
 
-  // Live sky+cloud reflection cube for the ocean. 256² is plenty for a near-mirror
-  // water surface whose wave normals smear the reflection anyway; mipmaps let the
-  // ocean fetch blurrier reflections at grazing/rough angles. The cube camera renders
-  // the BACKGROUND scene (sky + clouds) directly — no borrowing needed.
-  const envCube = new THREE.WebGLCubeRenderTarget(256, {
+  // Live sky+cloud reflection cube for the ocean. 512² (round 2: 256 read as a
+  // low-res, melty reflection at the grazing horizon) — still cheap because the bake
+  // is throttled to a couple Hz; mipmaps let the ocean fetch blurrier reflections at
+  // grazing/rough angles. The cube camera renders the BACKGROUND scene (sky + clouds)
+  // directly — no borrowing needed.
+  const envCube = new THREE.WebGLCubeRenderTarget(512, {
     generateMipmaps: true,
     minFilter: THREE.LinearMipmapLinearFilter,
     // HDR (HalfFloat): the sky is rendered LINEAR into the cube (no tonemap when
