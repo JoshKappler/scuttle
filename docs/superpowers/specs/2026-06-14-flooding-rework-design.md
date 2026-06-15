@@ -73,22 +73,19 @@ export function orificeFlow(area: number, extHead: number, intHead: number): num
 }
 ```
 
-New per-step inputs carry **already-resolved heads** (so `floodStep` needs no world transform and
-stays deterministic):
+Breach inputs carry **already-resolved heads** (so `floodStep` needs no world transform and stays
+deterministic):
 
 ```ts
-export interface BreachInput  { compartmentId: number; area: number; extHead: number; intHead: number; }
-export interface OpeningFlow  { a: number; b: number; area: number; headA: number; headB: number; }
+export interface BreachInput { compartmentId: number; area: number; extHead: number; intHead: number; }
 ```
 
-`floodStep(compartments, openings: OpeningFlow[], breaches: BreachInput[], dt)`:
+`floodStep(compartments, openings, breaches, dt)` (signature unchanged):
 - breaches: `c.waterVolume = clamp(c.waterVolume + orificeFlow(area, extHead, intHead)·dt, 0, c.volume)`
   — note the **lower clamp at 0**, which is the drain path.
-- openings: `q = orificeFlow(area, headA, headB)·dt` (`+ = a→b`), then move `q` clamped by each
-  side's available water and remaining capacity (as today, but head-driven not fill-fraction-driven).
-
-The static structural `Opening {a,b,area}` interface stays (built on damage in `ship.ts`); the
-per-step `OpeningFlow` is derived each step in `ship.ts`.
+- openings: kept exactly as today (fill-fraction-difference exchange, `EXCHANGE_HEAD_SCALE`). The
+  inter-compartment path is **not** broken — only the sea↔compartment breach path needed the
+  two-reservoir rule — so reworking openings to head-driven flow is deliberately out of scope here.
 
 ### `game/ship.ts` — attitude-aware head resolver + free-surface weight
 
@@ -102,9 +99,9 @@ breach/opening — usually none, so normally skipped):
   changed materially (same tilt-key idea as the renderer); skip dry compartments entirely.
 - Per breach **cell** (not aggregated — a low hole floods while a high hole drains): resolve
   `seaY = surfaceHeight(swell, hx, hz, t)`, `extHead`, `intHead`; push one `BreachInput`
-  (`area = VOXEL_SIZE² · flood.inflowScale`). Hatches: one input at deck height with the coaming
-  lip kept. Openings: build `OpeningFlow` from each side's `poolY` minus the opening's world-Y.
-- Call `floodStep`.
+  (`area = VOXEL_SIZE² · flood.inflowScale`). Hatches: one input at the coaming-lip height (two-way —
+  floods in when the sea tops the coaming, drains out the same lip when she rolls it under).
+- Call `floodStep` (openings still handled inside it, fill-fraction-driven, unchanged).
 - **Founder trigger retie:** today `waterlog` ramps when total fill > 0.9. Re-tie it to **loss of
   reserve buoyancy** — ramp only when `this.submergedFrac` (last step's) exceeds
   `flood.founderSubmerge` (≈0.6, i.e. she's lost most of her freeboard). With equilibrium in place a
@@ -134,11 +131,10 @@ visible top with a world-level animated surface**:
 
 ## Tunables (`core/tunables.ts → TUN.flood`)
 
-- keep `inflowScale` (0.15) — breach-area pacing knob.
-- add `dischargeCoeff` (0.6) — orifice `Cd` (the sim default constant stays for the oracle; the game
-  passes the tunable, mirroring how `inflowScale` already scales area without touching the oracle).
+- keep `inflowScale` (0.15) — breach-area → flow-rate pacing knob (already scales the rate linearly,
+  so a separate `Cd` tunable is redundant; the oracle's `Cd = 0.6` stays a fixed constant).
 - add `founderSubmerge` (0.6) — submerged-fraction past which reserve buoyancy is "gone" and
-  `waterlog` ramps to the final plunge.
+  `waterlog` ramps to the final plunge (with hysteresis: recovers below 0.7× it if drained/pumped).
 
 ## Tests (`tests/compartments.test.ts`)
 
