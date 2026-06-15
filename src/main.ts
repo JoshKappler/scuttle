@@ -1494,6 +1494,8 @@ async function main() {
         { type: "slider", label: "cloud dens", obj: TUN.gfx.clouds, key: "density", min: 0, max: 1, step: 0.02 },
         { type: "slider", label: "cloud spd", obj: TUN.gfx.clouds, key: "speed", min: 0, max: 2, step: 0.05 },
         { type: "slider", label: "isle grit", obj: TUN.gfx.islandGrit, key: "strength", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "sail glow", obj: TUN.gfx.sail, key: "translucency", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "sail opacity", obj: TUN.gfx.sail, key: "opacity", min: 0.4, max: 1, step: 0.02 },
         { type: "slider", label: "contrast", obj: TUN.gfx.grade, key: "contrast", min: 0.8, max: 1.4, step: 0.01 },
         { type: "slider", label: "saturate", obj: TUN.gfx.grade, key: "saturation", min: 0.5, max: 1.6, step: 0.02 },
         { type: "slider", label: "vignette", obj: TUN.gfx.grade, key: "vignette", min: 0, max: 0.6, step: 0.02 },

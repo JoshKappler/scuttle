@@ -30,6 +30,17 @@ export interface SkySetup {
   bakeEnvironment(renderer: THREE.WebGLRenderer, mainScene: THREE.Scene, bgScene: THREE.Scene): void;
 }
 
+/** Sun placement — the SINGLE source of truth shared by the sky dome, the directional
+ *  light, the ocean shader AND the sail back-light (render/shipVisual.ts). Late
+ *  afternoon: low + warm. The vector points FROM the scene TOWARD the sun. */
+export const SUN_ELEVATION_DEG = 14;
+export const SUN_AZIMUTH_DEG = 155;
+export const SUN_DIR = new THREE.Vector3().setFromSphericalCoords(
+  1,
+  THREE.MathUtils.degToRad(90 - SUN_ELEVATION_DEG),
+  THREE.MathUtils.degToRad(SUN_AZIMUTH_DEG),
+);
+
 export function createSky(): SkySetup {
   const sky = new Sky();
   sky.scale.setScalar(450000);
@@ -52,11 +63,9 @@ export function createSky(): SkySetup {
   uniforms.mieCoefficient.value = 0.0013;
   uniforms.mieDirectionalG.value = 0.55;
 
-  const elevation = 14; // degrees above horizon — late afternoon
-  const azimuth = 155;
-  const phi = THREE.MathUtils.degToRad(90 - elevation);
-  const theta = THREE.MathUtils.degToRad(azimuth);
-  const sunDir = new THREE.Vector3().setFromSphericalCoords(1, phi, theta);
+  // sun placement now lives at module scope (SUN_DIR) so the sail back-light
+  // (render/shipVisual.ts) reads the SAME direction — single source of truth.
+  const sunDir = SUN_DIR.clone();
   uniforms.sunPosition.value.copy(sunDir);
 
   const sunColor = new THREE.Color(0xffd9b0);
