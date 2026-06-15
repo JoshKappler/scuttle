@@ -7,7 +7,7 @@ import { makeVoxelColumns, type VoxelColumn } from "../sim/buoyancy";
 import { planCarve } from "../sim/carve";
 import { planCrush } from "../sim/crush";
 import { computeSurface, updateSurfaceAfterRemoval, unpackCell } from "../sim/surfaceSet";
-import { floodStep, type BreachInput, type Opening } from "../sim/compartments";
+import { floodStep, type BreachInput, type Opening, type Compartment } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
 import { MATERIALS, breakEnergy } from "../sim/materials";
 import { segmentBoxHit, segmentMastHit, segmentSailHit } from "../sim/rigDamage";
@@ -86,6 +86,18 @@ export class Ship {
   private breachCells = new Map<number, [number, number, number][]>();
   /** Holes shot through bulkheads connecting compartments. */
   private openings: Opening[] = [];
+  /** Per-compartment flood geometry, recomputed each step for compartments that hold water or
+   *  have a breach: the world-horizontal POOL surface height (for two-reservoir breach heads) and
+   *  the WET-cell local centroid (where the floodwater weight bears → free-surface list/capsize).
+   *  Cell local centres + sort scratch are built once per compartment (cells are static). */
+  private floodGeom = new Map<
+    number,
+    {
+      lx: Float32Array; ly: Float32Array; lz: Float32Array;
+      worldY: Float32Array; order: Int32Array;
+      poolY: number; cx: number; cy: number; cz: number; hasWater: boolean;
+    }
+  >();
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
@@ -372,63 +384,66 @@ export class Ship {
   }
 
   /**
-   * Advance flooding one fixed step: aggregate per-breach depths below the
-   * live wave surface (including deck-hatch downflooding once hatches go
-   * under), then integrate compartment fill and inter-compartment exchange.
+   * Advance flooding one fixed step. Each breach is a TWO-RESERVOIR orifice between the sea and the
+   * compartment's own pool: we resolve the sea surface and the pool surface AT each hole and hand
+   * the signed heads to the deterministic floodStep, which fills toward the waterline EQUILIBRIUM
+   * and DRAINS back out when a hole rides above the pool (heel/capsize). Foundering is a separate,
+   * later stage gated on lost reserve buoyancy — a single waterline nick just settles her.
    */
   updateFlooding(dt: number, waves: Wave[], t: number): void {
+    // pool surfaces + wet centroids for every compartment that holds water or is breached
+    this.updateFloodGeom();
+
     const breaches: BreachInput[] = [];
     const p = this.tmpV;
+    const cellArea = VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale;
 
     for (const c of this.build.compartments) {
+      const poolY = this.floodGeom.get(c.id)?.poolY ?? -Infinity;
+
+      // each hull hole is its own orifice (a low hole floods while a high one on the same
+      // compartment drains): sea above the hole drives IN, the pool above it drives OUT.
       const cells = this.breachCells.get(c.id);
       if (cells && cells.length > 0) {
-        // aggregate: average depth across breach cells, total area
-        let depthSum = 0;
-        let wet = 0;
         for (const [x, y, z] of cells) {
           this.localToWorld([(x + 0.5) * VOXEL_SIZE, (y + 0.5) * VOXEL_SIZE, (z + 0.5) * VOXEL_SIZE], p);
-          const d = surfaceHeight(waves, p.x, p.z, t) - p.y;
-          if (d > 0) {
-            depthSum += d;
-            wet++;
-          }
-        }
-        if (wet > 0) {
-          breaches.push({
-            compartmentId: c.id,
-            area: wet * VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale,
-            depth: depthSum / wet,
-          });
+          const extHead = surfaceHeight(waves, p.x, p.z, t) - p.y; // sea above the hole
+          const intHead = poolY - p.y; // internal pool above the hole
+          if (extHead > 0 || intHead > 0) breaches.push({ compartmentId: c.id, area: cellArea, extHead, intHead });
         }
       }
 
-      // deck hatches downflood once the water tops the hatch coaming (a
-      // raised lip): waves slopping across the deck don't flood the hold
+      // deck hatch: an orifice at the coaming lip (raised, so deck wash doesn't flood the hold).
+      // Two-way for free — the sea floods in when it tops the coaming; the pool drains out the
+      // same lip once she's rolled far enough that the hatch goes under on the low side.
       if (c.hatchArea > 0) {
-        const COAMING = 0.55; // m — raised with the bigger seas
+        const COAMING = 0.55; // m
         const hx = (c.bboxMin[0] + c.bboxMax[0]) / 2;
         this.localToWorld(
           [(hx + 0.5) * VOXEL_SIZE, (this.build.deckY + 0.5) * VOXEL_SIZE, (this.build.grid.dims[2] / 2) * VOXEL_SIZE],
           p,
         );
-        const d = surfaceHeight(waves, p.x, p.z, t) - p.y - COAMING;
-        if (d > 0) breaches.push({ compartmentId: c.id, area: c.hatchArea * TUN.flood.inflowScale, depth: d });
+        const holeY = p.y + COAMING;
+        const extHead = surfaceHeight(waves, p.x, p.z, t) - holeY;
+        const intHead = poolY - holeY;
+        if (extHead > 0 || intHead > 0) {
+          breaches.push({ compartmentId: c.id, area: c.hatchArea * TUN.flood.inflowScale, extHead, intHead });
+        }
       }
     }
 
     floodStep(this.build.compartments, this.openings, breaches, dt);
 
-    // foundering: a hull that is essentially full of water waterlogs and
-    // slides under over the following half-minute or so
-    let totVol = 0;
+    // Foundering is the END stage, gated on lost reserve buoyancy (she's settling under), NOT on a
+    // compartment merely topping up — so a single waterline breach settles & survives. `waterlog`
+    // bleeds her remaining lift once she's that deep; she recovers if drained/pumped back up.
     let totWater = 0;
-    for (const c of this.build.compartments) {
-      totVol += c.volume;
-      totWater += c.waterVolume;
-    }
-    if (totVol > 0 && totWater / totVol > 0.9) {
-      this.waterlog = Math.min(this.waterlog + 0.015 * dt, 0.5);
+    for (const c of this.build.compartments) totWater += c.waterVolume;
+    const founder = TUN.flood.founderSubmerge;
+    if (totWater > 0 && this.submergedFrac > founder) {
+      this.waterlog = Math.min(this.waterlog + 0.02 * dt, 0.5);
+    } else if (this.submergedFrac < founder * 0.7) {
+      this.waterlog = Math.max(this.waterlog - 0.02 * dt, 0);
     }
 
     if (this.pumpOn) {
@@ -438,6 +453,71 @@ export class Ship {
       }
       if (worst) worst.waterVolume = Math.max(worst.waterVolume - Ship.PUMP_RATE * dt, 0);
     }
+  }
+
+  /** Recompute pool surfaces + wet centroids for compartments that hold water or are breached. The
+   *  pool is a world-horizontal plane: rank the interior cells by world-Y and wet the lowest
+   *  `fill·n` (volume-exact, since cells are equal). `poolY` is that pool's surface; the wet-cell
+   *  local centroid is where the floodwater weight bears (low side when heeled). Dry, unbreached
+   *  compartments are skipped — normally that's all of them, so this is ~free while afloat. */
+  private updateFloodGeom(): void {
+    const tr = this.body.translation();
+    const rot = this.body.rotation();
+    const qx = rot.x, qy = rot.y, qz = rot.z, qw = rot.w;
+    for (const c of this.build.compartments) {
+      const breached = (this.breachCells.get(c.id)?.length ?? 0) > 0;
+      if (c.waterVolume <= 1e-6 && !breached) {
+        const old = this.floodGeom.get(c.id);
+        if (old) { old.hasWater = false; old.poolY = -Infinity; }
+        continue;
+      }
+      const g = this.floodCellArrays(c);
+      const n = g.lx.length;
+      if (n === 0) { g.hasWater = false; g.poolY = -Infinity; continue; }
+      const wy = g.worldY, ord = g.order;
+      for (let i = 0; i < n; i++) {
+        const vx = g.lx[i], vy = g.ly[i], vz = g.lz[i];
+        // quaternion-rotate the cell centre, y-component only, + translation → absolute world-Y
+        const tx = 2 * (qy * vz - qz * vy);
+        const ty = 2 * (qz * vx - qx * vz);
+        const tz = 2 * (qx * vy - qy * vx);
+        wy[i] = vy + qw * ty + (qz * tx - qx * tz) + tr.y;
+        ord[i] = i;
+      }
+      (ord as unknown as { sort(cmp: (a: number, b: number) => number): void }).sort((a, b) => wy[a] - wy[b]);
+      const fill = c.volume > 0 ? c.waterVolume / c.volume : 0;
+      const wetCount = Math.min(n, Math.max(0, Math.round(fill * n)));
+      // pool surface = top of the highest wet cell; empty → just under the lowest cell (a dry floor)
+      g.poolY = wetCount > 0 ? wy[ord[wetCount - 1]] + VOXEL_SIZE * 0.5 : wy[ord[0]] - VOXEL_SIZE * 0.5;
+      let sx = 0, sy = 0, sz = 0;
+      for (let k = 0; k < wetCount; k++) {
+        const i = ord[k];
+        sx += g.lx[i]; sy += g.ly[i]; sz += g.lz[i];
+      }
+      const m = Math.max(wetCount, 1);
+      g.cx = sx / m; g.cy = sy / m; g.cz = sz / m;
+      g.hasWater = wetCount > 0;
+    }
+  }
+
+  /** Lazily build + cache the per-compartment cell local-centre arrays and sort scratch. Compartment
+   *  cells are static after build, so this runs once per compartment. */
+  private floodCellArrays(c: Compartment) {
+    let g = this.floodGeom.get(c.id);
+    if (g && g.lx.length === c.cells.size) return g;
+    const n = c.cells.size;
+    const lx = new Float32Array(n), ly = new Float32Array(n), lz = new Float32Array(n);
+    const [nx, ny] = this.build.grid.dims;
+    const layer = nx * ny;
+    let i = 0;
+    for (const pcell of c.cells) {
+      const x = pcell % nx, y = Math.floor(pcell / nx) % ny, z = Math.floor(pcell / layer);
+      lx[i] = (x + 0.5) * VOXEL_SIZE; ly[i] = (y + 0.5) * VOXEL_SIZE; lz[i] = (z + 0.5) * VOXEL_SIZE;
+      i++;
+    }
+    g = { lx, ly, lz, worldY: new Float32Array(n), order: new Int32Array(n), poolY: -Infinity, cx: 0, cy: 0, cz: 0, hasWater: false };
+    this.floodGeom.set(c.id, g);
+    return g;
   }
 
   /** Apply buoyancy + water drag for one fixed step. Call before world.step(). */
@@ -569,14 +649,23 @@ export class Ship {
     // diagnostic only now (the heel force comes from applying lateral drag at the CB).
     this.heelArm = com0.y - cbWorldY;
 
-    // flooded water is cargo: its weight bears at each compartment's water
-    // centroid, so a flooded bow pulls the bow down — listing is emergent
+    // flooded water is cargo: its weight bears at the WET-cell centroid, which pools to the LOW
+    // side as she heels — so a flooded bow pulls the bow down AND a list deepens itself (the free
+    // surface effect). List, and asymmetric-flood capsize, are emergent. Fall back to the geometric
+    // centroid + fill height before the flood-geom pass has produced a wet set.
     for (const c of this.build.compartments) {
       if (c.waterVolume <= 0) continue;
-      const fill = c.waterVolume / c.volume;
-      const waterY =
-        (c.bboxMin[1] + (c.bboxMax[1] + 1 - c.bboxMin[1]) * fill * 0.5 + 0.5) * VOXEL_SIZE;
-      const wp = this.tmpV.set(c.centroid[0], waterY, c.centroid[2]).applyQuaternion(this.tmpQ);
+      const g = this.floodGeom.get(c.id);
+      let lx: number, ly: number, lz: number;
+      if (g && g.hasWater) {
+        lx = g.cx; ly = g.cy; lz = g.cz;
+      } else {
+        const fill = c.waterVolume / c.volume;
+        lx = c.centroid[0];
+        ly = (c.bboxMin[1] + (c.bboxMax[1] + 1 - c.bboxMin[1]) * fill * 0.5 + 0.5) * VOXEL_SIZE;
+        lz = c.centroid[2];
+      }
+      const wp = this.tmpV.set(lx, ly, lz).applyQuaternion(this.tmpQ);
       body.addForceAtPoint(
         { x: 0, y: -c.waterVolume * WATER_DENSITY * 9.81, z: 0 },
         { x: wp.x + tr.x, y: wp.y + tr.y, z: wp.z + tr.z },
