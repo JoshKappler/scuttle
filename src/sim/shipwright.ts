@@ -986,3 +986,257 @@ export function buildFrigate(): ShipBuild {
     },
   };
 }
+
+export function buildManOfWar(): ShipBuild {
+  const nx = 208;
+  const ny = 54;
+  const nz = 60;
+  const grid = createGrid(nx, ny, nz);
+
+  const x0 = 4;             // stern transom station (low x = AFT, bow at HIGH x)
+  const L = 200;           // 50 m gun-deck length
+  const deckY = 36;        // weather (main) deck, ~9 m above the keel plane
+  const lowerGunY = 21;    // lower gun-deck port height (at the waterline belt)
+  const midGunY = 29;      // middle gun-deck port height
+  const qDeckY = deckY + 8; // raised quarterdeck AND forecastle: one ~2 m story up
+  const qTaft = 0.20;      // stations with t < qTaft carry the aft quarterdeck
+  const fcTfwd = 0.82;     // stations with t > fcTfwd carry the forward forecastle
+  const halfBeamMax = 28;  // 14 m beam at the belt
+  const cz = (nz - 1) / 2;
+  const qX1 = Math.floor(x0 + qTaft * (L - 1) - 1e-9); // forward edge of the aft quarterdeck
+  const fcX0 = Math.ceil(x0 + fcTfwd * (L - 1));       // aft edge of the forecastle
+  const stairZs = [Math.floor(cz - 10), Math.ceil(cz + 10)]; // companion-stair lanes (both breaks)
+
+  const stationT = (x: number) => (x - x0) / (L - 1);
+  const keelY = (t: number) => 2 + Math.round(6 * Math.pow(Math.abs(t - 0.45) / 0.55, 1.8));
+  const halfBeam = (t: number) => halfBeamMax * Math.pow(Math.sin(Math.PI * (0.13 + 0.87 * t)), 0.72);
+  const sectionHalfBeam = (t: number, y: number) => {
+    const k = keelY(t);
+    const f = Math.min(Math.max((y - k) / (deckY - k), 0), 1);
+    const d = f - 0.62;
+    const a = d < 0 ? 0.64 : 0.67;
+    const oval = Math.sqrt(Math.max(1 - (d / a) * (d / a), 0));
+    return halfBeam(t) * (0.1 + 0.9 * oval);
+  };
+
+  const deckYAt = (x: number) => (x <= qX1 || x >= fcX0 ? qDeckY : deckY);
+
+  const inside = (x: number, y: number, z: number): boolean => {
+    const t = stationT(x);
+    if (t < 0 || t > 1) return false;
+    if (y < keelY(t) || y > deckYAt(x)) return false;
+    return Math.abs(z - cz) <= sectionHalfBeam(t, y);
+  };
+
+  // rasterize: OAK shell, PINE planking at the weather deck AND the raised ends.
+  // The weather-deck plane continues under the quarterdeck/forecastle as the
+  // deck below; the shell rule raises the break walls and the topsides.
+  let envelopeCells = 0;
+  for (let x = 0; x < nx; x++) {
+    for (let y = 0; y < ny; y++) {
+      for (let z = 0; z < nz; z++) {
+        if (!inside(x, y, z)) continue;
+        envelopeCells++;
+        if (y === deckY || y === deckYAt(x)) {
+          grid.set(x, y, z, PINE);
+          continue;
+        }
+        const onShell =
+          !inside(x - 1, y, z) ||
+          !inside(x + 1, y, z) ||
+          !inside(x, y - 1, z) ||
+          !inside(x, y, z - 1) ||
+          !inside(x, y, z + 1);
+        if (onShell) grid.set(x, y, z, OAK);
+      }
+    }
+  }
+
+  // a walk-in door + companion stairs at EACH break (aft great cabin, forward
+  // forecastle) so both raised decks are reachable from the waist. Steps are
+  // single-voxel wedges (the character controller autosteps 0.35).
+  const cutDoorAndStairs = (breakX: number, climbDir: 1 | -1) => {
+    for (let z = Math.round(cz - 1.5); z <= Math.round(cz + 1.5); z++) {
+      for (let y = deckY + 1; y <= deckY + 7; y++) {
+        if (grid.get(breakX, y, z) !== EMPTY) grid.remove(breakX, y, z);
+      }
+    }
+    for (const sz of stairZs) {
+      for (let s = 0; s < 8; s++) {
+        const sx = breakX + climbDir * (8 - s); // steps on the waist side, climbing to the break
+        for (let z = sz - 1; z <= sz + 1; z++) {
+          for (let y = deckY + 1; y <= deckY + 1 + s; y++) {
+            if (grid.get(sx, y, z) === EMPTY) grid.set(sx, y, z, PINE);
+          }
+        }
+      }
+    }
+  };
+  cutDoorAndStairs(qX1, 1);    // aft quarterdeck: stairs forward of the break, climbing aft
+  cutDoorAndStairs(fcX0, -1);  // forward forecastle: stairs aft of the break, climbing forward
+
+  // iron ballast — deep z/t-bands following the fuller-aft centre of buoyancy,
+  // like the brig but more iron in the lower hold (three gun decks = more
+  // top-weight to counter). Tuned live against tests/manOfWarFloat.test.ts: nine
+  // tiers, WIDEST at the keel (zHalf 8) and tapering up to a narrow tier-8
+  // spine, all packed into the lower hold well below the lower gun deck (y21).
+  // Lands draft ≈ 0.455 of the envelope with COM ≈ 2.25 (very low), so GM ≈ 4.1
+  // and she stays restoring out past 15° — a stiff first-rate, not a Vasa.
+  //
+  // Every band sits ~0.016·L AFT of the symmetric layout (e.g. tier-0 0.05→0.90
+  // became 0.034→0.884): in-browser she rode a steady bow-down trim because the
+  // iron's centroid was forward of the fuller-aft hull's center of buoyancy —
+  // the exact lever the brig cured (see buildBrig's ballast comment). Walking
+  // the rows aft drops the COM onto the COB, so the fore-aft moment vanishes and
+  // she floats on an even keel (tests/manOfWarFloat.test.ts trim test, |trim| < 0.2).
+  const ballastZ = (k: number) => {
+    const zs: number[] = [];
+    for (let z = Math.ceil(cz - k); z <= Math.floor(cz + k); z++) zs.push(z);
+    return zs;
+  };
+  // each row: [tier above keel, tMin, tMax, zHalf]
+  const ballastRows: [number, number, number, number][] = [
+    [0, 0.034, 0.884, 8],
+    [1, 0.044, 0.874, 8],
+    [2, 0.064, 0.854, 7],
+    [3, 0.084, 0.834, 7],
+    [4, 0.114, 0.804, 6],
+    [5, 0.144, 0.774, 5],
+    [6, 0.184, 0.734, 4],
+    [7, 0.234, 0.684, 3],
+    [8, 0.294, 0.624, 2],
+  ];
+  for (let x = 0; x < nx; x++) {
+    const t = stationT(x);
+    const by = keelY(t) + 1;
+    for (const [tier, tMin, tMax, zHalf] of ballastRows) {
+      if (t < tMin || t > tMax) continue;
+      for (const z of ballastZ(zHalf)) {
+        if (inside(x, by + tier, z) && grid.get(x, by + tier, z) === EMPTY) grid.set(x, by + tier, z, IRON);
+      }
+    }
+  }
+
+  // transverse watertight bulkheads at 1/4, 1/2, 3/4 (a longer hull → an extra one)
+  const bulkheadXs = [x0 + Math.round(L / 4), x0 + Math.round(L / 2), x0 + Math.round((3 * L) / 4)];
+  for (const bx of bulkheadXs) {
+    for (let y = 0; y < deckY; y++) {
+      for (let z = 0; z < nz; z++) {
+        if (inside(bx, y, z) && grid.get(bx, y, z) === EMPTY) grid.set(bx, y, z, OAK);
+      }
+    }
+  }
+
+  // ---- gun decks: three broadside tiers + axial chasers ----
+  // lower & middle decks fire through framed ports in the side shell (the shell
+  // voxel stays solid — the render frames it, shipVisual.ts:674); the weather
+  // deck fires over the rail through fence embrasures like the brig's waist.
+  const lowerXs = [0.26, 0.33, 0.40, 0.47, 0.54, 0.61, 0.68, 0.74].map((f) => x0 + Math.round(L * f));
+  const midXs = lowerXs;
+  const upperXs = [0.30, 0.38, 0.46, 0.54, 0.62, 0.70].map((f) => x0 + Math.round(L * f));
+
+  // bulwark fence at each deck's own edge (waist + quarterdeck + forecastle),
+  // with embrasures for the weather-deck guns and gaps where the stairs land.
+  for (let x = 0; x < nx; x++) {
+    const dY = deckYAt(x);
+    for (let z = 0; z < nz; z++) {
+      if (!inside(x, dY, z)) continue;
+      const onEdge =
+        !inside(x - 1, dY, z) || !inside(x + 1, dY, z) || !inside(x, dY, z - 1) || !inside(x, dY, z + 1);
+      if (!onEdge) continue;
+      const nearPort = dY === deckY && upperXs.some((px) => Math.abs(x - px) <= 1);
+      if (nearPort) continue;
+      if ((x === qX1 || x === fcX0) && stairZs.some((sz) => Math.abs(z - sz) <= 1)) continue;
+      grid.set(x, dY + 1, z, PINE);
+      grid.set(x, dY + 4, z, PINE);
+      const corner =
+        (!inside(x - 1, dY, z) || !inside(x + 1, dY, z)) &&
+        (!inside(x, dY, z - 1) || !inside(x, dY, z + 1));
+      if (corner || (x + Math.round(Math.abs(z - cz))) % 3 === 0) {
+        grid.set(x, dY + 2, z, PINE);
+        grid.set(x, dY + 3, z, PINE);
+      }
+    }
+  }
+
+  // grated deck hatches over the holds (flooding paths, walkable)
+  const hatchXs = [x0 + Math.round(L / 6), x0 + Math.round(L / 2), x0 + Math.round((5 * L) / 6)];
+  const hatchZ = Math.floor(cz);
+  const hatches: ShipBuild["hatches"] = [];
+  for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
+
+  // weld floating internals (diagonal ballast tiers) to the main mass — ONE 6-connected solid.
+  weldToSingleComponent(grid);
+
+  const compartments = findCompartments(grid, deckY);
+  const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
+  for (const c of compartments) c.hatchArea = hatchAreaM2;
+
+  const claimed = new Set<number>();
+  for (const c of compartments) for (const cell of c.cells) claimed.add(cell);
+  const interiorLeaks: number[] = [];
+  const idx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
+  for (let x = 0; x < nx; x++) {
+    for (let y = 0; y < deckY; y++) {
+      for (let z = 0; z < nz; z++) {
+        if (inside(x, y, z) && grid.get(x, y, z) === EMPTY && !claimed.has(idx(x, y, z))) {
+          interiorLeaks.push(idx(x, y, z));
+        }
+      }
+    }
+  }
+
+  // broadside ports: 8 lower + 8 middle + 6 weather, each side, symmetric about cz.
+  // floor/ceil split keeps the two batteries exactly mirrored on the even beam.
+  const cannonPorts: ShipBuild["cannonPorts"] = [];
+  const addBroadside = (xs: number[], gunY: number) => {
+    for (const px of xs) {
+      const t = stationT(px);
+      const hb = Math.round(sectionHalfBeam(t, gunY));
+      cannonPorts.push({ x: px, y: gunY, z: Math.floor(cz) + hb, side: 1 });
+      cannonPorts.push({ x: px, y: gunY, z: Math.ceil(cz) - hb, side: -1 });
+    }
+  };
+  addBroadside(lowerXs, lowerGunY);
+  addBroadside(midXs, midGunY);
+  addBroadside(upperXs, deckY + 1);
+
+  // axial chasers: 2 bow (fore, under the forecastle) + 2 stern (aft, great cabin),
+  // seated below the weather deck and fired apart from the broadsides (like the brig).
+  const czi = Math.round(cz);
+  cannonPorts.push({ x: x0 + L - 7, y: deckY - 5, z: czi - 1, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 7, y: deckY - 5, z: czi + 1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + 6, y: deckY - 1, z: czi - 1, side: -1, facing: "aft" });
+  cannonPorts.push({ x: x0 + 6, y: deckY - 1, z: czi + 1, side: 1, facing: "aft" });
+
+  // three masts: mizzen (aft), main (tallest, amidships), fore (forward)
+  const masts = [
+    { x: x0 + Math.round(L * 0.22), z: Math.round(cz), h: 22 },
+    { x: x0 + Math.round(L * 0.48), z: Math.round(cz), h: 32 },
+    { x: x0 + Math.round(L * 0.74), z: Math.round(cz), h: 26 },
+  ];
+
+  armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
+
+  return {
+    grid,
+    deckY,
+    envelopeVolume: envelopeCells * VOXEL_VOLUME,
+    compartments,
+    interiorLeaks,
+    cannonPorts,
+    masts,
+    hatches,
+    lengthM: L * VOXEL_SIZE,
+    beamM: halfBeamMax * 2 * VOXEL_SIZE,
+    deckYAt,
+    quarterdeck: { x1: qX1, deckY: qDeckY },
+    wheelM: { x: (x0 + Math.round(L * 0.08) + 0.5) * VOXEL_SIZE, z: (nz / 2) * VOXEL_SIZE },
+    footprint: {
+      minX: (x0 - 6) * VOXEL_SIZE,
+      maxX: (x0 + L + 6) * VOXEL_SIZE,
+      zC: (nz / 2) * VOXEL_SIZE,
+      halfZ: (halfBeamMax + 5.4) * VOXEL_SIZE,
+    },
+  };
+}
