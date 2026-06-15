@@ -29,25 +29,40 @@ export interface Opening {
   area: number; // m²
 }
 
-/** An aggregated hull breach feeding one compartment this step. */
+/** One hull breach (a hole cell) this step, resolved as a two-reservoir orifice. */
 export interface BreachInput {
   compartmentId: number;
-  area: number; // m²
-  depth: number; // m below the local water surface (≤0 = above water)
+  area: number; // m² (already scaled by flood.inflowScale by the caller)
+  extHead: number; // m the SEA surface sits above the hole (≤0 = hole is above the sea)
+  intHead: number; // m the INTERNAL pool sits above the hole (≤0 = hole is above the pool)
 }
 
-const DISCHARGE = 0.6; // sharp-edged orifice coefficient
+const DISCHARGE = 0.6; // sharp-edged orifice coefficient (Cd)
 const EXCHANGE_HEAD_SCALE = 2.0; // m of head per unit fill-fraction difference
 
-/** Bernoulli orifice inflow rate, m³/s. Zero above the waterline. */
-export function breachInflow(area: number, depth: number): number {
-  if (depth <= 0) return 0;
-  return DISCHARGE * area * Math.sqrt(2 * 9.81 * depth);
+/**
+ * Signed two-reservoir orifice flow (m³/s) through a submerged hull hole. The hole connects the
+ * sea and the compartment's own rising pool; `extHead`/`intHead` are how far each free surface
+ * sits ABOVE the hole. Flow is driven by their difference and REVERSES when the interior is the
+ * higher of the two (water drains back out); a hole above BOTH surfaces conducts nothing.
+ *
+ *   Q = sign(Δh)·Cd·A·√(2·g·|Δh|),   Δh = max(0,extHead) − max(0,intHead)
+ *
+ * This single signed rule is the whole of flooding: + fills, − drains, 0 at equilibrium (the
+ * interior level reaching the sea level at the hole). Deterministic — the oracle rides on it.
+ */
+export function orificeFlow(area: number, extHead: number, intHead: number): number {
+  const e = Math.max(0, extHead);
+  const i = Math.max(0, intHead);
+  const dh = e - i;
+  if (dh === 0) return 0;
+  return Math.sign(dh) * DISCHARGE * area * Math.sqrt(2 * 9.81 * Math.abs(dh));
 }
 
 /**
- * Advance flooding one step: breach inflows, then inter-compartment exchange
- * through openings (driven by fill-level difference), clamped to capacity.
+ * Advance flooding one step: signed breach flow (in OR out, by the sea↔pool head difference),
+ * then inter-compartment exchange through openings (fill-level difference). Water is clamped to
+ * [0, capacity] — the LOWER clamp at 0 is the drain path that lets a heeled/capsized hull empty.
  */
 export function floodStep(
   compartments: Compartment[],
@@ -61,7 +76,8 @@ export function floodStep(
   for (const br of breaches) {
     const c = byId.get(br.compartmentId);
     if (!c) continue;
-    c.waterVolume = Math.min(c.waterVolume + breachInflow(br.area, br.depth) * dt, c.volume);
+    const next = c.waterVolume + orificeFlow(br.area, br.extHead, br.intHead) * dt;
+    c.waterVolume = Math.max(0, Math.min(next, c.volume));
   }
 
   for (const o of openings) {

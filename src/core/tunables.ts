@@ -188,14 +188,21 @@ export const TUN = {
     fling: 1,
   },
 
-  /** Flooding — how fast the sea comes in through a breach. The deterministic floodStep oracle
-   *  (sim/compartments.ts) is UNCHANGED; this scales the breach area game/ship.ts feeds it, so
-   *  the vitest oracle stays exact while the play-feel is tunable. */
+  /** Flooding — the breach as a TWO-RESERVOIR orifice (sim/compartments.ts orificeFlow): flow is
+   *  driven by the difference between the sea surface and the compartment's own pool at the hole,
+   *  so she floods to a waterline EQUILIBRIUM (not to 100%) and DRAINS back out when a hole ends
+   *  up above the pool (heel/capsize). These knobs scale the play-feel game/ship.ts feeds the
+   *  deterministic oracle; the oracle's Cd + flow law stay exact. */
   flood: {
-    /** multiplier on breach inflow (1 = the raw Bernoulli orifice rate). 0.15 ≈ the playtest's
+    /** multiplier on breach area → flow rate (1 = the raw orifice rate). 0.15 ≈ the playtest's
      *  "reduce flood rates ~85%": a holed hull settles and founders over a minute, not seconds,
      *  so flooding is a fightable, dramatic process (pumps + plank repairs matter). */
     inflowScale: 0.15,
+    /** submerged fraction past which reserve buoyancy is treated as GONE and `waterlog` ramps to
+     *  the final plunge. With waterline equilibrium in place a single nick never reaches this — only
+     *  deep/progressive flooding does — so she mostly settles & survives (recovers below 0.7× this
+     *  if drained/pumped). A healthy hull sits ~0.2 submerged, deck-awash ~0.5–0.6. */
+    founderSubmerge: 0.6,
   },
 
   /** Fleet — how many hostile ships the FleetManager (game/fleet.ts) keeps sailing
