@@ -4,6 +4,8 @@ import { Economy } from "../src/sim/economy";
 import { Wallet } from "../src/game/wallet";
 import { MessageBus } from "../src/game/messageBus";
 import type { Ship } from "../src/game/ship";
+import type { Cannons } from "../src/game/cannons";
+import type { SailingController } from "../src/game/sailing";
 import type { PortScreen, PortView } from "../src/render/portScreen";
 
 // --- node localStorage shim (the controller's save/load uses the global) ---
@@ -73,21 +75,25 @@ function fakeUi() {
 
 function make(econInit?: ConstructorParameters<typeof Economy>[0]) {
   const economy = new Economy(econInit);
-  const ship = fakeShip();
+  const ship = fakeShip({ hullToughness: 1, rudderPower: 1 });
   const wallet = new Wallet(0);
   const msg = new MessageBus();
+  const cannons = { reloadMul: 1 } as unknown as Cannons;
+  const sailing = { boost: 1 } as unknown as SailingController;
   const ui = fakeUi() as PortScreen & { last: PortView | null; refreshes: number };
   let pos = { x: 0, z: 0 };
   const port = new PortController({
     economy,
     ship,
+    cannons,
+    sailing,
     wallet,
     msg,
     ui,
     getPlayerPos: () => pos,
     rand: () => 0.5, // fixed draw → deterministic loot
   });
-  return { economy, ship, wallet, msg, ui, port, setPos: (p: { x: number; z: number }) => (pos = p) };
+  return { economy, ship, wallet, msg, cannons, sailing, ui, port, setPos: (p: { x: number; z: number }) => (pos = p) };
 }
 
 describe("PortController — plunder", () => {
@@ -119,6 +125,18 @@ describe("PortController — transactions mirror gold and refresh the UI", () =>
     expect(economy.state.cargoCapacity).toBe(before + 20);
     expect(economy.state.doubloons).toBe(300);
     expect(wallet.gold).toBe(300);
+  });
+
+  it("combat/sailing upgrades land on the ship/cannons/sailing", () => {
+    const { ship, cannons, sailing, port } = make({ doubloons: 100000 });
+    port.buy("reload");
+    port.buy("hull");
+    port.buy("rudder");
+    port.buy("speed");
+    expect(cannons.reloadMul).toBeCloseTo(0.88, 5); // one level = −12%
+    expect(ship.hullToughness).toBeCloseTo(1.25, 5);
+    expect(ship.rudderPower).toBeCloseTo(1.15, 5);
+    expect(sailing.boost).toBeCloseTo(1.1, 5);
   });
 });
 

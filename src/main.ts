@@ -301,6 +301,8 @@ async function main() {
   const port = new PortController({
     economy,
     ship: sloop,
+    cannons,
+    sailing,
     wallet: gs.wallet,
     msg: gs.msg,
     ui: portScreen,

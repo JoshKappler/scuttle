@@ -260,8 +260,12 @@ export class VoxelContact {
     gA: VoxelGrid, gB: VoxelGrid, tough: number, budget: number,
   ): number {
     const cand: { s: 0 | 1; c: [number, number, number]; e: number }[] = [];
-    for (const c of brokenA) cand.push({ s: 0, c, e: breakEnergy(gA.get(c[0], c[1], c[2])) * tough });
-    for (const c of brokenB) cand.push({ s: 1, c, e: breakEnergy(gB.get(c[0], c[1], c[2])) * tough });
+    // each hull's cells also pay its own hullToughness (the "Hull Reinforcement" upgrade, ≥1),
+    // so a reinforced hull loses fewer voxels in a ram while still grinding the other ship.
+    const toughA = tough * shipA.hullToughness;
+    const toughB = tough * shipB.hullToughness;
+    for (const c of brokenA) cand.push({ s: 0, c, e: breakEnergy(gA.get(c[0], c[1], c[2])) * toughA });
+    for (const c of brokenB) cand.push({ s: 1, c, e: breakEnergy(gB.get(c[0], c[1], c[2])) * toughB });
     cand.sort((x, y) => x.e - y.e);
     let bud = budget, spent = 0;
     const remA: [number, number, number][] = [], remB: [number, number, number][] = [];

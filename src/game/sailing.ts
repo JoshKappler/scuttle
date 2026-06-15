@@ -122,7 +122,8 @@ export class SailingController {
     // what's LEFT of the blade (round 7: "holes in the rudder should mess
     // up their maneuverability")
     const flow = Math.sign(this.speed || 1) * (1.5 + Math.abs(this.speed));
-    const yaw = this.rudder * flow * mass * 0.5 * ship.rudderEff;
+    // rudderEff = damage state (0.15..1); rudderPower = the "Sharper Rudder" upgrade (≥1).
+    const yaw = this.rudder * flow * mass * 0.5 * ship.rudderEff * ship.rudderPower;
     body.addTorque({ x: 0, y: yaw, z: 0 }, true);
   }
 }

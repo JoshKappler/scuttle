@@ -62,8 +62,15 @@ export class Ship {
   /** Per mast: 1 = whole canvas → 0.15 floor as shot full of holes. */
   sailIntegrity: number[];
   rudderHp = 3;
-  /** Steering authority 0.15..1 — yaw torque multiplier. */
+  /** Steering authority 0.15..1 — yaw torque multiplier (DAMAGE state). */
   rudderEff = 1;
+  /** Turning UPGRADE multiplier (≥1), independent of rudder damage. Set from the
+   *  "Sharper Rudder" upgrade in the port layer; sailing multiplies yaw by it. */
+  rudderPower = 1;
+  /** Hull-durability UPGRADE multiplier (≥1): scales the energy needed to break a
+   *  voxel of this hull, so cannon/ram damage carves fewer cells. 1 = stock oak.
+   *  Set from the "Hull Reinforcement" upgrade; read by the carve/impact budget. */
+  hullToughness = 1;
   private mastFootInit: number[];
   private mastColliders: RAPIER.Collider[] = [];
 
@@ -809,7 +816,9 @@ export class Ship {
     const solid = cells.filter(([x, y, z]) => grid.isSolid(x, y, z));
     const { removed, leftover } = planCrush(
       solid,
-      ([x, y, z]) => breakEnergy(grid.get(x, y, z)),
+      // hullToughness (the "Hull Reinforcement" upgrade, ≥1) raises the joules each
+      // cell costs, so the same impact energy carves fewer voxels out of a tough hull.
+      ([x, y, z]) => breakEnergy(grid.get(x, y, z)) * this.hullToughness,
       energy,
     );
     const n = this.carveCells(removed);

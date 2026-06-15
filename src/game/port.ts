@@ -18,6 +18,8 @@ import { Rng } from "../core/rng";
 import type { Ship } from "./ship";
 import type { Wallet } from "./wallet";
 import type { MessageBus } from "./messageBus";
+import type { Cannons } from "./cannons";
+import type { SailingController } from "./sailing";
 import type { PortScreen, PortView } from "../render/portScreen";
 
 /** The world-space dock anchor lookup. `IslandField` satisfies this structurally. */
@@ -36,6 +38,8 @@ export class DevDockProvider implements DockProvider {
 export interface PortDeps {
   economy: Economy;
   ship: Ship; // the player ship — upgrade/repair effects land here
+  cannons: Cannons; // player battery — the reload upgrade tunes its reloadMul
+  sailing: SailingController; // player sailing — the speed upgrade tunes its boost
   wallet: Wallet; // gold of record (mirrored from economy.doubloons)
   msg: MessageBus; // toast channel for port feedback
   ui: PortScreen;
@@ -59,6 +63,8 @@ export class PortController {
 
   private economy: Economy;
   private ship: Ship;
+  private cannons: Cannons;
+  private sailing: SailingController;
   private wallet: Wallet;
   private msg: MessageBus;
   private ui: PortScreen;
@@ -74,6 +80,8 @@ export class PortController {
   constructor(d: PortDeps) {
     this.economy = d.economy;
     this.ship = d.ship;
+    this.cannons = d.cannons;
+    this.sailing = d.sailing;
     this.wallet = d.wallet;
     this.msg = d.msg;
     this.ui = d.ui;
@@ -255,10 +263,17 @@ export class PortController {
     s.planks = this.maxPlanks();
   }
 
-  /** Map owned upgrade levels onto ship/economy buffs. Idempotent. */
+  /** Map owned upgrade levels onto ship/economy buffs. Account-wide and idempotent,
+   *  so it re-applies cleanly to whatever hull is current (after load or a ship swap). */
   private applyUpgrades(): void {
-    this.economy.state.cargoCapacity = DEFAULT_CARGO_CAPACITY + 20 * this.economy.upgradeLevel("hold");
+    const e = this.economy;
+    e.state.cargoCapacity = DEFAULT_CARGO_CAPACITY + 20 * e.upgradeLevel("hold");
     const maxP = this.maxPlanks();
     if (this.ship.planks < maxP) this.ship.planks = maxP;
+    // combat / sailing buffs — see the upgrade catalog descriptions in economy.ts
+    this.cannons.reloadMul = Math.pow(0.88, e.upgradeLevel("reload")); // −12%/level
+    this.ship.hullToughness = 1 + 0.25 * e.upgradeLevel("hull"); // +25%/level
+    this.ship.rudderPower = 1 + 0.15 * e.upgradeLevel("rudder"); // +15%/level
+    this.sailing.boost = 1 + 0.1 * e.upgradeLevel("speed"); // +10%/level
   }
 }
