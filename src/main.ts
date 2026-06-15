@@ -373,6 +373,12 @@ async function main() {
     },
     onSandbox: () => {
       applySave(saves.load("sandbox"));
+      // free play: top up to a deep purse so every hull + upgrade is buyable
+      // (the whole tier ladder is already unlocked for sandbox via getShipState).
+      if (economy.state.doubloons < 50000) {
+        economy.state.doubloons = 50000;
+        gs.wallet.set(50000);
+      }
       gs.startGame("sandbox");
       menu.hide();
     },
@@ -1003,9 +1009,10 @@ async function main() {
     if (onFoot && character.player) hudEls.stamBar.style.width = `${character.player.stamina * 100}%`;
 
     const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
+    const sandboxHint = gs.isSandbox() ? " · SANDBOX (` panel for enemies/sea)" : "";
     hudEls.hints.textContent = onFoot
-      ? `${lockHint}WASD move · Shift sprint · Space jump · C kick · hold RMB aim + LMB fire · E take wheel · V view · F fullscreen`
-      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass (wheel zooms) · R plank · P pump · F fullscreen · foes ${fleet.enemies.length}`;
+      ? `${lockHint}WASD move · Shift sprint · Space jump · C kick · hold RMB aim + LMB fire · E take wheel · V view · Esc menu${sandboxHint}`
+      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plank · P pump · Esc menu · foes ${fleet.enemies.length}${sandboxHint}`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on

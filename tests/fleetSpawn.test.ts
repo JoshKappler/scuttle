@@ -9,7 +9,7 @@ describe("fleetSpawn — tierWeights", () => {
   });
   it("high notoriety raises the big-ship weight", () => {
     const lo = tierWeights(0, "cutter");
-    const hi = tierWeights(120, "frigate");
+    const hi = tierWeights(400, "frigate"); // deep into a long career
     expect(hi.frigate).toBeGreaterThan(lo.frigate);
     expect(hi.frigate).toBeGreaterThan(hi.cutter);
   });

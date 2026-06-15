@@ -20,7 +20,10 @@ const INDEX: Record<ShipTierId, number> = { cutter: 0, sloop: 1, brig: 2, frigat
  */
 function threatLevel(notoriety: number, playerTier: ShipTierId): number {
   const n = Math.max(0, notoriety);
-  return Math.min(n / 30 + INDEX[playerTier] * 0.25, 3);
+  // ESCALATION-RATE knob: notoriety per +1 enemy tier. rollLoot pays ~tens of infamy
+  // per kill (it scales with hull cell-count), so ~120 ≈ a couple of kills per tier —
+  // tune this for feel (lower = faster escalation).
+  return Math.min(n / 120 + INDEX[playerTier] * 0.25, 3);
 }
 
 /** Spawn weight per tier given the current notoriety + player tier. */
