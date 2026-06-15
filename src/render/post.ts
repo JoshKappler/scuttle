@@ -78,6 +78,35 @@ const GodRayShader = {
   `,
 };
 
+/** Final colour grade (display space, after OutputPass tonemaps to sRGB): a little
+ *  contrast + saturation + a soft vignette for the cinematic "punch". */
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    uContrast: { value: 1.06 },
+    uSaturation: { value: 1.1 },
+    uVignette: { value: 0.2 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float uContrast, uSaturation, uVignette;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      c = (c - 0.5) * uContrast + 0.5;                 // contrast around mid-grey
+      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      c = mix(vec3(l), c, uSaturation);                // saturation
+      vec2 q = vUv - 0.5;
+      c *= 1.0 - uVignette * dot(q, q) * 2.0;          // soft vignette
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }
+  `,
+};
+
 /**
  * Post-processing spine for the visual pass.
  *
@@ -141,6 +170,7 @@ export class Post {
   private bloom: UnrealBloomPass;
   private clampPass: ShaderPass;
   private godray: ShaderPass;
+  private grade: ShaderPass;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
@@ -185,7 +215,10 @@ export class Post {
     this.godray = new ShaderPass(GodRayShader);
     this.composer.addPass(this.godray);
 
-    this.composer.addPass(new OutputPass());
+    this.composer.addPass(new OutputPass()); // ACES tonemap + sRGB (to a buffer)
+    // colour grade runs LAST in display space (reads OutputPass's sRGB result).
+    this.grade = new ShaderPass(GradeShader);
+    this.composer.addPass(this.grade);
   }
 
   /** Feed the sun's projected screen position (UV 0..1) + whether it's on-screen. */
@@ -215,6 +248,9 @@ export class Post {
     this.godray.uniforms.uDecay.value = TUN.gfx.godrays.decay;
     this.godray.uniforms.uWeight.value = TUN.gfx.godrays.weight;
     this.godray.uniforms.uThreshold.value = TUN.gfx.godrays.threshold;
+    this.grade.uniforms.uContrast.value = TUN.gfx.grade.contrast;
+    this.grade.uniforms.uSaturation.value = TUN.gfx.grade.saturation;
+    this.grade.uniforms.uVignette.value = TUN.gfx.grade.vignette;
     this.composer.render();
   }
 
