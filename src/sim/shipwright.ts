@@ -673,7 +673,7 @@ export function buildManOfWar(): ShipBuild {
 
   // iron ballast — deep z/t-bands following the fuller-aft centre of buoyancy,
   // like the brig but more iron in the lower hold (three gun decks = more
-  // top-weight to counter). Tuned live against tests/manOfWarFloat.ts: nine
+  // top-weight to counter). Tuned live against tests/manOfWarFloat.test.ts: nine
   // tiers, WIDEST at the keel (zHalf 8) and tapering up to a narrow tier-8
   // spine, all packed into the lower hold well below the lower gun deck (y21).
   // Lands draft ≈ 0.455 of the envelope with COM ≈ 2.25 (very low), so GM ≈ 4.1
