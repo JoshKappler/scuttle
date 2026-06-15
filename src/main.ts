@@ -11,7 +11,7 @@ import { createSky } from "./render/sky";
 import { CloudDome } from "./render/clouds";
 import { islandGritUniforms } from "./render/islandVisual";
 import { buildCutter, buildSloop, type ShipBuild } from "./sim/shipwright";
-import { tierById } from "./game/shipyard";
+import { tierById, SHIP_TIERS } from "./game/shipyard";
 import { pickEnemyTier } from "./sim/fleetSpawn";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
@@ -46,7 +46,8 @@ import { createDevPanel } from "./render/devPanel";
 import { Economy } from "./sim/economy";
 import { createPortScreen } from "./render/portScreen";
 import { PortController } from "./game/port";
-import { createMenuScreen } from "./render/menuScreen";
+import { createMenuScreen, type SandboxConfig } from "./render/menuScreen";
+import { PerfMonitor } from "./render/perf";
 
 async function main() {
   // THROWAWAY (plan Task 0): ?spike=1 runs the voxel-collider perf gate and bails.
@@ -56,7 +57,16 @@ async function main() {
     return;
   }
   const app = document.getElementById("app")!;
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  // powerPreference:"high-performance" is the SINGLE most important fix for the
+  // "5 fps one launch, smooth the next" swing: without it the browser may hand the
+  // tab the weak INTEGRATED GPU (laptops switch by power state) or, after a GPU-process
+  // hiccup, sit on SOFTWARE rendering. This strongly requests the discrete GPU; the
+  // caveat flag stops the browser from silently refusing a context on a marginal one.
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    powerPreference: "high-performance",
+    failIfMajorPerformanceCaveat: false,
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -68,6 +78,11 @@ async function main() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.localClippingEnabled = true;
   app.appendChild(renderer.domElement);
+
+  // perf watchdog: logs the real GPU, warns if we're on SOFTWARE rendering (the usual
+  // cause of the 5-fps launches), shows a small fps/ms HUD, and runs the adaptive-quality
+  // governor (TUN.gfx.auto) so the frame can't silently park at single digits.
+  const perf = new PerfMonitor(renderer);
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 5000);
@@ -182,6 +197,13 @@ async function main() {
   // list so they never trip the ship-vs-ship destruction code.
   const { IslandField } = await import("./game/islandField");
   const islands = new IslandField(seed, physics, scene);
+  // feed the archipelago's land-height field to the ocean so the sea SHOALS at each coast —
+  // waves taper to flat where the seabed rises to the beach, instead of clipping through the
+  // island, plus a surf-foam line at the waterline. Baked once; visual only (physics unaffected).
+  {
+    const lf = islands.buildLandField();
+    if (lf) ocean.setLandField(lf.tex, lf.minX, lf.minZ, lf.sizeX, lf.sizeZ);
+  }
 
   // dev/playtest convenience: ?at=harbor drops you in clear water just seaward of
   // the town dock, so you can look the island over without the opening sail out to
@@ -286,7 +308,8 @@ async function main() {
 
   const spawnEnemy = (): EnemyUnit => {
     // notoriety- and player-tier-scaled tier pick: small prey early, bigger hulls later.
-    const tierId = pickEnemyTier(economy.state.notoriety, currentTier, Math.random);
+    // Sandbox can FORCE a specific enemy tier (forcedEnemyTier); null = the scaled spread.
+    const tierId = forcedEnemyTier ?? pickEnemyTier(economy.state.notoriety, currentTier, Math.random);
     const build = tierById(tierId).build();
     const visual = new ShipVisual(build);
     // fan upwind around the player so multiple hulls don't stack (the old single
@@ -363,6 +386,9 @@ async function main() {
   let currentTier: ShipTierId = "cutter";
   let unlockedClasses: ShipTierId[] = ["cutter"];
   let settings: Settings = defaultSettings();
+  // sandbox-only: force every spawn to a chosen enemy tier (null = the notoriety-scaled
+  // spread, which is what Career always uses). Set from the sandbox config screen.
+  let forcedEnemyTier: ShipTierId | null = null;
 
   const applySave = (s: SaveState) => {
     economy.state = s.economy;
@@ -387,26 +413,41 @@ async function main() {
 
   const menu = createMenuScreen({
     onNewCareer: () => {
+      forcedEnemyTier = null; // Career always uses the notoriety-scaled spawn spread
       saves.wipe("career");
       applySave(defaultSave("career"));
       gs.startGame("career");
       menu.hide();
     },
     onContinue: () => {
+      forcedEnemyTier = null;
       applySave(saves.load("career"));
       gs.startGame("career");
       menu.hide();
     },
     onSandbox: () => {
-      applySave(saves.load("sandbox"));
-      // free play: top up to a deep purse so every hull + upgrade is buyable
-      // (the whole tier ladder is already unlocked for sandbox via getShipState).
-      if (economy.state.doubloons < 50000) {
-        economy.state.doubloons = 50000;
-        gs.wallet.set(50000);
-      }
-      gs.startGame("sandbox");
-      menu.hide();
+      // open the sandbox setup screen; "Set Sail" applies the chosen scene and starts.
+      menu.showSandboxConfig({
+        tiers: SHIP_TIERS.map((t) => ({ id: t.id, name: t.name })),
+        maxEnemies: MAXVIS,
+        defaults: { shipTier: currentTier, enemyCount: Math.round(TUN.fleet.enemyCount), enemyTier: "mixed" },
+        onBack: () => menu.showStart(saves.hasSave("career")),
+        onStart: (cfg: SandboxConfig) => {
+          applySave(saves.load("sandbox"));
+          // free play: top up to a deep purse so every hull + upgrade is buyable
+          // (the whole tier ladder is already unlocked for sandbox via getShipState).
+          if (economy.state.doubloons < 50000) {
+            economy.state.doubloons = 50000;
+            gs.wallet.set(50000);
+          }
+          // apply the player's chosen scene
+          forcedEnemyTier = cfg.enemyTier === "mixed" ? null : (cfg.enemyTier as ShipTierId);
+          TUN.fleet.enemyCount = Math.max(0, Math.min(MAXVIS, Math.round(cfg.enemyCount)));
+          if (cfg.shipTier !== currentTier) swapPlayerShip(cfg.shipTier as ShipTierId);
+          gs.startGame("sandbox");
+          menu.hide();
+        },
+      });
     },
     onResume: () => {
       gs.resume();
@@ -838,6 +879,7 @@ async function main() {
     islands,
     economy,
     port,
+    perf, // PerfMonitor — DEBUG.perf.gpuInfo tells you GPU name + software flag
     TUN, // live tunables (also lets Playwright tune crush/flood knobs during verification)
     get spike() {
       return charSpike;
@@ -1480,6 +1522,9 @@ async function main() {
         { type: "toggle", label: "post FX", obj: TUN.gfx.post, key: "enabled" },
         { type: "slider", label: "post res", obj: TUN.gfx.post, key: "scale", min: 0.4, max: 1.5, step: 0.05 },
         { type: "slider", label: "post maxDPR", obj: TUN.gfx.post, key: "maxPixelRatio", min: 0.5, max: 2, step: 0.25 },
+        { type: "toggle", label: "auto quality", obj: TUN.gfx.auto, key: "enabled" },
+        { type: "slider", label: "fps target", obj: TUN.gfx.auto, key: "targetFps", min: 30, max: 60, step: 5 },
+        { type: "toggle", label: "fps HUD", obj: TUN.gfx.auto, key: "hud" },
         { type: "slider", label: "exposure", obj: TUN.gfx.tone, key: "exposure", min: 0.5, max: 1.3, step: 0.02 },
         { type: "toggle", label: "bloom", obj: TUN.gfx.bloom, key: "enabled" },
         { type: "slider", label: "bloom str", obj: TUN.gfx.bloom, key: "strength", min: 0, max: 1, step: 0.02 },
@@ -1576,6 +1621,7 @@ async function main() {
 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
+    perf.tick(dt); // measure real frame time → HUD + adaptive-quality governor
     // the sim only advances while PLAYING — the menu, pause and port screens freeze
     // the world (the render loop still draws, so overlays composite over a still frame).
     if (gs.isSimRunning()) world.step(dt);

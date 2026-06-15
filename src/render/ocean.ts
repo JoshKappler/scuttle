@@ -84,6 +84,11 @@ export interface Ocean {
   /** dev-panel reflection strength (0 = matte water, 1 = full Fresnel reflection) +
    *  the HDR clamp on the reflected sky (caps a bright sky from whiting out the sea). */
   setReflStrength(strength: number, clamp?: number): void;
+  /** Bind the static land-height field (src/game/islandField.ts buildLandField) so the
+   *  surface shoals — wave displacement tapers to flat at each coast (no waves clipping
+   *  through islands) — and a surf-foam line draws where the sea meets land. `min`/`size`
+   *  give the field's world-XZ origin + extent. Call once at startup. */
+  setLandField(tex: THREE.Texture, minX: number, minZ: number, sizeX: number, sizeZ: number): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -143,6 +148,16 @@ uniform float uCascadeChop[NCASC]; // per-cascade horizontal choppiness λ
 uniform float uFftOn; // 1 when the cascade backend is live, else 0
 uniform float uChopScale; // dev: overall chop height/strength (0 = pure swell)
 uniform float uChoppiness; // dev: crest-pinch (horizontal choppiness) multiplier
+
+// SHORE shoaling field (src/game/islandField.ts): R = terrain-top world-Y (m), deep sea ≈ -100,
+// bled outward a little past each coast for a smooth ramp. Used to taper the visual wave
+// displacement to ~0 as the seabed shoals up to the beach, so the sea meets land cleanly
+// instead of crests/troughs clipping straight through the island. VISUAL ONLY (physics never
+// samples this mesh — it rides the analytic swell), so THE LAW #1 holds.
+uniform sampler2D uLandTex;
+uniform vec2 uLandMin;  // world XZ of the field's min corner
+uniform vec2 uLandSize; // world XZ extent the field spans
+uniform float uLandOn;  // 1 when a land field is bound
 
 // P5 dynamic-wave interaction field (Crest/Atlas FDTD ping-pong, src/render/
 // dynamicWaves.ts). A camera-centred height/velocity field the ships stamp their
@@ -287,6 +302,22 @@ void main() {
     crest += sF * (0.45 * exp(-bd2 / 5.5) + 0.28 * ridge * span) * aMix;
   }
 
+  // SHORE SHOALING: as the seabed rises toward a coast, taper the wave displacement back to
+  // the rest (flat sea-level) position so the surface goes calm-and-flat at the beach instead
+  // of waves cutting through the island. shoal = 1 in deep water → 0 at the shoreline.
+  if (uLandOn > 0.5) {
+    vec2 luv = (rest.xz - uLandMin) / uLandSize;
+    if (luv.x > 0.0 && luv.x < 1.0 && luv.y > 0.0 && luv.y < 1.0) {
+      float landY = texture2D(uLandTex, luv).r * 160.0 - 100.0; // decode terrain-top world-Y (m); deep sea ≈ -100
+      float shoal = clamp((-0.3 - landY) / 5.5, 0.0, 1.0); // 0 at/above shore … 1 by ~5.5 m depth
+      shoal = shoal * shoal * (3.0 - 2.0 * shoal);   // smootherstep so the calm band eases in
+      p = mix(rest, p, shoal);                       // pull the surface back to flat near land
+      crest *= shoal;
+      nx *= shoal;
+      nz *= shoal;
+    }
+  }
+
   vWorldPos = p;
   vNormal = normalize(vec3(nx, ny, nz));
   vCrest = crest;
@@ -360,6 +391,12 @@ uniform sampler2D uProfileTex1; // slot 1 (enemy):  RG = keelYLocal, deckYLocal 
 uniform mat3 uProfileInvRot[2]; // world→local rotation per slot (inverse body quat)
 uniform vec3 uProfileTrans[2];  // body world translation per slot (= local origin)
 uniform vec2 uProfileSize[2];   // local span (m) per slot (uv = localXZ / size)
+
+// shore shoaling field (same texture as the vertex stage) — drives the surf-foam line.
+uniform sampler2D uLandTex;
+uniform vec2 uLandMin;
+uniform vec2 uLandSize;
+uniform float uLandOn;
 
 void main() {
   #include <clipping_planes_fragment>
@@ -545,12 +582,71 @@ void main() {
     float edge = abs(across) - (hB * taper + 0.2);
     float bandW = mix(0.5, hB * 0.9, devel);
     wash += sF * (0.3 + 0.7 * devel) * inHull * exp(-pow(max(edge, 0.0) / bandW, 2.0));
-
-    // waterline lace: a thin bright ring right at the hull skin (rr ≈ 1)
-    float rr = sqrt((along / hL) * (along / hL) + (across / hB) * (across / hB));
-    float ring = exp(-pow((rr - 1.0) / 0.06, 2.0));
-    wash += 0.5 * ring;
   }
+
+  // ALWAYS-ON waterline foam ring — the white line where the sea meets the hull skin.
+  // It USED to live inside the speed loop above (so it blinked off whenever the ship slowed
+  // or rode up a swell — speed is forced to 0 once the hull lifts nearly clear of the water).
+  // It is now independent of speed/heading and, for the player + premium enemy, traced from the
+  // VOXEL profile — the SAME per-column keel/deck height-field the in-hull cutout uses — so it
+  // hugs the true hull plan (pointed bow and all) and only appears where the hull is genuinely
+  // wet (keel at/under the local waterline). Distant non-profiled slots keep the analytic ellipse.
+  float wlFoam = 0.0;
+  // profiled slots (voxel-accurate): march from the fragment toward the hull centre in the
+  // hull's local frame; the world distance to the first WET-SOLID column is the distance to the
+  // skin. (Constant sampler/array indices only — GLSL ES 1.00 forbids dynamic sampler indexing.)
+  for (int ps = 0; ps < 2; ps++) {
+    if (uProfileOn[ps] < 0.5) continue;
+    vec3 lp = (ps == 0 ? uProfileInvRot[0] : uProfileInvRot[1]) * (vWorldPos - (ps == 0 ? uProfileTrans[0] : uProfileTrans[1]));
+    vec2 sz = (ps == 0 ? uProfileSize[0] : uProfileSize[1]);
+    vec2 fragM = lp.xz;        // fragment in the hull's local metres
+    vec2 ctrM = sz * 0.5;      // hull centre in local metres
+    if (fragM.x < -2.0 || fragM.x > sz.x + 2.0 || fragM.y < -2.0 || fragM.y > sz.y + 2.0) continue; // far away
+    vec2 dM = ctrM - fragM;
+    float dlen = length(dM);
+    vec2 dir = dlen > 1e-3 ? dM / dlen : vec2(0.0);
+    // step toward the centre in fixed ~0.45 m increments; the distance to the first WET column
+    // is the world distance to the hull skin (a crisp, plan-accurate ring, not a fat ellipse).
+    for (int k = 0; k < 5; k++) {
+      float d = 0.4 + float(k) * 0.45;  // 0.4 .. 2.2 m
+      if (d > dlen) break;              // never march past the hull centre
+      vec2 sUv = (fragM + dir * d) / sz;
+      if (sUv.x < 0.0 || sUv.x > 1.0 || sUv.y < 0.0 || sUv.y > 1.0) continue;
+      vec2 kd = ps == 0 ? texture2D(uProfileTex0, sUv).rg : texture2D(uProfileTex1, sUv).rg;
+      if (kd.y > kd.x && lp.y > kd.x - 0.4 && lp.y < kd.y + 0.6) { // a wet hull column at this height
+        wlFoam = max(wlFoam, exp(-pow(d / 0.85, 2.0)));
+        break; // nearest skin along the ray
+      }
+    }
+  }
+  // non-profiled live slots (distant cheap enemies): analytic ellipse ring, also always-on.
+  for (int s3 = 0; s3 < MAXVIS; s3++) {
+    if (uProfileOn[s3] > 0.5) continue; // handled above
+    float hL3 = uShipB[s3].y;
+    if (hL3 < 0.5) continue; // unused slot
+    float hB3 = uShipB[s3].z;
+    vec2 fwd3 = uShipA[s3].zw;
+    vec2 ctr3 = uShipA[s3].xy - fwd3 * hL3;
+    vec2 rel3 = vWorldPos.xz - ctr3;
+    float al3 = dot(rel3, fwd3);
+    float ac3 = dot(rel3, vec2(-fwd3.y, fwd3.x));
+    float rr3 = sqrt((al3 / hL3) * (al3 / hL3) + (ac3 / hB3) * (ac3 / hB3));
+    wlFoam = max(wlFoam, exp(-pow((rr3 - 1.0) / 0.06, 2.0)));
+  }
+  wash += 0.7 * wlFoam;
+
+  // shore surf: a foam line in the shallow band where the sea breaks on each coast (same land
+  // field as the vertex shoaling). Brightest right at the waterline, gone in deeper water and
+  // up the dry beach. One texture tap, gated by uLandOn.
+  if (uLandOn > 0.5) {
+    vec2 sluv = (vWorldPos.xz - uLandMin) / uLandSize;
+    if (sluv.x > 0.0 && sluv.x < 1.0 && sluv.y > 0.0 && sluv.y < 1.0) {
+      float slandY = texture2D(uLandTex, sluv).r * 160.0 - 100.0;
+      float surf = smoothstep(-2.2, -0.2, slandY) * (1.0 - smoothstep(0.1, 1.2, slandY));
+      wash += surf * 0.55;
+    }
+  }
+
   for (int i = 0; i < 63; i++) {
     if (i == 31) continue; // slot boundary: don't lace ship 0's tail to ship 1's head
     vec4 A = uTrail[i];
@@ -721,6 +817,11 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uFftOn: { value: field.active ? 1 : 0 },
       uChopScale: { value: 1 },
       uChoppiness: { value: 1 },
+      // shore shoaling land field (bound once via setLandField from the IslandField)
+      uLandTex: { value: dummyTex },
+      uLandMin: { value: new THREE.Vector2() },
+      uLandSize: { value: new THREE.Vector2(1, 1) },
+      uLandOn: { value: 0 },
       // P5 dynamic-wave interaction field (off until setDynamicField binds it).
       uDynDisp: { value: dummyTex },
       uDynOrigin: { value: new THREE.Vector2() },
@@ -817,6 +918,12 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     setReflStrength(strength, clamp) {
       mat.uniforms.uReflStrength.value = strength;
       if (clamp !== undefined) mat.uniforms.uReflClamp.value = clamp;
+    },
+    setLandField(tex, minX, minZ, sizeX, sizeZ) {
+      mat.uniforms.uLandTex.value = tex;
+      (mat.uniforms.uLandMin.value as THREE.Vector2).set(minX, minZ);
+      (mat.uniforms.uLandSize.value as THREE.Vector2).set(sizeX, sizeZ);
+      mat.uniforms.uLandOn.value = 1;
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

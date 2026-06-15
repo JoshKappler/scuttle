@@ -248,7 +248,11 @@ export class Post {
     const dbs = this.renderer.getDrawingBufferSize(this._tmp); // device px
     const ratio = this.renderer.getPixelRatio() || 1;
     const cap = Math.max(0.25, TUN.gfx.post.maxPixelRatio);
-    const factor = (Math.min(ratio, cap) / ratio) * Math.max(0.25, TUN.gfx.post.scale);
+    // post.scale = the user's manual ceiling; auto.scale = the adaptive governor's
+    // extra throttle (render/perf.ts) — they compose, so the watchdog can drop
+    // resolution below the user's setting when the framerate sags, then restore it.
+    const factor =
+      (Math.min(ratio, cap) / ratio) * Math.max(0.25, TUN.gfx.post.scale) * Math.max(0.25, TUN.gfx.auto.scale);
     return this._tmp.set(Math.max(1, Math.round(dbs.x * factor)), Math.max(1, Math.round(dbs.y * factor)));
   }
 
@@ -278,7 +282,8 @@ export class Post {
     this.bloom.strength = TUN.gfx.bloom.strength;
     this.bloom.radius = TUN.gfx.bloom.radius;
     this.bloom.threshold = TUN.gfx.bloom.threshold;
-    this.godray.enabled = TUN.gfx.godrays.enabled;
+    // the adaptive governor drops god rays (the heaviest pass after fill) at low tiers
+    this.godray.enabled = TUN.gfx.godrays.enabled && !TUN.gfx.auto.suppressGodrays;
     this.godray.uniforms.uStrength.value = TUN.gfx.godrays.strength;
     this.godray.uniforms.uDensity.value = TUN.gfx.godrays.density;
     this.godray.uniforms.uDecay.value = TUN.gfx.godrays.decay;

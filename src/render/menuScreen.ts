@@ -13,15 +13,44 @@ const MUTE = "#a8895c";
 export interface MenuActions {
   onNewCareer(): void;
   onContinue(): void;
+  /** Sandbox button — opens the sandbox config screen (the game layer calls
+   *  {@link MenuScreen.showSandboxConfig} from here). */
   onSandbox(): void;
   onResume(): void;
   onQuitToMenu(): void;
+}
+
+/** What the player chose on the sandbox config screen. Plain strings so this view
+ *  stays engine-free (the game layer casts them to its tier ids). */
+export interface SandboxConfig {
+  /** which hull to start sailing (a tier id, e.g. "cutter"). */
+  shipTier: string;
+  /** how many hostile ships to keep at sea (0..maxEnemies). */
+  enemyCount: number;
+  /** what the enemies are: "mixed" (the notoriety-scaled spread) or a specific tier id. */
+  enemyTier: string;
+}
+
+/** Data the game layer feeds the sandbox config screen (keeps the view dumb). */
+export interface SandboxConfigOpts {
+  /** selectable hull tiers, smallest → largest (id + display name). */
+  tiers: { id: string; name: string }[];
+  /** upper bound on the enemy-count picker. */
+  maxEnemies: number;
+  /** initial selection. */
+  defaults: SandboxConfig;
+  /** "Set Sail" pressed with the chosen config. */
+  onStart(cfg: SandboxConfig): void;
+  /** "Back" pressed — return to the title screen. */
+  onBack(): void;
 }
 
 export interface MenuScreen {
   readonly isOpen: boolean;
   /** Title screen. `hasCareer` enables the Continue button. */
   showStart(hasCareer: boolean): void;
+  /** Sandbox setup: pick starting ship, enemy count, and enemy type before sailing. */
+  showSandboxConfig(opts: SandboxConfigOpts): void;
   /** In-game pause screen (Resume / Quit to Menu). */
   showPause(): void;
   hide(): void;
@@ -48,6 +77,72 @@ function bigButton(label: string, onClick: () => void, enabled = true): HTMLButt
   b.disabled = !enabled;
   if (enabled) b.addEventListener("click", onClick);
   return b;
+}
+
+/** A small section caption above a chooser row. */
+function sectionLabel(text: string): HTMLDivElement {
+  const d = document.createElement("div");
+  d.textContent = text;
+  Object.assign(d.style, {
+    color: MUTE,
+    font: '700 11px Georgia, serif',
+    fontVariant: "small-caps",
+    letterSpacing: "0.12em",
+    textAlign: "left",
+    margin: "14px 0 6px",
+  } as Partial<CSSStyleDeclaration>);
+  return d;
+}
+
+/** A row of mutually-exclusive "pill" choices. Calls onPick with the chosen value
+ *  and re-paints the selection highlight; returns the row element. */
+function chooserRow(
+  choices: { value: string; label: string }[],
+  selected: string,
+  onPick: (value: string) => void,
+): HTMLDivElement {
+  const row = document.createElement("div");
+  Object.assign(row.style, {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "6px",
+    justifyContent: "center",
+  } as Partial<CSSStyleDeclaration>);
+  let cur = selected;
+  const pills: { value: string; el: HTMLButtonElement }[] = [];
+  const paint = () => {
+    for (const p of pills) {
+      const on = p.value === cur;
+      p.el.style.background = on ? "linear-gradient(180deg, #6a4c18, #3a2708)" : "rgba(40,30,16,0.5)";
+      p.el.style.color = on ? "#f3e2b0" : "#a8895c";
+      p.el.style.borderColor = on ? "#e0b537" : "rgba(138,108,42,0.45)";
+      p.el.style.boxShadow = on ? "0 0 8px rgba(224,181,55,0.35)" : "none";
+    }
+  };
+  for (const c of choices) {
+    const el = document.createElement("button");
+    el.textContent = c.label;
+    Object.assign(el.style, {
+      flex: "1 1 auto",
+      minWidth: "44px",
+      padding: "8px 10px",
+      borderRadius: "4px",
+      border: "1px solid",
+      cursor: "pointer",
+      font: '700 13px Georgia, serif',
+      fontVariant: "small-caps",
+      letterSpacing: "0.05em",
+    } as Partial<CSSStyleDeclaration>);
+    el.addEventListener("click", () => {
+      cur = c.value;
+      paint();
+      onPick(c.value);
+    });
+    pills.push({ value: c.value, el });
+    row.appendChild(el);
+  }
+  paint();
+  return row;
 }
 
 export function createMenuScreen(actions: MenuActions): MenuScreen {
@@ -127,6 +222,42 @@ export function createMenuScreen(actions: MenuActions): MenuScreen {
         bigButton("New Career", actions.onNewCareer),
         bigButton(hasCareer ? "Continue Voyage" : "Continue (no save)", actions.onContinue, hasCareer),
         bigButton("Sandbox", actions.onSandbox),
+      );
+      setOpen(true);
+    },
+    showSandboxConfig(opts: SandboxConfigOpts) {
+      title.textContent = "Sandbox";
+      subtitle.textContent = "set your own scene, then make sail";
+      const cfg: SandboxConfig = { ...opts.defaults };
+
+      const shipRow = chooserRow(
+        opts.tiers.map((t) => ({ value: t.id, label: t.name })),
+        cfg.shipTier,
+        (v) => {
+          cfg.shipTier = v;
+        },
+      );
+      const counts = Array.from({ length: opts.maxEnemies + 1 }, (_, i) => ({ value: String(i), label: String(i) }));
+      const countRow = chooserRow(counts, String(cfg.enemyCount), (v) => {
+        cfg.enemyCount = Number(v);
+      });
+      const typeChoices = [
+        { value: "mixed", label: "Mixed" },
+        ...opts.tiers.map((t) => ({ value: t.id, label: t.name })),
+      ];
+      const typeRow = chooserRow(typeChoices, cfg.enemyTier, (v) => {
+        cfg.enemyTier = v;
+      });
+
+      body.replaceChildren(
+        sectionLabel("Your ship"),
+        shipRow,
+        sectionLabel("Enemy ships"),
+        countRow,
+        sectionLabel("Enemy type"),
+        typeRow,
+        bigButton("Set Sail", () => opts.onStart(cfg)),
+        bigButton("Back", opts.onBack),
       );
       setOpen(true);
     },

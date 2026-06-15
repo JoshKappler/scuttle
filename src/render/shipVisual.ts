@@ -394,10 +394,14 @@ export class ShipVisual {
             vec3 wnf = normalize(vSailWN);
             if (!gl_FrontFacing) wnf = -wnf;                      // normal facing the viewer
             float backlit = max(dot(-wnf, normalize(uSunDirW)), 0.0); // sun lighting the far side
-            backlit = pow(backlit, 1.5);                              // concentrate: glow most when the sun is squarely behind
+            // pow 0.8 (was 1.5): real backlit cloth scatters light BROADLY, so the glow
+            // should fall off gently — a tight specular lobe only lit the sail at the exact
+            // sun-dead-behind angle and read as "not there". A broad lobe glows across a
+            // wide arc of headings, so it actually shows on every ship as it sails.
+            backlit = pow(backlit, 0.8);
             float texL = dot(diffuseColor.rgb, vec3(0.3333));
             // ADD warm light only — the cloth itself stays fully opaque (same texture)
-            totalEmissiveRadiance += uSailSun * (uSailTrans * backlit * (0.35 + 0.65 * texL));
+            totalEmissiveRadiance += uSailSun * (uSailTrans * backlit * (0.45 + 0.55 * texL));
           }
           #include <opaque_fragment>`,
         );

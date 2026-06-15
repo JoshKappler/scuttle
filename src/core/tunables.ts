@@ -228,6 +228,17 @@ export const TUN = {
      *  god-rays; the final pass upscales to the canvas). scale multiplies that
      *  further (0.75 = render at 3/4 res for more speed; 1 = no extra scaling). */
     post: { enabled: true, maxPixelRatio: 1, scale: 1.0 },
+    /** adaptive-quality governor + perf HUD (render/perf.ts). This is the answer to
+     *  "why does it oscillate between 5 fps and smooth?": when `enabled`, a watchdog
+     *  measures the real frame time and walks the post-FX DOWN (an extra resolution
+     *  `scale` multiplier, then dropping god rays via `suppressGodrays`) whenever the
+     *  framerate sits below `targetFps`, stepping back up when there's headroom — so the
+     *  frame can't silently park at single digits. On a healthy GPU it stays at tier 0 and
+     *  changes nothing. `scale`/`suppressGodrays`/`fps`/`tier` are WRITTEN by the governor
+     *  (telemetry + outputs, not user knobs); `enabled`/`targetFps`/`hud` are the knobs.
+     *  `hud` shows a small fps/ms/GPU readout (also names SOFTWARE rendering, the usual
+     *  real cause of the 5-fps launches). */
+    auto: { enabled: true, targetFps: 55, hud: true, scale: 1, suppressGodrays: false, fps: 0, tier: 0 },
     /** global ACES exposure (renderer.toneMappingExposure). <1 calms an over-bright
      *  sky/sun uniformly without touching the individual effects. Nested in its own
      *  flat object so the dev-panel slider's `obj` stays a Bag (the gfx root has
@@ -265,8 +276,10 @@ export const TUN = {
     /** sail canvas (render/shipVisual.ts): the sail stays fully OPAQUE (same texture);
      *  glow = strength of the warm back-light ADDED where the sun lights the cloth's FAR
      *  side — i.e. when the sail is between the sun and the camera (0 = none/matte, higher
-     *  = more sun glowing through the canvas). No see-through; this only adds light. */
-    sail: { glow: 0.35 },
+     *  = more sun glowing through the canvas). No see-through; this only adds light.
+     *  0.6 (was 0.35) + a broader lobe in the shader makes it actually read on every
+     *  ship instead of being a sliver only at the exact sun-dead-behind angle. */
+    sail: { glow: 0.6 },
   },
 };
 
