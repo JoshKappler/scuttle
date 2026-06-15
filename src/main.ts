@@ -808,6 +808,8 @@ async function main() {
     gunBar: $("gun-bar"),
     gunSub: $("gun-sub"),
     gold: $("gold"),
+    infamy: $("infamy"),
+    tier: $("tier"),
     rose: $("rose"),
     hdg: $("hdg"),
     rudderInd: $("rudder-ind"),
@@ -893,6 +895,8 @@ async function main() {
       `elev ${controls.elevationDeg.toFixed(1)}° · trav ${controls.traverseDeg >= 0 ? "+" : ""}${controls.traverseDeg.toFixed(0)}°` +
       `${controls.aiming ? " — AIMING" : ""}`;
     hudEls.gold.textContent = String(gs.wallet.gold);
+    hudEls.infamy.textContent = String(economy.state.notoriety);
+    hudEls.tier.textContent = currentTier.charAt(0).toUpperCase() + currentTier.slice(1);
 
     hudEls.hpRow.style.display = onFoot ? "flex" : "none";
     if (onFoot) hudEls.hpBar.style.width = `${(character.playerHp / 5) * 100}%`;
