@@ -75,3 +75,24 @@ export function distributeClosingDrag(sA: number, sB: number, dvClose: number): 
   if (tot <= 1e-9) return { dvA: 0, dvB: 0 }; // neither is driving in (degenerate) — nothing to slow
   return { dvA: dvClose * (towardA / tot), dvB: dvClose * (towardB / tot) };
 }
+
+// The break bite, as the two impulse MAGNITUDES to apply along the closing axis (jA along −d̂ on A,
+// jB along +d̂ on B). It BLENDS two models by `transferFrac` so the feel is tunable:
+//   • the momentum-CONSERVING part (fraction tf) is an equal-and-opposite kick μ·tf·dvClose — it
+//     drives both hulls toward their common velocity, i.e. the struck hull picks up speed ("velocity
+//     transfers"). This is real collision momentum; too much of it is the round-2 "the victim steals
+//     all my speed" bug, so it's a dial, not the whole story.
+//   • the DRAG part (fraction 1−tf) slows only the aggressor (distributeClosingDrag) — the crumbling
+//     debris carries that momentum off, so a stationary victim is left untouched.
+// tf=0 → pure drag (round-3 default behaviour, no steal); tf=1 → pure equal-and-opposite (old steal).
+// dvClose is the closing-speed reduction the fracture removes (breakImpulse/μ); mu the reduced mass.
+export function splitClosingImpulse(
+  mA: number, mB: number, mu: number,
+  sA: number, sB: number, dvClose: number, transferFrac: number,
+): { jA: number; jB: number } {
+  if (dvClose <= 0) return { jA: 0, jB: 0 };
+  const tf = Math.min(Math.max(transferFrac, 0), 1);
+  const jMC = mu * tf * dvClose;                                          // equal-and-opposite share
+  const { dvA, dvB } = distributeClosingDrag(sA, sB, (1 - tf) * dvClose); // aggressor-drag share
+  return { jA: jMC + mA * dvA, jB: jMC + mB * dvB };
+}

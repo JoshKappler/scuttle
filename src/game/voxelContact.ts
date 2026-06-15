@@ -3,7 +3,7 @@ import { TUN } from "../core/tunables";
 import { VOXEL_SIZE } from "../core/constants";
 import { detectContacts, type HullView, type ContactScratch } from "../sim/voxelOverlap";
 import { breakEnergy } from "../sim/materials";
-import { breakImpulse, distributeClosingDrag } from "../sim/crush";
+import { breakImpulse, splitClosingImpulse } from "../sim/crush";
 import type { VoxelGrid } from "../sim/voxelGrid";
 import type { Ship } from "./ship";
 import type { Effects } from "../render/effects";
@@ -16,11 +16,13 @@ import type { Effects } from "../render/effects";
  *
  *   • CLOSING > vBreak  → BREAK both voxels. The fracture energy is taken straight out of the closing
  *     motion (breakImpulse: destruction and deceleration are one inelastic event), but it is shed as a
- *     DRAG on the hull(s) DRIVING into the contact (distributeClosingDrag) — the crumbling layer
- *     carries its momentum off as debris and pushes the body behind it ~nothing. So a heavy ram spends
- *     its OWN speed boring through and does NOT shove a dead-in-the-water victim up to ramming speed
- *     (the old equal-and-opposite bite did → both hit a common velocity, the closing differential
- *     vanished, breaking stopped, and the ram coasted on through lodged). Only the thin overlapping
+ *     split by splitClosingImpulse into a DRAG on the hull DRIVING in (the crumbling layer carries its
+ *     momentum off as debris → a stationary victim is untouched) plus a tunable momentum-TRANSFER
+ *     share (TUN.crush.transferFrac) that shoves the struck hull toward the common velocity. At
+ *     transferFrac 0 a heavy ram spends its OWN speed boring through and does NOT launch a dead-in-the-
+ *     water victim; dialling it up trades that back for more "the hit shoves her" (the old equal-and-
+ *     opposite bite was transferFrac 1 → both hit a common velocity, the differential vanished, breaking
+ *     stopped, and the ram coasted on through lodged — so keep it modest). Only the thin overlapping
  *     layer breaks each step, so the hull keeps most of its speed and PLOWS into the cleared space next
  *     step, shedding a little per layer, until its approach falls under vBreak. Non-penetration is free
  *     here: the voxel in the way is GONE, so nothing pushes back (no "jar"). The drag is applied
@@ -190,10 +192,12 @@ export class VoxelContact {
       // speed, the closing differential vanished, breaking stopped, and the ram coasted on through,
       // lodged. Slowing only the aggressor keeps the differential alive so it chews until IT stops.
       const dvClose = breakImpulse(mu, vClose, energy, TUN.crush.biteDvCap) / mu; // closing-speed to remove
-      const { dvA, dvB } = distributeClosingDrag(sA, sB, dvClose);
-      this.pushAtComHeight(shipA, bcx, bcz, this.comA.y, -dhx, -dhz, mA * dvA); // slow A's approach (+d̂)
-      this.pushAtComHeight(shipB, bcx, bcz, this.comB.y, dhx, dhz, mB * dvB);   // slow B's approach (−d̂)
-      force = (mA * dvA + mB * dvB) / dt;
+      // split into the aggressor-drag + (tunable) momentum-transfer mix (see crush.splitClosingImpulse):
+      // transferFrac 0 = a stationary victim isn't shoved at all; higher = it picks up more of the hit.
+      const { jA, jB } = splitClosingImpulse(mA, mB, mu, sA, sB, dvClose, TUN.crush.transferFrac);
+      this.pushAtComHeight(shipA, bcx, bcz, this.comA.y, -dhx, -dhz, jA); // slow A's approach (+d̂)
+      this.pushAtComHeight(shipB, bcx, bcz, this.comB.y, dhx, dhz, jB);   // drag/transfer onto B (−d̂)
+      force = (jA + jB) / dt;
 
       const removed = removedA + removedB;
       if (this.effects && TUN.crush.fling > 0 && removed > 0) {

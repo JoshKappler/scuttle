@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { planCrush, breakImpulse, distributeClosingDrag } from "../src/sim/crush";
+import { planCrush, breakImpulse, distributeClosingDrag, splitClosingImpulse } from "../src/sim/crush";
 import { STRENGTH_TO_JOULES } from "../src/sim/materials";
 
 const J = STRENGTH_TO_JOULES;
@@ -122,5 +122,34 @@ describe("distributeClosingDrag", () => {
     expect(distributeClosingDrag(4, 0, 0)).toEqual({ dvA: 0, dvB: 0 });   // no energy removed
     expect(distributeClosingDrag(4, 0, -2)).toEqual({ dvA: 0, dvB: 0 });  // negative guard
     expect(distributeClosingDrag(-2, 2, 5)).toEqual({ dvA: 0, dvB: 0 });  // both separating
+  });
+});
+
+describe("splitClosingImpulse", () => {
+  // heavy A (mA) rams a stationary light B (mB); d̂ points A->B, so sA>0, sB=0.
+  const mA = 6, mB = 2, mu = (mA * mB) / (mA + mB), dvClose = 4;
+
+  it("transferFrac 0 = pure aggressor drag: the victim gets ZERO impulse", () => {
+    const { jA, jB } = splitClosingImpulse(mA, mB, mu, 3, 0, dvClose, 0);
+    expect(jB).toBe(0);                 // stationary victim not shoved at all (round-3 behaviour)
+    expect(jA).toBeCloseTo(mA * dvClose, 9); // all of the closing reduction comes off A
+  });
+
+  it("transferFrac 1 = pure equal-and-opposite: both get μ·dvClose (the old steal)", () => {
+    const { jA, jB } = splitClosingImpulse(mA, mB, mu, 3, 0, dvClose, 1);
+    expect(jA).toBeCloseTo(mu * dvClose, 9);
+    expect(jB).toBeCloseTo(mu * dvClose, 9);
+    // and that drives B to the common-velocity gain mA/(mA+mB)·dvClose
+    expect(jB / mB).toBeCloseTo((mA / (mA + mB)) * dvClose, 9);
+  });
+
+  it("a higher transferFrac always hands the struck hull more speed", () => {
+    const lo = splitClosingImpulse(mA, mB, mu, 3, 0, dvClose, 0.2);
+    const hi = splitClosingImpulse(mA, mB, mu, 3, 0, dvClose, 0.6);
+    expect(hi.jB).toBeGreaterThan(lo.jB);
+  });
+
+  it("is zero with no closing reduction", () => {
+    expect(splitClosingImpulse(mA, mB, mu, 3, 0, 0, 0.5)).toEqual({ jA: 0, jB: 0 });
   });
 });

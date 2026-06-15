@@ -144,9 +144,17 @@ export const TUN = {
      *  with no damage; over it the contact face crushes. The single velocity gate of the whole rule. */
     vBreak: 2.0,
     /** ×break-energy: how hard the wood is. Higher → a ram bites fewer voxels per joule AND sheds
-     *  more speed per layer, so it penetrates LESS; lower → softer hulls that rip deep. The main
-     *  "rip into each other" feel knob (was `yield`, inverted sense). */
-    toughness: 1.0,
+     *  more speed per layer, so it penetrates LESS and resists more (a weightier, less explosive
+     *  crash); lower → softer hulls that rip deep. The main "rip into each other" feel knob (was
+     *  `yield`, inverted sense). 1.5 = ~50% tougher than the round-3 baseline (playtest: "tougher
+     *  voxels"). */
+    toughness: 1.5,
+    /** how much of a BREAK hit's closing-Δv is handed to the struck hull as momentum (0..1) vs. spent
+     *  slowing only the aggressor. 0 = a dead-in-the-water victim is NOT shoved at all (it just gets
+     *  chewed); 1 = the full equal-and-opposite kick that drives both to a common velocity (the old
+     *  "the victim steals all my speed" bug). 0.35 = the struck ship picks up a bit of the hit without
+     *  being launched (playtest: "velocity transfers a bit more"). See crush.splitClosingImpulse. */
+    transferFrac: 0.35,
     /** contact tolerance (VOXELS): an A voxel within this many voxels of a solid B voxel counts as
      *  touching/eligible to break. The voxels are a coarse hull approximation, so a little slack
      *  reads as "sufficiently close" without needing a half-voxel of real interpenetration first. */
@@ -163,10 +171,12 @@ export const TUN = {
      *  of steps. It is position-only with the closing pre-zeroed, so even at 6 it eases (never flings)
      *  — for shallow everyday contacts depth·depen is far below this cap, so they still barely move. */
     maxDepenSpeed: 6.0,
-    /** per-step cap (m/s) on the closing speed the BREAK bite may remove in one step — a stability /
-     *  NaN backstop and a clamp on a huge single-step slab. The plow is inherently multi-step, so
-     *  this just keeps any one step's momentum trade smooth. */
-    biteDvCap: 6.0,
+    /** per-step cap (m/s) on the closing speed the BREAK bite may remove in one step. ALSO the main
+     *  "how SLOW/drawn-out is the crash" knob: lower spreads the deceleration over more frames, so a
+     *  hard ram grinds to a stop over ~½ s instead of slamming in one or two steps (playtest: "crashes
+     *  happen a bit more slowly"). 3.5 (was 6) makes it bind on a fast ram; also a stability/NaN
+     *  backstop on a huge single-step slab. */
+    biteDvCap: 3.5,
     /** per-step break-energy CEILING (J, whole pair) — an anti-vaporize backstop. The real per-step
      *  limiter is GEOMETRY (only the thin overlapping layer can break); this only clamps a
      *  pathologically deep overlap (e.g. a teleport) from deleting a huge slab in one frame. */
