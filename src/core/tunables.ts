@@ -262,11 +262,11 @@ export const TUN = {
     /** triplanar procedural grit on island voxels (render/islandVisual.ts) — 0 =
      *  flat vertex color, 1 = full weathered variation. Silhouettes stay crisp. */
     islandGrit: { strength: 0.65 },
-    /** sail canvas (render/shipVisual.ts): translucency = strength of the back-light
-     *  that "leaks" through the cloth when the sun is on its FAR side (0 = opaque/matte,
-     *  higher = the sail glows like backlit canvas); opacity = how see-through the
-     *  fabric is (1 = solid, lower = sheerer). */
-    sail: { translucency: 0.6, opacity: 0.9 },
+    /** sail canvas (render/shipVisual.ts): the sail stays fully OPAQUE (same texture);
+     *  glow = strength of the warm back-light ADDED where the sun lights the cloth's FAR
+     *  side — i.e. when the sail is between the sun and the camera (0 = none/matte, higher
+     *  = more sun glowing through the canvas). No see-through; this only adds light. */
+    sail: { glow: 0.35 },
   },
 };
 

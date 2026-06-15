@@ -153,10 +153,8 @@ export class ShipVisual {
     if (this.sailUniforms) {
       this.sailUniforms.uTime.value = time;
       this.sailUniforms.uFill.value = 0.35 + 0.65 * sailSet;
-      this.sailUniforms.uSailTrans.value = TUN.gfx.sail.translucency; // live back-light knob
+      this.sailUniforms.uSailTrans.value = TUN.gfx.sail.glow; // live glow strength (sail stays opaque)
     }
-    // live sail opacity — each sail has its OWN material (its own puncture alphaMap)
-    for (const s of this.sails) (s.mesh.material as THREE.MeshStandardMaterial).opacity = TUN.gfx.sail.opacity;
     // rudder convention: sailing.rudder + = port turn → trailing edge swings
     // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
     // puts the trailing edge at −z for +r. Wheel turns the same sense as a
@@ -340,7 +338,7 @@ export class ShipVisual {
     // set. SQUARE RIG: the sail hangs between two yards (top/bottom pinned by
     // sin(πv)) and bellies FORWARD along its normal — a vertical bulge, per
     // playtest ("billow out vertically, not in a horizontal curve")
-    this.sailUniforms = { uTime: { value: 0 }, uFill: { value: 1 }, uSailTrans: { value: TUN.gfx.sail.translucency } };
+    this.sailUniforms = { uTime: { value: 0 }, uFill: { value: 1 }, uSailTrans: { value: TUN.gfx.sail.glow } };
     const su = this.sailUniforms;
     // shared constants for the sail back-light: the world sun direction + a warm tint
     // for the light transmitted through the canvas (consumed in the fragment inject below).
@@ -395,10 +393,11 @@ export class ShipVisual {
           `{
             vec3 wnf = normalize(vSailWN);
             if (!gl_FrontFacing) wnf = -wnf;                      // normal facing the viewer
-            float backlit = max(dot(-wnf, normalize(uSunDirW)), 0.0); // sun on the far side
-            backlit = pow(backlit, 0.8);
+            float backlit = max(dot(-wnf, normalize(uSunDirW)), 0.0); // sun lighting the far side
+            backlit = pow(backlit, 1.5);                              // concentrate: glow most when the sun is squarely behind
             float texL = dot(diffuseColor.rgb, vec3(0.3333));
-            totalEmissiveRadiance += uSailSun * (uSailTrans * backlit * (0.3 + 0.7 * texL));
+            // ADD warm light only — the cloth itself stays fully opaque (same texture)
+            totalEmissiveRadiance += uSailSun * (uSailTrans * backlit * (0.35 + 0.65 * texL));
           }
           #include <opaque_fragment>`,
         );
@@ -412,8 +411,6 @@ export class ShipVisual {
         map: sailTex,
         roughness: 0.95,
         side: THREE.DoubleSide,
-        transparent: true, // semi-transparent canvas; opacity live from TUN.gfx.sail
-        opacity: TUN.gfx.sail.opacity,
       });
       m.onBeforeCompile = injectBillow;
       return m;
