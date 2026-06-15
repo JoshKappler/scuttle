@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { planCrush } from "../src/sim/crush";
+import { planCrush, breakImpulse } from "../src/sim/crush";
 import { STRENGTH_TO_JOULES } from "../src/sim/materials";
 
 const J = STRENGTH_TO_JOULES;
@@ -45,5 +45,46 @@ describe("planCrush", () => {
     expect(r.removed).toHaveLength(2);
     expect(r.removed.every((c) => c.strength === 3)).toBe(true);
     expect(r.leftover).toBe(1 * J);
+  });
+});
+
+describe("breakImpulse", () => {
+  const CAP = 1e9; // effectively uncapped for the physics checks
+
+  it("is zero with no energy, no closing, or no mass", () => {
+    expect(breakImpulse(1000, 5, 0, CAP)).toBe(0);
+    expect(breakImpulse(1000, 0, 1e5, CAP)).toBe(0);
+    expect(breakImpulse(1000, -3, 1e5, CAP)).toBe(0);
+    expect(breakImpulse(0, 5, 1e5, CAP)).toBe(0);
+  });
+
+  it("removes EXACTLY the broken energy from the closing KE (uncapped)", () => {
+    const mu = 2000, vc = 6, energy = 9000; // < 0.5*mu*vc^2 = 36000, so not fully absorbed
+    const Jimp = breakImpulse(mu, vc, energy, CAP);
+    const vcAfter = vc - Jimp / mu; // caller applies J as μ·Δv
+    const keLost = 0.5 * mu * (vc * vc - vcAfter * vcAfter);
+    expect(keLost).toBeCloseTo(energy, 3);
+    expect(vcAfter).toBeGreaterThan(0); // didn't over-shoot to a stop
+  });
+
+  it("self-limits: energy beyond the closing KE only brings them to rest, never reverses", () => {
+    const mu = 2000, vc = 6;
+    const Jimp = breakImpulse(mu, vc, 1e9, CAP); // way more than 0.5*mu*vc^2
+    expect(Jimp).toBeCloseTo(mu * vc, 6); // exactly brings closing to zero
+    expect(vc - Jimp / mu).toBeCloseTo(0, 9);
+  });
+
+  it("is monotonic in energy and respects the per-step Δv cap", () => {
+    const mu = 2000, vc = 6;
+    expect(breakImpulse(mu, vc, 2000, CAP)).toBeLessThan(breakImpulse(mu, vc, 8000, CAP));
+    const capped = breakImpulse(mu, vc, 1e9, 1.5); // cap Δv at 1.5 m/s
+    expect(capped).toBeCloseTo(mu * 1.5, 6);
+  });
+
+  it("heavier reduced mass sheds less speed for the same broken energy", () => {
+    const vc = 6, energy = 9000;
+    const dvLight = breakImpulse(1000, vc, energy, CAP) / 1000;
+    const dvHeavy = breakImpulse(8000, vc, energy, CAP) / 8000;
+    expect(dvHeavy).toBeLessThan(dvLight); // a heavy hull barely slows -> plows through
   });
 });

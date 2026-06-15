@@ -694,7 +694,8 @@ export class Ship {
     updateSurfaceAfterRemoval(grid, this.surface, gone); // keep the boundary set fresh
     this.surfaceCache = null;
     this.registerBreaches(cells);
-    this.damageDirty = true; // sever/mass/deck recompute is deferred + throttled (flushDamage)
+    this.damageDirty = true; // sever/mass recompute is deferred + throttled (flushDamage)
+    this.colliderDirty = true; this.framesSinceCarve = 0; // debounce the heavy deck-collider rebuild
     return gone.length;
   }
 
@@ -763,7 +764,25 @@ export class Ship {
    *  per fixed step by the world loop; deterministic (step-counted, no wall clock). */
   private damageDirty = false;
   private framesSinceFlush = 0;
+  /** The walkable-deck collider rebuild is DEBOUNCED separately from the heavy recompute below.
+   *  That ~40 ms whole-grid trimesh rebuild was firing every 6 steps during a sustained ram — the
+   *  impact lag. Nobody walks the deck mid-crash, so it now waits for carving to PAUSE
+   *  (COLLIDER_QUIET steps) before refreshing the craters; COLLIDER_MAX_STALE forces a refresh
+   *  during a very long continuous grind so it can't be starved forever. */
+  private colliderDirty = false;
+  private framesSinceCarve = 0;
+  private stepsSinceColliderBuild = 0;
   flushDamage(): void {
+    const COLLIDER_QUIET = 18;      // ~0.3 s of no carving before the deck collider refreshes
+    const COLLIDER_MAX_STALE = 300; // ...but a very long continuous grind still refreshes by ~5 s
+    this.framesSinceCarve++;
+    this.stepsSinceColliderBuild++;
+    if (this.colliderDirty && (this.framesSinceCarve >= COLLIDER_QUIET || this.stepsSinceColliderBuild >= COLLIDER_MAX_STALE)) {
+      this.colliderDirty = false;
+      this.stepsSinceColliderBuild = 0;
+      this.rebuildDeckCollider();
+    }
+
     if (!this.damageDirty) return;
     if (++this.framesSinceFlush < 6) return; // ~10 Hz during sustained carving
     this.framesSinceFlush = 0;
@@ -784,6 +803,7 @@ export class Ship {
       updateSurfaceAfterRemoval(grid, this.surface, islandCells); // shed cells leave the boundary
       this.surfaceCache = null;
       this.registerBreaches(islandCells);
+      this.colliderDirty = true; this.framesSinceCarve = 0; // geometry changed → refresh (debounced)
       this.onSevered?.(islands);
     }
     // a mast whose step has been blown out goes by the board
@@ -791,7 +811,6 @@ export class Ship {
       if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) this.fellMast(mi);
     });
     this.recomputeMassProperties();
-    this.rebuildDeckCollider();
   }
 
   /** Register removed hull cells as breaches: a removed cell adjacent to ONE

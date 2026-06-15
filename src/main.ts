@@ -1283,17 +1283,23 @@ async function main() {
       controls: [
         { type: "button", label: "⚔ Ram Test (T-bone)", onClick: ramTest },
         { type: "toggle", label: "deformable crush", obj: TUN.crush, key: "enabled" },
-        // closing speed (m/s) under which nothing breaks — the wood's "give". ~2 ≈ 4 kn.
+        // closing speed (m/s) under which nothing breaks — the wood's "give". ~2 ≈ 4 kn. The single
+        // velocity gate: above it the contact face crushes, below it a slow bump just settles.
         { type: "slider", label: "break speed m/s", obj: TUN.crush, key: "vBreak", min: 0, max: 8, step: 0.25 },
-        // anti-vaporize ceiling on the per-step break budget (GEOMETRY caps the real rate). Lower
-        // only to tame extreme-speed gouging. See tunables.ts.
-        { type: "slider", label: "break ceil J (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "maxStepEnergy", min: 5e5, max: 120e5, step: 5e5 },
-        { type: "slider", label: "break yield", obj: TUN.crush, key: "yield", min: 0, max: 2, step: 0.05 },
-        // per-step cap (m/s) on the inelastic CANCEL impulse (smoothing/NaN backstop). Position
-        // de-penetration holds the hulls apart regardless, so this can't cause a phase-through.
-        { type: "slider", label: "cancel Δv/step", obj: TUN.crush, key: "maxDvPerStep", min: 1, max: 12, step: 0.5 },
-        // hard non-penetration: fraction of the overlap depth the hulls are shoved apart each step.
+        // ×break-energy = wood hardness. Higher → a ram bites fewer voxels AND slows more per layer
+        // (penetrates less); lower → softer hulls that rip deep. The main "rip into each other" feel.
+        { type: "slider", label: "toughness ×", obj: TUN.crush, key: "toughness", min: 0.1, max: 3, step: 0.05 },
+        // contact tolerance in VOXELS: how close two voxels count as touching/eligible to break.
+        { type: "slider", label: "buffer (vox)", obj: TUN.crush, key: "buffer", min: 0, max: 1, step: 0.05 },
+        // REST separation: fraction of overlap depth eased apart per step when too slow to break.
         { type: "slider", label: "de-pen (0..1)", obj: TUN.crush, key: "depen", min: 0, max: 1, step: 0.05 },
+        // hard cap (m/s) on REST positional separation — the anti-fling safety net.
+        { type: "slider", label: "de-pen cap m/s", obj: TUN.crush, key: "maxDepenSpeed", min: 0.5, max: 8, step: 0.5 },
+        // per-step cap (m/s) on the BREAK bite's closing-Δv (stability/smoothing backstop).
+        { type: "slider", label: "bite Δv/step", obj: TUN.crush, key: "biteDvCap", min: 1, max: 12, step: 0.5 },
+        // anti-vaporize ceiling on the per-step break budget (GEOMETRY caps the real rate). Lower
+        // only to tame an extreme teleport-deep gouge. See tunables.ts.
+        { type: "slider", label: "break ceil J (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "maxStepEnergy", min: 5e5, max: 120e5, step: 5e5 },
         { type: "slider", label: "min depth m", obj: TUN.crush, key: "minDepth", min: 0, max: 0.5, step: 0.01 },
         // cannons share the crush core; this scales their ½mv² into the same joule budget.
         { type: "slider", label: "cannon crush ×", obj: TUN.gun, key: "crushEfficiency", min: 1, max: 120, step: 1 },
