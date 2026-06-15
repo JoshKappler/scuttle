@@ -38,6 +38,20 @@ export class PlayerCharacter {
     if (this.player) this.player.ship = ship;
   }
 
+  /** Plant the captain back on his own deck (after a respawn / hull swap): clears the
+   *  swimming state and teleports him amidships so the helm-pin can take over. */
+  reseat(): void {
+    if (!this.player) return;
+    this.player.ship = this.playerShip;
+    this.player.swimming = false;
+    this.player.teleport(
+      this.playerShip.localToWorld(
+        [4.2, this.deckTop(this.playerShip, 4.2) + 1, this.midZ(this.playerShip)],
+        new THREE.Vector3(),
+      ),
+    );
+  }
+
   /** Put the captain on his own deck. Idempotent. */
   spawnPlayer(): void {
     if (this.player) return;

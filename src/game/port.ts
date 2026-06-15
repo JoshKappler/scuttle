@@ -14,6 +14,8 @@
  */
 
 import { Economy, GOODS, UPGRADES, DEFAULT_CARGO_CAPACITY, repairQuote, rollLoot } from "../sim/economy";
+import { SHIP_TIERS, canBuy } from "./shipyard";
+import type { ShipTierId } from "./saveState";
 import { Rng } from "../core/rng";
 import type { Ship } from "./ship";
 import type { Wallet } from "./wallet";
@@ -50,6 +52,9 @@ export interface PortDeps {
   saveKey?: string;
   onEnter?: () => void; // called when the port opens (the game-shell freezes the world + saves)
   onLeave?: () => void; // called when the port closes (the game-shell resumes the world)
+  // shipyard glue (the game layer owns the unlock list + the actual hull swap)
+  getShipState?: () => { unlocked: ShipTierId[]; current: ShipTierId };
+  onSwapShip?: (id: ShipTierId) => void;
 }
 
 const DOCK_RANGE = 22; // metres within which you may make port
@@ -76,6 +81,8 @@ export class PortController {
   private hintShown = false;
   private onEnter?: () => void;
   private onLeave?: () => void;
+  private getShipState?: () => { unlocked: ShipTierId[]; current: ShipTierId };
+  private onSwapShip?: (id: ShipTierId) => void;
 
   constructor(d: PortDeps) {
     this.economy = d.economy;
@@ -93,6 +100,13 @@ export class PortController {
     this.saveKey = d.saveKey ?? SAVE_KEY;
     this.onEnter = d.onEnter;
     this.onLeave = d.onLeave;
+    this.getShipState = d.getShipState;
+    this.onSwapShip = d.onSwapShip;
+  }
+
+  /** Re-point repair/upgrade effects at a freshly-built hull (after a swap). */
+  setShip(ship: Ship): void {
+    this.ship = ship;
   }
 
   get isOpen(): boolean {
@@ -162,6 +176,23 @@ export class PortController {
     this.ui.refresh(this.view());
   }
 
+  /** Buy a bigger hull: gold + unlocked-by-defeat gated. On success, spend the gold
+   *  and ask the game layer to swap the player onto the new tier. */
+  buyShip(id: ShipTierId): void {
+    const st = this.getShipState?.();
+    const tier = SHIP_TIERS.find((t) => t.id === id);
+    if (!st || !tier) return;
+    if (!canBuy(tier, { gold: this.economy.state.doubloons, unlocked: st.unlocked, current: st.current }).ok) {
+      this.ui.refresh(this.view());
+      return;
+    }
+    this.economy.spend(tier.price);
+    this.mirrorGold();
+    this.onSwapShip?.(id); // game layer rebuilds the hull + re-applies upgrades
+    this.msg.post(`She's yours — the ${tier.name} is fitted out and ready. Sail on.`);
+    this.ui.refresh(this.view());
+  }
+
   // ---- persistence ("save at the docks") ----
   save(): void {
     try {
@@ -213,6 +244,15 @@ export class PortController {
         affordable: cost !== null && e.canAfford(cost),
       };
     });
+    const st = this.getShipState?.();
+    const ships = st
+      ? SHIP_TIERS.map((t) => {
+          const verdict = canBuy(t, { gold: e.state.doubloons, unlocked: st.unlocked, current: st.current });
+          const state: "owned" | "locked" | "buy" =
+            t.id === st.current ? "owned" : !st.unlocked.includes(t.id) ? "locked" : "buy";
+          return { id: t.id, name: t.name, price: t.price, state, affordable: verdict.ok };
+        })
+      : [];
     return {
       portName: this.portName,
       doubloons: e.state.doubloons,
@@ -222,6 +262,7 @@ export class PortController {
       cargoCap: e.state.cargoCapacity,
       repairCost: repairQuote(this.shipDamage01()),
       upgrades,
+      ships,
     };
   }
 

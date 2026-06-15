@@ -7,7 +7,9 @@ import { createOceanField } from "./render/oceanField";
 import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
 import { createSky } from "./render/sky";
-import { buildBrig, buildSloop } from "./sim/shipwright";
+import { buildCutter, buildSloop, type ShipBuild } from "./sim/shipwright";
+import { tierById } from "./game/shipyard";
+import { pickEnemyTier } from "./sim/fleetSpawn";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
 import { Ship } from "./game/ship";
@@ -144,9 +146,11 @@ async function main() {
   // the player's brig splashes down and settles (round 6: "a realistically
   // sized sixteen-hundreds-era fighting vessel"); `sloop` names the player
   // ship throughout for history's sake
-  const sloopBuild = buildBrig();
-  const sloopVisual = new ShipVisual(sloopBuild);
-  const sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
+  // the player starts in the CUTTER — the cheap starter; bigger tiers are bought at
+  // the shipyard. `sloop`/`sloopVisual` stay mutable so a hull swap can reassign them.
+  const sloopBuild = buildCutter();
+  let sloopVisual = new ShipVisual(sloopBuild);
+  let sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
   // the on-foot captain (deck-walk / kick / first-third person). He spends most of
   // his time at the wheel; the old boarding system (grapple/crew/chest) is gone.
@@ -197,7 +201,7 @@ async function main() {
     tex.needsUpdate = true;
     return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ };
   };
-  const sloopProfile = makeProfileTex(sloop.build.grid);
+  let sloopProfile = makeProfileTex(sloop.build.grid);
   ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
 
   // the hostile fleet is set up below (it needs effects/cannons/debris);
@@ -247,14 +251,17 @@ async function main() {
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
 
   // ---- the hostile fleet (game/fleet.ts) ----
-  // every enemy is a buildSloop hull → they SHARE one profile texture for the premium
-  // voxel sea-cut; bind it to ocean slot 1 once. Only the live pose changes as the
-  // nearest (premium) enemy swaps.
+  // ocean slot 1 (the premium voxel sea-cut) is bound once to a SLOOP profile; mixed
+  // enemy tiers reuse it as an approximation (the cut is a visual nicety, not physics).
   const enemyProfile = makeProfileTex(buildSloop().grid);
   ocean.setHullProfile(1, enemyProfile.tex, enemyProfile.sizeX, enemyProfile.sizeZ);
+  // which tier each live enemy is (for unlock-on-defeat). WeakMap so culled ships GC.
+  const enemyTier = new WeakMap<Ship, ShipTierId>();
 
   const spawnEnemy = (): EnemyUnit => {
-    const build = buildSloop();
+    // notoriety- and player-tier-scaled tier pick: small prey early, bigger hulls later.
+    const tierId = pickEnemyTier(economy.state.notoriety, currentTier, Math.random);
+    const build = tierById(tierId).build();
     const visual = new ShipVisual(build);
     // fan upwind around the player so multiple hulls don't stack (the old single
     // enemy spawned dead upwind at 85 m, bow turned toward you — generalized here).
@@ -275,6 +282,7 @@ async function main() {
       visual.chipRudder(hp / 3);
       gs.msg.post(hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!");
     };
+    enemyTier.set(ship, tierId);
     const captain = new AICaptain(ship, scene, effects);
     return { ship, captain };
   };
@@ -283,9 +291,7 @@ async function main() {
   let premiumSlot1: Ship | null = null; // which enemy holds premium ocean slot 1 (trail reset on swap)
   const salvaged = new WeakSet<Ship>(); // enemies that have paid salvage once
   let primaryEnemy: Ship | null = null; // nearest living enemy, for the HUD marker
-
-  // seed one enemy so the world starts populated (default count 1).
-  fleet.reconcile();
+  // (the fleet is seeded AFTER the economy + currentTier exist — the spawner reads them.)
 
   // ---- plunder economy (framework): wallet/cargo/upgrades + dock-triggered port + save ----
   // The wallet of record is gs.wallet (the HUD reads it); the port screen is a JS overlay.
@@ -296,6 +302,7 @@ async function main() {
     onSell: () => port.sell(),
     onRepair: () => port.repair(),
     onBuy: (id) => port.buy(id),
+    onBuyShip: (id) => port.buyShip(id),
     onClose: () => port.closePort(),
   });
   const port = new PortController({
@@ -316,6 +323,12 @@ async function main() {
       saveCurrent(); // making port banks your progress
     },
     onLeave: () => gs.leavePort(),
+    // sandbox unlocks everything so the whole ladder is buyable for free play
+    getShipState: () => ({
+      unlocked: gs.isSandbox() ? (["cutter", "sloop", "brig", "frigate"] as ShipTierId[]) : unlockedClasses,
+      current: currentTier,
+    }),
+    onSwapShip: (id) => swapPlayerShip(id),
   });
 
   // ---- game-shell save/restore + the start / pause menu ----
@@ -327,10 +340,13 @@ async function main() {
 
   const applySave = (s: SaveState) => {
     economy.state = s.economy;
-    currentTier = s.shipTier;
     unlockedClasses = s.unlockedClasses.slice();
     settings = { ...s.settings };
-    port.syncAfterLoad(); // re-apply owned upgrades to the ship + mirror gold to gs.wallet
+    if (s.shipTier !== currentTier) {
+      swapPlayerShip(s.shipTier); // rebuild the saved hull (also sets currentTier + re-applies upgrades)
+    } else {
+      port.syncAfterLoad(); // same hull → just re-apply owned upgrades + mirror gold
+    }
   };
   const saveCurrent = () => {
     saves.save(gs.mode, {
@@ -373,6 +389,62 @@ async function main() {
   // boot to the title screen — the world is built but frozen behind it (phase = menu).
   menu.showStart(saves.hasSave("career"));
 
+  // ---- hull swap (shipyard purchase / save restore / respawn) ----
+  // Rebuild the player ship as a fresh hull, keeping world position/heading, and
+  // re-point every system that holds a player-ship reference. (function decls so the
+  // port/menu closures above can call them; only ever invoked at runtime.)
+  function swapPlayerShip(tierId: ShipTierId): void {
+    currentTier = tierId;
+    rebuildPlayerShip(tierById(tierId).build());
+    port.syncAfterLoad(); // account-wide upgrades land on the new hull
+  }
+  function rebuildPlayerShip(build: ShipBuild): void {
+    const at = sloop.body.translation();
+    const rot = sloop.body.rotation();
+    world.removeShip(sloop); // scene + geometry + rigid-body cleanup
+    const visual = new ShipVisual(build);
+    const fresh = new Ship(physics, build, visual, { x: at.x, y: Math.max(at.y, 0.5), z: at.z });
+    fresh.body.setRotation(rot, true);
+    fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
+    fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
+    fresh.onRudderHit = (hp) => {
+      visual.chipRudder(hp / 3);
+      gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
+    };
+    world.addShip(fresh);
+    sloop = fresh;
+    sloopVisual = visual;
+    port.setShip(fresh);
+    fleet.setTarget(fresh);
+    character.setShip(fresh);
+    rebindPlayerRenderHooks();
+  }
+  function rebindPlayerRenderHooks(): void {
+    sloopProfile = makeProfileTex(sloop.build.grid);
+    ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
+    ocean.setFootprint(sloop.build.lengthM / 2 + 1.2, sloop.build.beamM / 2 + 1.0);
+    spans[0] = hullSpan(sloop);
+    _dynShips[0].profileTex = sloopProfile.tex;
+    _dynShips[0].sizeX = sloopProfile.sizeX;
+    _dynShips[0].sizeZ = sloopProfile.sizeZ;
+  }
+  // Respawn a fresh hull of the current tier in clear water just seaward of the home
+  // dock, and re-seat the captain at the wheel. (Used by the sink penalty.)
+  function respawnPlayerAtPort(): void {
+    rebuildPlayerShip(tierById(currentTier).build());
+    const tr = sloop.body.translation();
+    const dock = islands.nearestDock(tr.x, tr.z);
+    if (dock) {
+      sloop.body.setTranslation({ x: dock.x + 54, y: 0.6, z: dock.z }, true);
+      sloop.body.setRotation({ x: 0, y: 1, z: 0, w: 0 }, true); // bow toward the town
+    }
+    sloop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    sloop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    port.syncAfterLoad();
+    character.reseat();
+    atWheel = true; // back at the helm
+  }
+
   // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
   // equivalents are wired per-spawn in the fleet factory above.
   sloop.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
@@ -406,6 +478,7 @@ async function main() {
   // — yours or the prize — no longer freezes the game or demands a reload; the voyage
   // just continues. Only the non-terminal man-overboard + enemy-salvage states remain.
   let manOverboard = false;
+  let respawning = false; // guards the one-shot sink → respawn handoff
   let plugChannel = 0; // seconds remaining on the current plank repair
 
   const isSunk = (s: Ship) =>
@@ -545,14 +618,34 @@ async function main() {
     debris.update(dt, t, waves);
     charSpike?.update(dt, controls.cameraYaw());
 
-    // r17: NO end-game. The prize sinking just yields salvage and the run continues; your
-    // own ship sinking is survivable too (swim clear, board the enemy, or respawn) — it is
-    // never a banner or a freeze. The game only ends when the player reloads.
+    // enemy sunk → plunder + unlock that class for the shipyard (proving your guns
+    // against a tier is what lets you buy one).
     for (const e of fleet.enemies) {
       if (isSunk(e) && !salvaged.has(e)) {
         salvaged.add(e);
         port.plunder(e); // loot → economy → mirrors gs.wallet + toast
+        const tid = enemyTier.get(e);
+        if (tid && !unlockedClasses.includes(tid)) {
+          unlockedClasses.push(tid);
+          gs.msg.post(`You've bested a ${tierById(tid).name} — the shipyard will sell you one now.`);
+        }
       }
+    }
+
+    // player sunk → respawn. Career: lose the cargo + a quarter of the gold; the ship
+    // tier, upgrades, unlocks and banked notoriety survive. Sandbox: a free fresh hull.
+    if (isSunk(sloop) && !respawning) {
+      respawning = true;
+      if (gs.mode === "career") {
+        economy.state.cargo = {};
+        economy.state.doubloons = Math.floor(economy.state.doubloons * 0.75);
+        gs.msg.post("YOUR SHIP IS LOST — you wash ashore at port; the hold and a quarter of your gold are gone.");
+      } else {
+        gs.msg.post("scuttled — a fresh hull awaits.");
+      }
+      respawnPlayerAtPort();
+      saveCurrent();
+      respawning = false;
     }
   };
 
@@ -688,7 +781,13 @@ async function main() {
 
   // dev console handle (also used by Playwright-driven verification)
   (window as unknown as Record<string, unknown>).DEBUG = {
-    sloop,
+    // getter: the player ship is reassigned on a hull swap, so expose it live
+    get sloop() {
+      return sloop;
+    },
+    get currentTier() {
+      return currentTier;
+    },
     fleet,
     world,
     cannons,
