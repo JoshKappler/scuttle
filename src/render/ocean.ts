@@ -59,10 +59,10 @@ export interface Ocean {
     keelWorldY: number,
     deckWorldY: number,
   ): void;
-  /** P4: bind a hull's per-column keel/deck profile texture (built once from the
-   *  voxel grid) and its local span, per slot (0 = player, 1 = enemy). Activates
-   *  that hull's voxel-accurate cut. */
-  setHullProfile(slot: number, tex: THREE.Texture, sizeX: number, sizeZ: number): void;
+  /** P4: bind a hull's per-column keel/deck profile (built once from the voxel grid via
+   *  buildHullProfile) and its local span into the per-slot atlas band, activating that slot's
+   *  voxel-accurate cut. `data` is nx*nz*2 floats [keelYLocal, deckYLocal]; works for ANY slot. */
+  setHullProfile(slot: number, data: Float32Array, nx: number, nz: number, sizeX: number, sizeZ: number): void;
   /** P4: feed a hull's live world→local rotation (inverse of the body quaternion)
    *  and world translation each frame, per slot, so its cut tracks heave/pitch/roll. */
   updateHullPose(slot: number, invRot: THREE.Matrix3, trans: THREE.Vector3): void;
@@ -379,18 +379,19 @@ uniform vec4 uShipB[MAXVIS]; // speed, halfL, halfB, 0
 uniform vec2 uShipC[MAXVIS]; // keel world-Y, deck-top world-Y (hull vertical span)
 uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 
-// P4 voxel-accurate, attitude-aware in-hull cut — now PER SHIP (slot 0 = player,
-// slot 1 = enemy). Each live slot poses the sea fragment into THAT hull's LOCAL
-// frame and tests a per-column keel/deck height-field — so BOTH hulls cut the sea
-// by their true voxel plan AND heave/pitch/roll, and the enemy no longer falls back
-// to the flat analytic ellipse. Two named samplers (not a sampler array) keep this
-// valid under GLSL ES 1.00, where a sampler array can't take a dynamic index.
+// P4 voxel-accurate, attitude-aware in-hull cut — for EVERY ship (player + all enemies; they are
+// the same class of object, so they cut the sea the same way). Each live slot poses the sea fragment
+// into THAT hull's LOCAL frame and tests a per-column keel/deck height-field — so every hull cuts
+// the sea by its true voxel plan AND heave/pitch/roll, and no ship falls back to the flat analytic
+// ellipse. The per-ship keel/deck textures are packed into ONE atlas banded vertically by slot (band
+// s occupies uv.y∈[s,s+1]/MAXVIS); a single sampler2D read at a COMPUTED coordinate sidesteps GLSL
+// ES 1.00's no-dynamic-sampler-index rule (the non-sampler arrays below are loop-indexed fine, as
+// uShipA/uShipB already are).
 uniform float uProfileOn[MAXVIS];    // 1 per slot when that hull's profile cut is live
-uniform sampler2D uProfileTex0; // slot 0 (player): RG = keelYLocal, deckYLocal (m)
-uniform sampler2D uProfileTex1; // slot 1 (enemy):  RG = keelYLocal, deckYLocal (m)
-uniform mat3 uProfileInvRot[2]; // world→local rotation per slot (inverse body quat)
-uniform vec3 uProfileTrans[2];  // body world translation per slot (= local origin)
-uniform vec2 uProfileSize[2];   // local span (m) per slot (uv = localXZ / size)
+uniform sampler2D uProfileAtlas;     // RG = keelYLocal, deckYLocal (m); band s = slot s's hull profile
+uniform mat3 uProfileInvRot[MAXVIS]; // world→local rotation per slot (inverse body quat)
+uniform vec3 uProfileTrans[MAXVIS];  // body world translation per slot (= local origin)
+uniform vec2 uProfileSize[MAXVIS];   // local span (m) per slot (uv = localXZ / size)
 
 // shore shoaling field (same texture as the vertex stage) — drives the surf-foam line.
 uniform sampler2D uLandTex;
@@ -438,24 +439,17 @@ void main() {
     if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) discard;
   }
 
-  // P4 voxel-accurate cut — BOTH hulls. Pose this fragment into each live hull's
-  // LOCAL frame and discard only sea between the per-column keel and deck (+2 m
-  // crest clearance vs green-water). The full inverse transform folds in heave/
-  // pitch/roll, so no void reveals as either ship bobs, and the per-column profile
-  // follows the true voxel plan (the pointed bow) instead of a fat ellipse.
-  if (uProfileOn[0] > 0.5) {
-    vec3 lp = uProfileInvRot[0] * (vWorldPos - uProfileTrans[0]);
-    vec2 puv = vec2(lp.x / uProfileSize[0].x, lp.z / uProfileSize[0].y);
+  // P4 voxel-accurate cut — EVERY hull. Pose this fragment into each live hull's LOCAL frame and
+  // discard only sea between the per-column keel and deck (+2 m crest clearance vs green-water). The
+  // full inverse transform folds in heave/pitch/roll, so no void reveals as a ship bobs, and the
+  // per-column profile follows the true voxel plan (the pointed bow) instead of a fat ellipse. Every
+  // live slot reads its own band of the profile atlas, so all ships cut identically.
+  for (int s = 0; s < MAXVIS; s++) {
+    if (uProfileOn[s] < 0.5) continue;
+    vec3 lp = uProfileInvRot[s] * (vWorldPos - uProfileTrans[s]);
+    vec2 puv = vec2(lp.x / uProfileSize[s].x, lp.z / uProfileSize[s].y);
     if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
-      vec2 kd = texture2D(uProfileTex0, puv).rg; // keelYLocal, deckYLocal (m)
-      if (kd.y > kd.x && lp.y > kd.x && lp.y < kd.y + 2.0) discard;
-    }
-  }
-  if (uProfileOn[1] > 0.5) {
-    vec3 lp = uProfileInvRot[1] * (vWorldPos - uProfileTrans[1]);
-    vec2 puv = vec2(lp.x / uProfileSize[1].x, lp.z / uProfileSize[1].y);
-    if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
-      vec2 kd = texture2D(uProfileTex1, puv).rg; // keelYLocal, deckYLocal (m)
+      vec2 kd = texture2D(uProfileAtlas, vec2(puv.x, (puv.y + float(s)) / float(MAXVIS))).rg; // keel, deck (m)
       if (kd.y > kd.x && lp.y > kd.x && lp.y < kd.y + 2.0) discard;
     }
   }
@@ -592,13 +586,14 @@ void main() {
   // hugs the true hull plan (pointed bow and all) and only appears where the hull is genuinely
   // wet (keel at/under the local waterline). Distant non-profiled slots keep the analytic ellipse.
   float wlFoam = 0.0;
-  // profiled slots (voxel-accurate): march from the fragment toward the hull centre in the
-  // hull's local frame; the world distance to the first WET-SOLID column is the distance to the
-  // skin. (Constant sampler/array indices only — GLSL ES 1.00 forbids dynamic sampler indexing.)
-  for (int ps = 0; ps < 2; ps++) {
+  // profiled slots (voxel-accurate, EVERY ship): march from the fragment toward the hull centre in
+  // the hull's local frame; the world distance to the first WET-SOLID column is the distance to the
+  // skin. Each slot reads its own band of the profile atlas (a computed coord, not a dynamic sampler
+  // index), so every ship's foam ring hugs its true plan.
+  for (int ps = 0; ps < MAXVIS; ps++) {
     if (uProfileOn[ps] < 0.5) continue;
-    vec3 lp = (ps == 0 ? uProfileInvRot[0] : uProfileInvRot[1]) * (vWorldPos - (ps == 0 ? uProfileTrans[0] : uProfileTrans[1]));
-    vec2 sz = (ps == 0 ? uProfileSize[0] : uProfileSize[1]);
+    vec3 lp = uProfileInvRot[ps] * (vWorldPos - uProfileTrans[ps]);
+    vec2 sz = uProfileSize[ps];
     vec2 fragM = lp.xz;        // fragment in the hull's local metres
     vec2 ctrM = sz * 0.5;      // hull centre in local metres
     if (fragM.x < -2.0 || fragM.x > sz.x + 2.0 || fragM.y < -2.0 || fragM.y > sz.y + 2.0) continue; // far away
@@ -612,7 +607,7 @@ void main() {
       if (d > dlen) break;              // never march past the hull centre
       vec2 sUv = (fragM + dir * d) / sz;
       if (sUv.x < 0.0 || sUv.x > 1.0 || sUv.y < 0.0 || sUv.y > 1.0) continue;
-      vec2 kd = ps == 0 ? texture2D(uProfileTex0, sUv).rg : texture2D(uProfileTex1, sUv).rg;
+      vec2 kd = texture2D(uProfileAtlas, vec2(sUv.x, (sUv.y + float(ps)) / float(MAXVIS))).rg;
       if (kd.y > kd.x && lp.y > kd.x - 0.4 && lp.y < kd.y + 0.6) { // a wet hull column at this height
         wlFoam = max(wlFoam, exp(-pow(d / 0.85, 2.0)));
         break; // nearest skin along the ray
@@ -721,6 +716,35 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
   const NCASC = Math.max(1, layers.length);
   const dummyTex: THREE.Texture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   dummyTex.needsUpdate = true;
+
+  // Per-ship hull-profile ATLAS for the in-hull sea-cut: one float texture banded vertically by slot
+  // (MAXVIS bands of PROF_W×PROF_H). Each ship's per-column keel/deck field (buildHullProfile) is
+  // resampled into its band; the fragment shader reads band s at uv.y∈[s,s+1]/MAXVIS. RG = keel, deck
+  // (m). Nearest filtering keeps the cut edges voxel-crisp. One sampler for all ships sidesteps GLSL
+  // ES 1.00's no-dynamic-sampler-index limit that used to cap the cut at two named samplers.
+  const PROF_W = 256, PROF_H = 64;
+  const profileAtlasData = new Float32Array(PROF_W * PROF_H * MAXVIS * 4);
+  const profileAtlas = new THREE.DataTexture(profileAtlasData, PROF_W, PROF_H * MAXVIS, THREE.RGBAFormat, THREE.FloatType);
+  profileAtlas.minFilter = profileAtlas.magFilter = THREE.NearestFilter;
+  profileAtlas.wrapS = profileAtlas.wrapT = THREE.ClampToEdgeWrapping;
+  profileAtlas.flipY = false;
+  profileAtlas.needsUpdate = true;
+  // Resample a hull's nx×nz keel/deck field (src idx (z*nx+x)*2) into band `slot` (nearest, fills the cell).
+  const stampProfile = (slot: number, data: Float32Array, nx: number, nz: number): void => {
+    const band = slot * PROF_H;
+    for (let ty = 0; ty < PROF_H; ty++) {
+      const sz = Math.min(nz - 1, Math.floor((ty / PROF_H) * nz));
+      for (let tx = 0; tx < PROF_W; tx++) {
+        const sx = Math.min(nx - 1, Math.floor((tx / PROF_W) * nx));
+        const si = (sz * nx + sx) * 2;
+        const di = ((band + ty) * PROF_W + tx) * 4;
+        profileAtlasData[di] = data[si];         // keelYLocal → R
+        profileAtlasData[di + 1] = data[si + 1]; // deckYLocal → G
+        profileAtlasData[di + 3] = 1;
+      }
+    }
+    profileAtlas.needsUpdate = true;
+  };
   // placeholder cube so the samplerCube is always bound before setSkyEnv() runs
   // (uHasEnv gates whether it is actually sampled).
   const dummyCube = new THREE.CubeTexture(
@@ -800,11 +824,10 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uShipC: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector2(0, -1)) },
       uTrail: { value: Array.from({ length: 64 }, () => new THREE.Vector4()) },
       uProfileOn: { value: Array.from({ length: MAXVIS }, () => 0) },
-      uProfileTex0: { value: dummyTex },
-      uProfileTex1: { value: dummyTex },
-      uProfileInvRot: { value: [new THREE.Matrix3(), new THREE.Matrix3()] },
-      uProfileTrans: { value: [new THREE.Vector3(), new THREE.Vector3()] },
-      uProfileSize: { value: [new THREE.Vector2(1, 1), new THREE.Vector2(1, 1)] },
+      uProfileAtlas: { value: profileAtlas },
+      uProfileInvRot: { value: Array.from({ length: MAXVIS }, () => new THREE.Matrix3()) },
+      uProfileTrans: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector3()) },
+      uProfileSize: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector2(1, 1)) },
       // Cascade field (round 14): displacement is summed in the vertex stage, the
       // normal + foam in the fragment stage, one set of textures per band. uFftOn
       // gates every use so the null fallback (dummy textures) renders the
@@ -879,12 +902,12 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
         }
       }
     },
-    setHullProfile(slot, tex, sizeX, sizeZ) {
-      if (slot === 0) mat.uniforms.uProfileTex0.value = tex;
-      else mat.uniforms.uProfileTex1.value = tex;
+    setHullProfile(slot, data, nx, nz, sizeX, sizeZ) {
+      stampProfile(slot, data, nx, nz);
       (mat.uniforms.uProfileSize.value as THREE.Vector2[])[slot].set(sizeX, sizeZ);
       (mat.uniforms.uProfileOn.value as number[])[slot] = 1;
     },
+
     clearSlot(slot) {
       (mat.uniforms.uShipB.value as THREE.Vector4[])[slot].set(0, 0, 0, 0); // halfL=0 → collar/bow/wash skip
       (mat.uniforms.uShipC.value as THREE.Vector2[])[slot].set(0, -1); // deck<=keel → ellipse cut skips

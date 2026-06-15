@@ -239,10 +239,15 @@ async function main() {
     tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.flipY = false; // texel (x,z) ↔ data idx z*nx+x
     tex.needsUpdate = true;
-    return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ };
+    return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ, data: prof.data, nx: prof.nx, nz: prof.nz };
   };
   let sloopProfile = makeProfileTex(sloop.build.grid);
-  ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
+  ocean.setHullProfile(0, sloopProfile.data, sloopProfile.nx, sloopProfile.nz, sloopProfile.sizeX, sloopProfile.sizeZ);
+  // Per-ship voxel sea-cut bookkeeping: which ship currently occupies each ocean slot (so a slot's
+  // atlas band is re-stamped only when its ship changes) + a per-hull cache of the built profile.
+  const slotShip: (Ship | null)[] = new Array(MAXVIS).fill(null);
+  slotShip[0] = sloop;
+  const profileCache = new WeakMap<Ship, ReturnType<typeof buildHullProfile>>();
 
   // the hostile fleet is set up below (it needs effects/cannons/debris);
   // ocean slot 1's shared enemy profile is bound there too.
@@ -299,10 +304,10 @@ async function main() {
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
 
   // ---- the hostile fleet (game/fleet.ts) ----
-  // ocean slot 1 (the premium voxel sea-cut) is bound once to a SLOOP profile; mixed
-  // enemy tiers reuse it as an approximation (the cut is a visual nicety, not physics).
+  // Each enemy now gets its OWN voxel sea-cut profile, stamped into its ocean slot's atlas band when
+  // it is assigned (see feedProfiled) — no more shared-sloop approximation. This sloop profile is
+  // kept only for the dynamic-wave field's enemy slot below.
   const enemyProfile = makeProfileTex(buildSloop().grid);
-  ocean.setHullProfile(1, enemyProfile.tex, enemyProfile.sizeX, enemyProfile.sizeZ);
   // which tier each live enemy is (for unlock-on-defeat). WeakMap so culled ships GC.
   const enemyTier = new WeakMap<Ship, ShipTierId>();
 
@@ -494,9 +499,9 @@ async function main() {
   }
   function rebindPlayerRenderHooks(): void {
     sloopProfile = makeProfileTex(sloop.build.grid);
-    ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
+    ocean.setHullProfile(0, sloopProfile.data, sloopProfile.nx, sloopProfile.nz, sloopProfile.sizeX, sloopProfile.sizeZ);
     ocean.setFootprint(sloop.build.lengthM / 2 + 1.2, sloop.build.beamM / 2 + 1.0);
-    spans[0] = hullSpan(sloop);
+    slotShip[0] = sloop; // the swapped-in hull now occupies slot 0 (profile re-stamped just above)
     _dynShips[0].profileTex = sloopProfile.tex;
     _dynShips[0].sizeX = sloopProfile.sizeX;
     _dynShips[0].sizeZ = sloopProfile.sizeZ;
@@ -1216,7 +1221,6 @@ async function main() {
     while (lo < ny && !g.isSolid(cx, lo, cz)) lo++;
     return { keel: lo * VOXEL_SIZE, deck: (ship.build.deckY + 1) * VOXEL_SIZE };
   };
-  const spans = [hullSpan(sloop), hullSpan(fleet.enemies[0] ?? sloop)]; // [player, any-enemy] (all enemies are buildSloop)
   // P4 pose temporaries (avoid per-frame allocation)
   const _poseQuat = new THREE.Quaternion();
   const _poseM4 = new THREE.Matrix4();
@@ -1232,7 +1236,7 @@ async function main() {
     const fp = ship.build.footprint;
     ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
     const tr = ship.body.translation();
-    const span = spans[slot];
+    const span = hullSpan(ship); // each ship's own keel/deck (was a shared 2-entry table)
     ocean.updateShipWake(
       slot,
       wakeV.x,
@@ -1255,32 +1259,21 @@ async function main() {
     ocean.updateHullPose(slot, _poseInvRot, _poseTrans);
   };
 
-  // cheap-tier feed: collar/bow/flank-wash + analytic-ellipse cut (via uShipC), no
-  // voxel pose, no stern ribbon (ocean.updateShipWake guards the trail to slots < 2).
-  const feedCheap = (slot: number, ship: Ship) => {
-    const v = ship.body.linvel();
-    const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
-    const rot = ship.body.rotation();
-    wakeF.set(1, 0, 0).applyQuaternion(new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w));
-    wakeF.y = 0;
-    wakeF.normalize();
-    const fp = ship.build.footprint;
-    ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
-    const tr = ship.body.translation();
-    const span = spans[1]; // every enemy is a buildSloop
-    ocean.updateShipWake(
-      slot,
-      wakeV.x,
-      wakeV.z,
-      wakeF.x,
-      wakeF.z,
-      speed,
-      ship.build.lengthM / 2,
-      ship.build.beamM / 2,
-      world.simTime,
-      tr.y + span.keel,
-      tr.y + span.deck,
-    );
+  // Every visible enemy now gets the SAME voxel-accurate cut as the player (same class of object):
+  // stamp its own hull profile into its atlas band on assignment, then feed pose + wake. The profile
+  // build is O(cells), so it's cached per ship and re-stamped only when a slot's occupant changes.
+  const shipProfile = (ship: Ship) => {
+    let p = profileCache.get(ship);
+    if (!p) { p = buildHullProfile(ship.build.grid); profileCache.set(ship, p); }
+    return p;
+  };
+  const feedProfiled = (slot: number, ship: Ship) => {
+    if (slotShip[slot] !== ship) {
+      const p = shipProfile(ship);
+      ocean.setHullProfile(slot, p.data, p.nx, p.nz, p.sizeX, p.sizeZ);
+      slotShip[slot] = ship;
+    }
+    feedWake(slot, ship); // wake ribbon (slots <2) + live voxel pose (updateHullPose)
   };
 
   // P5: assemble both ships' pose + plan for the dynamic-wave INJECTION pass. Each
@@ -1619,6 +1612,33 @@ async function main() {
     );
   };
 
+  // ---- per-system CPU timing HUD (top-left, beneath the fps line) ----------------------------
+  // Replaces guessing about WHERE the frame goes with hard numbers on the real machine: total sim
+  // time + render time + the substep count, then the per-system split. Pure diagnostics; toggles
+  // with the fps HUD (TUN.gfx.auto.hud). DEBUG.world.timing carries the same numbers for the console.
+  const timingHud = document.createElement("div");
+  Object.assign(timingHud.style, {
+    position: "fixed", top: "46px", left: "8px", zIndex: "10005",
+    font: '11px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace',
+    color: "#bcd6e8", background: "rgba(6,10,14,0.5)", padding: "3px 7px",
+    borderRadius: "4px", border: "1px solid rgba(150,180,200,0.18)",
+    pointerEvents: "none", whiteSpace: "pre", textShadow: "0 1px 2px #000", display: "none",
+  } as Partial<CSSStyleDeclaration>);
+  document.body.appendChild(timingHud);
+  let renderMs = 0;
+  const updateTimingHud = (): void => {
+    if (!TUN.gfx.auto.hud) {
+      if (timingHud.style.display !== "none") timingHud.style.display = "none";
+      return;
+    }
+    if (timingHud.style.display === "none") timingHud.style.display = "block";
+    const t = world.timing;
+    timingHud.textContent =
+      `sim ${t.total.toFixed(1)}ms · render ${renderMs.toFixed(1)}ms · ×${t.substeps} substeps\n` +
+      `buoy ${t.buoy.toFixed(1)} · rapier ${t.rapier.toFixed(1)} · mesh ${t.visual.toFixed(1)}\n` +
+      `flood ${t.flood.toFixed(1)} · contact ${t.contact.toFixed(1)} · ai/sail ${t.fixed.toFixed(1)} · flush ${t.flush.toFixed(1)}`;
+  };
+
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
     perf.tick(dt); // measure real frame time → HUD + adaptive-quality governor
@@ -1633,23 +1653,24 @@ async function main() {
       ocean.resetTrail(1); // premium enemy swapped — don't lace the ribbon across the jump
       premiumSlot1 = premium;
     }
-    feedWake(0, sloop); // slot 0: player (voxel cut + ribbon + pose)
+    feedProfiled(0, sloop); // slot 0: player (voxel cut + ribbon + pose)
     checkBowSpray(0, sloop, dt);
     if (premium) {
-      feedWake(1, premium); // slot 1: nearest enemy (premium)
+      feedProfiled(1, premium); // slot 1: nearest enemy (premium — voxel cut + stern ribbon)
       checkBowSpray(1, premium, dt);
     } else {
       ocean.clearSlot(1);
+      slotShip[1] = null;
     }
-    // cheap slots 2..: the remaining visible enemies (collar/bow/wash/ellipse cut)
+    // slots 2..: the remaining visible enemies — now the SAME per-ship voxel cut, not the ellipse.
     let cheapSlot = 2;
     for (const e of fleet.enemies) {
       if (e === premium) continue;
       if (cheapSlot >= MAXVIS) break;
-      feedCheap(cheapSlot, e);
+      feedProfiled(cheapSlot, e);
       cheapSlot++;
     }
-    for (; cheapSlot < MAXVIS; cheapSlot++) ocean.clearSlot(cheapSlot);
+    for (; cheapSlot < MAXVIS; cheapSlot++) { ocean.clearSlot(cheapSlot); slotShip[cheapSlot] = null; }
     effects.update(dt, world.simTime);
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")
@@ -1814,6 +1835,7 @@ async function main() {
     post.setSun(_sunWorld.x * 0.5 + 0.5, _sunWorld.y * 0.5 + 0.5, sunOnScreen);
 
     seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group), ...islandHulls]);
+    const _r0 = performance.now();
     if (TUN.gfx.post.enabled) {
       // the composer's ScenePass runs the same clear → seam-write → scene-render
       // stencil dance, then bloom (+ god rays/grade in later tasks), then tonemaps
@@ -1831,9 +1853,11 @@ async function main() {
       renderer.render(scene, camera); // full scene incl. ocean, stencil-tested
       renderer.autoClear = true;
     }
+    renderMs = performance.now() - _r0;
 
     updateHud(dt, tr);
     updateDevReadout();
+    updateTimingHud();
   });
 }
 
