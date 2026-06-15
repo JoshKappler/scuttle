@@ -19,7 +19,15 @@ import { FleetManager, type EnemyUnit } from "./game/fleet";
 import { MAXVIS } from "./core/constants";
 import { GameState } from "./game/gameState";
 import { PlayerCharacter } from "./game/playerCharacter";
-import { SaveManager } from "./game/saveState";
+import {
+  SaveManager,
+  defaultSave,
+  defaultSettings,
+  SAVE_VERSION,
+  type SaveState,
+  type Settings,
+  type ShipTierId,
+} from "./game/saveState";
 import { Cannons } from "./game/cannons";
 import { muzzleWorld } from "./game/gunnery";
 import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
@@ -33,6 +41,7 @@ import { createDevPanel } from "./render/devPanel";
 import { Economy } from "./sim/economy";
 import { createPortScreen } from "./render/portScreen";
 import { PortController } from "./game/port";
+import { createMenuScreen } from "./render/menuScreen";
 
 async function main() {
   // THROWAWAY (plan Task 0): ?spike=1 runs the voxel-collider perf gate and bails.
@@ -300,8 +309,67 @@ async function main() {
       return { x: t.x, z: t.z };
     },
     dock: islands, // IslandField.nearestDock → port triggers at the real harbor pier
+    onEnter: () => {
+      gs.enterPort(); // freeze the world while the port screen is up
+      saveCurrent(); // making port banks your progress
+    },
+    onLeave: () => gs.leavePort(),
   });
-  port.load(); // restore the saved empire (doubloons/cargo/upgrades) and mirror to gs.wallet
+
+  // ---- game-shell save/restore + the start / pause menu ----
+  // What the save carries beyond the economy. Ship tiers land in a later phase;
+  // for now the tier/unlocks are tracked + persisted but the hull is unchanged.
+  let currentTier: ShipTierId = "cutter";
+  let unlockedClasses: ShipTierId[] = ["cutter"];
+  let settings: Settings = defaultSettings();
+
+  const applySave = (s: SaveState) => {
+    economy.state = s.economy;
+    currentTier = s.shipTier;
+    unlockedClasses = s.unlockedClasses.slice();
+    settings = { ...s.settings };
+    port.syncAfterLoad(); // re-apply owned upgrades to the ship + mirror gold to gs.wallet
+  };
+  const saveCurrent = () => {
+    saves.save(gs.mode, {
+      version: SAVE_VERSION,
+      mode: gs.mode,
+      economy: economy.state,
+      shipTier: currentTier,
+      unlockedClasses,
+      settings,
+    });
+  };
+
+  const menu = createMenuScreen({
+    onNewCareer: () => {
+      saves.wipe("career");
+      applySave(defaultSave("career"));
+      gs.startGame("career");
+      menu.hide();
+    },
+    onContinue: () => {
+      applySave(saves.load("career"));
+      gs.startGame("career");
+      menu.hide();
+    },
+    onSandbox: () => {
+      applySave(saves.load("sandbox"));
+      gs.startGame("sandbox");
+      menu.hide();
+    },
+    onResume: () => {
+      gs.resume();
+      menu.hide();
+    },
+    onQuitToMenu: () => {
+      saveCurrent();
+      gs.quitToMenu();
+      menu.showStart(saves.hasSave("career"));
+    },
+  });
+  // boot to the title screen — the world is built but frozen behind it (phase = menu).
+  menu.showStart(saves.hasSave("career"));
 
   // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
   // equivalents are wired per-spawn in the fleet factory above.
@@ -589,6 +657,17 @@ async function main() {
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
+    if (e.code === "Escape") {
+      // Esc pauses mid-voyage and resumes from the pause screen. Ignored at the
+      // title screen and while the port is open (close the port with its own button).
+      if (gs.phase === "playing") {
+        gs.pause();
+        menu.showPause();
+      } else if (gs.phase === "paused") {
+        gs.resume();
+        menu.hide();
+      }
+    }
     if (e.code === "KeyV" && character.player) {
       camMode = ((camMode + 1) % 3) as 0 | 1 | 2;
       firstPerson = camMode === 1;
@@ -1332,7 +1411,9 @@ async function main() {
 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
-    world.step(dt);
+    // the sim only advances while PLAYING — the menu, pause and port screens freeze
+    // the world (the render loop still draws, so overlays composite over a still frame).
+    if (gs.isSimRunning()) world.step(dt);
     // ---- per-frame fleet LOD ----
     fleet.rankLOD(camera.position);
     const premium = fleet.premiumEnemy;

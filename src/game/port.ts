@@ -44,6 +44,8 @@ export interface PortDeps {
   rand?: () => number; // loot RNG (defaults to a seeded source)
   portName?: string;
   saveKey?: string;
+  onEnter?: () => void; // called when the port opens (the game-shell freezes the world + saves)
+  onLeave?: () => void; // called when the port closes (the game-shell resumes the world)
 }
 
 const DOCK_RANGE = 22; // metres within which you may make port
@@ -66,6 +68,8 @@ export class PortController {
   private portName: string;
   private saveKey: string;
   private hintShown = false;
+  private onEnter?: () => void;
+  private onLeave?: () => void;
 
   constructor(d: PortDeps) {
     this.economy = d.economy;
@@ -79,6 +83,8 @@ export class PortController {
     this.rand = d.rand ?? (() => rng.next());
     this.portName = d.portName ?? "Hidden Cove";
     this.saveKey = d.saveKey ?? SAVE_KEY;
+    this.onEnter = d.onEnter;
+    this.onLeave = d.onLeave;
   }
 
   get isOpen(): boolean {
@@ -105,12 +111,12 @@ export class PortController {
   }
 
   openPort(): void {
-    this.save(); // making port banks your progress
+    this.onEnter?.(); // game-shell freezes the world + banks progress
     this.ui.open(this.view());
   }
 
   closePort(): void {
-    this.save();
+    this.onLeave?.(); // game-shell resumes the world
     this.ui.close();
   }
 
@@ -166,6 +172,14 @@ export class PortController {
     }
     this.economy.state = Economy.deserialize(raw).state;
     this.applyUpgrades(); // re-derive capacity & re-apply owned buffs to the fresh ship
+    this.mirrorGold();
+  }
+
+  /** Re-apply owned upgrades to the current ship and mirror gold to the wallet.
+   *  Used after the game-shell swaps in a freshly-loaded economy (or a new hull),
+   *  without re-reading storage (the SaveManager owns persistence now). */
+  syncAfterLoad(): void {
+    this.applyUpgrades();
     this.mirrorGold();
   }
 
