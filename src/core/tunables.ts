@@ -232,18 +232,21 @@ export const TUN = {
      *  sky/sun uniformly without touching the individual effects. Nested in its own
      *  flat object so the dev-panel slider's `obj` stays a Bag (the gfx root has
      *  sub-objects, which a Bag = Record<string, number|boolean> can't hold). */
-    tone: { exposure: 0.78 },
+    tone: { exposure: 0.76 },
     /** UnrealBloomPass — glows the sun disc, the sun-glint path and bright foam.
      *  Mild by design ("grounded realism with punch", not a bloom-fest). clamp caps
-     *  the HDR fed to bloom so the sun's astronomical luminance can't white-wash. */
-    bloom: { enabled: true, strength: 0.04, radius: 0.5, threshold: 1.7, clamp: 4 },
+     *  the HDR fed to bloom — and, because the ClampShader runs before BOTH bloom and
+     *  the OutputPass tonemap, it is the real CEILING on the sun disc itself (the three
+     *  Sky renders it white-hot otherwise). Round 3: dropped 4→2.4 so the disc tonemaps
+     *  to a soft warm-white, not a blinding star — the single biggest "subtle sun" lever. */
+    bloom: { enabled: true, strength: 0.03, radius: 0.5, threshold: 1.7, clamp: 2.4 },
     /** screen-space god rays (render/post.ts GodRayPass) anchored at the sun's
      *  projected position; occlusion is free (dark geometry blocks the shafts).
      *  threshold gates which pixels seed shafts (high = only the sun disc, not the
      *  whole bright sky → no white haze). samples = the per-pixel march length, the
      *  pass's dominant cost; read ONCE at Post construction, so a reload is needed
      *  to change it (lower = much faster). */
-    godrays: { enabled: true, strength: 0.15, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 24 },
+    godrays: { enabled: true, strength: 0.07, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 24 },
     /** final color grade (render/post.ts GradePass): contrast + saturation +
      *  a subtle vignette for the cinematic punch. */
     grade: { contrast: 1.06, saturation: 1.08, vignette: 0.22 },
