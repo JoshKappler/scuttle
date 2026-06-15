@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { planCrush, breakImpulse } from "../src/sim/crush";
+import { planCrush, breakImpulse, distributeClosingDrag, splitClosingImpulse } from "../src/sim/crush";
 import { STRENGTH_TO_JOULES } from "../src/sim/materials";
 
 const J = STRENGTH_TO_JOULES;
@@ -86,5 +86,70 @@ describe("breakImpulse", () => {
     const dvLight = breakImpulse(1000, vc, energy, CAP) / 1000;
     const dvHeavy = breakImpulse(8000, vc, energy, CAP) / 8000;
     expect(dvHeavy).toBeLessThan(dvLight); // a heavy hull barely slows -> plows through
+  });
+});
+
+describe("distributeClosingDrag", () => {
+  it("a stationary victim is NOT shoved — the whole drag slows the rammer", () => {
+    // A drives in at +4 m/s; B (the victim) is dead in the water. All of the closing reduction
+    // comes off A; B sheds nothing. This is the core fix: B never picks up the rammer's velocity.
+    const { dvA, dvB } = distributeClosingDrag(4, 0, 3);
+    expect(dvA).toBeCloseTo(3, 9);
+    expect(dvB).toBe(0);
+  });
+
+  it("a head-on (equal & opposite) closing splits the drag evenly", () => {
+    const { dvA, dvB } = distributeClosingDrag(5, -5, 4);
+    expect(dvA).toBeCloseTo(2, 9);
+    expect(dvB).toBeCloseTo(2, 9);
+  });
+
+  it("slows the one CATCHING UP from behind, not the one fleeing ahead", () => {
+    // both move in +d̂; B (sB more negative along d̂... here both negative) chases A. Concretely both
+    // drift in −d̂ but B faster, so B is the aggressor closing the gap → B sheds the drag, A (fleeing) none.
+    const { dvA, dvB } = distributeClosingDrag(-1, -3, 2);
+    expect(dvA).toBe(0);
+    expect(dvB).toBeCloseTo(2, 9);
+  });
+
+  it("the shed speeds always sum to the closing reduction when something is approaching", () => {
+    const { dvA, dvB } = distributeClosingDrag(3, -1, 5);
+    expect(dvA + dvB).toBeCloseTo(5, 9);
+    expect(dvA).toBeGreaterThan(dvB); // A drives in faster (3) than B (1) → A sheds more
+  });
+
+  it("does nothing when there is no closing reduction or nothing is driving in", () => {
+    expect(distributeClosingDrag(4, 0, 0)).toEqual({ dvA: 0, dvB: 0 });   // no energy removed
+    expect(distributeClosingDrag(4, 0, -2)).toEqual({ dvA: 0, dvB: 0 });  // negative guard
+    expect(distributeClosingDrag(-2, 2, 5)).toEqual({ dvA: 0, dvB: 0 });  // both separating
+  });
+});
+
+describe("splitClosingImpulse", () => {
+  // heavy A (mA) rams a stationary light B (mB); d̂ points A->B, so sA>0, sB=0.
+  const mA = 6, mB = 2, mu = (mA * mB) / (mA + mB), dvClose = 4;
+
+  it("transferFrac 0 = pure aggressor drag: the victim gets ZERO impulse", () => {
+    const { jA, jB } = splitClosingImpulse(mA, mB, mu, 3, 0, dvClose, 0);
+    expect(jB).toBe(0);                 // stationary victim not shoved at all (round-3 behaviour)
+    expect(jA).toBeCloseTo(mA * dvClose, 9); // all of the closing reduction comes off A
+  });
+
+  it("transferFrac 1 = pure equal-and-opposite: both get μ·dvClose (the old steal)", () => {
+    const { jA, jB } = splitClosingImpulse(mA, mB, mu, 3, 0, dvClose, 1);
+    expect(jA).toBeCloseTo(mu * dvClose, 9);
+    expect(jB).toBeCloseTo(mu * dvClose, 9);
+    // and that drives B to the common-velocity gain mA/(mA+mB)·dvClose
+    expect(jB / mB).toBeCloseTo((mA / (mA + mB)) * dvClose, 9);
+  });
+
+  it("a higher transferFrac always hands the struck hull more speed", () => {
+    const lo = splitClosingImpulse(mA, mB, mu, 3, 0, dvClose, 0.2);
+    const hi = splitClosingImpulse(mA, mB, mu, 3, 0, dvClose, 0.6);
+    expect(hi.jB).toBeGreaterThan(lo.jB);
+  });
+
+  it("is zero with no closing reduction", () => {
+    expect(splitClosingImpulse(mA, mB, mu, 3, 0, 0, 0.5)).toEqual({ jA: 0, jB: 0 });
   });
 });

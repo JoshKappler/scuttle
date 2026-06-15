@@ -205,10 +205,13 @@ async function main() {
     maxShips: 2,
   });
 
-  // stencil seam mask: each frame, paint both hull silhouettes into the
-  // stencil buffer before the ocean draws; the ocean's NotEqual stencil test
-  // then rejects those pixels (no sea on the deck, in the hold, or bow void).
-  const seam = new SeamMask([sloop.visual.group]); // hull list refreshed each frame from the fleet
+  // stencil seam mask: each frame, paint every hull AND island silhouette into
+  // the stencil buffer before the ocean draws; the ocean's NotEqual stencil test
+  // then rejects those pixels (no sea on the deck, in the hold, the bow void — and
+  // no wave-crests poking up through the shoreline: an island is a solid mass to
+  // the sea, exactly like a hull). Islands are static, so capture their groups once.
+  const islandHulls = islands.islands.map((i) => i.visual.group);
+  const seam = new SeamMask([sloop.visual.group, ...islandHulls]); // hull+island list refreshed each frame from the fleet
 
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
@@ -1305,8 +1308,11 @@ async function main() {
         { type: "slider", label: "de-pen (0..1)", obj: TUN.crush, key: "depen", min: 0, max: 1, step: 0.05 },
         // hard cap (m/s) on REST positional separation — the anti-fling safety net.
         { type: "slider", label: "de-pen cap m/s", obj: TUN.crush, key: "maxDepenSpeed", min: 0.5, max: 8, step: 0.5 },
-        // per-step cap (m/s) on the BREAK bite's closing-Δv (stability/smoothing backstop).
+        // per-step cap (m/s) on the BREAK bite's closing-Δv. ALSO the crash-DURATION knob: lower =
+        // the impact bleeds over more frames = a slower, heavier crash.
         { type: "slider", label: "bite Δv/step", obj: TUN.crush, key: "biteDvCap", min: 1, max: 12, step: 0.5 },
+        // how much of a hit transfers to the struck ship (0 = victim not shoved, 1 = old "steals all").
+        { type: "slider", label: "vel transfer", obj: TUN.crush, key: "transferFrac", min: 0, max: 1, step: 0.05 },
         // anti-vaporize ceiling on the per-step break budget (GEOMETRY caps the real rate). Lower
         // only to tame an extreme teleport-deep gouge. See tunables.ts.
         { type: "slider", label: "break ceil J (×1e5)", obj: TUN.crush as unknown as Record<string, number>, key: "maxStepEnergy", min: 5e5, max: 120e5, step: 5e5 },
@@ -1515,8 +1521,8 @@ async function main() {
     renderer.autoClear = true;
     renderer.clear(); // clears color + depth + stencil
     renderer.autoClear = false;
-    seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group)]);
-    seam.write(renderer, scene, camera); // hull → stencil (no color/depth)
+    seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group), ...islandHulls]);
+    seam.write(renderer, scene, camera); // hull+island → stencil (no color/depth)
     renderer.render(scene, camera);      // full scene incl. ocean, stencil-tested
     renderer.autoClear = true;
 

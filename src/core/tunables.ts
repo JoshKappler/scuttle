@@ -122,16 +122,19 @@ export const TUN = {
    *  voxel overlap is visible. Each fixed step voxelContact finds the overlapping voxel-pairs and
    *  branches PER CONTACT on the closing speed at that point:
    *   • closing FASTER than vBreak → BREAK both voxels; the fracture energy is removed from the
-   *     closing motion (an inelastic bite, see crush.breakImpulse). Only the thin overlapping layer
-   *     breaks each step, so the hull keeps most of its speed and advances into the cleared space
-   *     next step → it PLOWS in, shedding a little speed per layer, until closing drops under vBreak.
-   *     Non-penetration here is free: the voxel in the way is gone, so there is nothing to push
-   *     against (no "jar"). Impulse is applied HORIZONTALLY at COM height → an off-centre hit yaws
-   *     (PIT), never rolls; the keel's ~42×-sideways water drag then bleeds the struck hull's gain.
-   *   • closing SLOWER than vBreak → REST: no damage; cancel the closing and de-penetrate by POSITION
-   *     (rate-capped) so two solid hulls can't share space. This is the ONLY place positional
-   *     separation runs — the old bug ran it even while breaking, which WAS the jar.
-   *  Heavier = harder to shove: the bite impulse is split by mass (Δv = J/m). Replaces the retired
+   *     closing motion (an inelastic bite, see crush.breakImpulse) but shed as a DRAG on the hull
+   *     DRIVING in (crush.distributeClosingDrag) — the crumbling layer carries its momentum off as
+   *     debris, so a heavy ram spends its OWN speed and does NOT shove a stationary victim up to
+   *     ramming speed. Only the thin overlapping layer breaks each step, so the hull PLOWS into the
+   *     cleared space next step, shedding a little per layer, until its approach drops under vBreak.
+   *     Non-penetration here is free: the voxel in the way is gone, nothing to push against (no "jar").
+   *     The drag is HORIZONTAL at COM height → an off-centre hit yaws (PIT), never rolls.
+   *   • closing SLOWER than vBreak → REST: no damage; DELETE the closing and de-penetrate by POSITION
+   *     along the horizontal COM→COM line (the geometric push-out axis FLIPS on engulf → shoves a
+   *     lodged ram deeper) so two solid hulls can't share space — strong enough to EXPEL a lodge but
+   *     position-only + closing-pre-zeroed, so it can't re-penetrate or fling. This is the ONLY place
+   *     positional separation runs — the old bug ran it even while breaking, which WAS the jar.
+   *  Heavier = harder to shove: each hull sheds Δv = (its drag share)/its mass. Replaces the retired
    *  3-part "carve/cancel/de-penetrate-every-step" rule (and the older rigid-reaction ram). */
   crush: {
     /** master enable — off → ship-vs-ship does nothing (hulls would ghost; see physics.ts hook). */
@@ -141,25 +144,39 @@ export const TUN = {
      *  with no damage; over it the contact face crushes. The single velocity gate of the whole rule. */
     vBreak: 2.0,
     /** ×break-energy: how hard the wood is. Higher → a ram bites fewer voxels per joule AND sheds
-     *  more speed per layer, so it penetrates LESS; lower → softer hulls that rip deep. The main
-     *  "rip into each other" feel knob (was `yield`, inverted sense). */
-    toughness: 1.0,
+     *  more speed per layer, so it penetrates LESS and resists more (a weightier, less explosive
+     *  crash); lower → softer hulls that rip deep. The main "rip into each other" feel knob (was
+     *  `yield`, inverted sense). 1.5 = ~50% tougher than the round-3 baseline (playtest: "tougher
+     *  voxels"). */
+    toughness: 1.5,
+    /** how much of a BREAK hit's closing-Δv is handed to the struck hull as momentum (0..1) vs. spent
+     *  slowing only the aggressor. 0 = a dead-in-the-water victim is NOT shoved at all (it just gets
+     *  chewed); 1 = the full equal-and-opposite kick that drives both to a common velocity (the old
+     *  "the victim steals all my speed" bug). 0.35 = the struck ship picks up a bit of the hit without
+     *  being launched (playtest: "velocity transfers a bit more"). See crush.splitClosingImpulse. */
+    transferFrac: 0.35,
     /** contact tolerance (VOXELS): an A voxel within this many voxels of a solid B voxel counts as
      *  touching/eligible to break. The voxels are a coarse hull approximation, so a little slack
      *  reads as "sufficiently close" without needing a half-voxel of real interpenetration first. */
     buffer: 0.4,
-    /** REST de-penetration relaxation (0..1): fraction of the interpenetration depth the hulls ease
+    /** REST de-penetration relaxation (0..1): fraction of the interpenetration depth the hulls move
      *  apart per step when too slow to break. Re-solved from the fresh overlap each step (never
-     *  accumulates), and rate-capped by maxDepenSpeed, so it settles rather than flings. */
-    depen: 0.3,
-    /** hard cap (m/s) on the REST positional separation (HORIZONTAL only) — the anti-fling safety
-     *  net. Two massive hulls should EASE apart, not shove each other across the sea, so this is
-     *  deliberately low; a lodged ram works free slowly. Raise for snappier separation. */
-    maxDepenSpeed: 1.0,
-    /** per-step cap (m/s) on the closing speed the BREAK bite may remove in one step — a stability /
-     *  NaN backstop and a clamp on a huge single-step slab. The plow is inherently multi-step, so
-     *  this just keeps any one step's momentum trade smooth. */
-    biteDvCap: 6.0,
+     *  accumulates) and rate-capped by maxDepenSpeed. Raised 0.3→0.5 so a lodged ram is EXPELLED in a
+     *  few steps rather than coasting through — the closing is zeroed first, so the overlap only ever
+     *  shrinks (this can't re-penetrate or fling). */
+    depen: 0.5,
+    /** hard cap (m/s) on the REST positional separation (HORIZONTAL only) — the per-step ceiling on
+     *  how fast a deep overlap clears. Raised 1.0→6.0: at 1.0 (≈1.7 cm/step) a deeply lodged hull
+     *  could never be pushed out before it clipped through; 6.0 expels a metre-deep lodge in a handful
+     *  of steps. It is position-only with the closing pre-zeroed, so even at 6 it eases (never flings)
+     *  — for shallow everyday contacts depth·depen is far below this cap, so they still barely move. */
+    maxDepenSpeed: 6.0,
+    /** per-step cap (m/s) on the closing speed the BREAK bite may remove in one step. ALSO the main
+     *  "how SLOW/drawn-out is the crash" knob: lower spreads the deceleration over more frames, so a
+     *  hard ram grinds to a stop over ~½ s instead of slamming in one or two steps (playtest: "crashes
+     *  happen a bit more slowly"). 3.5 (was 6) makes it bind on a fast ram; also a stability/NaN
+     *  backstop on a huge single-step slab. */
+    biteDvCap: 3.5,
     /** per-step break-energy CEILING (J, whole pair) — an anti-vaporize backstop. The real per-step
      *  limiter is GEOMETRY (only the thin overlapping layer can break); this only clamps a
      *  pathologically deep overlap (e.g. a teleport) from deleting a huge slab in one frame. */
@@ -171,14 +188,21 @@ export const TUN = {
     fling: 1,
   },
 
-  /** Flooding — how fast the sea comes in through a breach. The deterministic floodStep oracle
-   *  (sim/compartments.ts) is UNCHANGED; this scales the breach area game/ship.ts feeds it, so
-   *  the vitest oracle stays exact while the play-feel is tunable. */
+  /** Flooding — the breach as a TWO-RESERVOIR orifice (sim/compartments.ts orificeFlow): flow is
+   *  driven by the difference between the sea surface and the compartment's own pool at the hole,
+   *  so she floods to a waterline EQUILIBRIUM (not to 100%) and DRAINS back out when a hole ends
+   *  up above the pool (heel/capsize). These knobs scale the play-feel game/ship.ts feeds the
+   *  deterministic oracle; the oracle's Cd + flow law stay exact. */
   flood: {
-    /** multiplier on breach inflow (1 = the raw Bernoulli orifice rate). 0.15 ≈ the playtest's
+    /** multiplier on breach area → flow rate (1 = the raw orifice rate). 0.15 ≈ the playtest's
      *  "reduce flood rates ~85%": a holed hull settles and founders over a minute, not seconds,
      *  so flooding is a fightable, dramatic process (pumps + plank repairs matter). */
     inflowScale: 0.15,
+    /** submerged fraction past which reserve buoyancy is treated as GONE and `waterlog` ramps to
+     *  the final plunge. With waterline equilibrium in place a single nick never reaches this — only
+     *  deep/progressive flooding does — so she mostly settles & survives (recovers below 0.7× this
+     *  if drained/pumped). A healthy hull sits ~0.2 submerged, deck-awash ~0.5–0.6. */
+    founderSubmerge: 0.6,
   },
 
   /** Fleet — how many hostile ships the FleetManager (game/fleet.ts) keeps sailing
