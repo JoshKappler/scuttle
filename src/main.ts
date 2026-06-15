@@ -271,8 +271,8 @@ async function main() {
 
   // ---- plunder economy (framework): wallet/cargo/upgrades + dock-triggered port + save ----
   // Wraps the existing boarding.gold (the HUD wallet); the port screen is a JS overlay.
-  // The islands' IslandField (constructed above) now satisfies DockProvider — wiring it in
-  // is a one-liner (`dock: islands`), left for a deliberate, in-browser-verified follow-up.
+  // The dock is the islands' real harbor: IslandField satisfies DockProvider, so "make port"
+  // (press E within DOCK_RANGE) triggers at the town pier — not the DevDockProvider origin.
   const economy = new Economy();
   const portScreen = createPortScreen({
     onSell: () => port.sell(),
@@ -289,7 +289,7 @@ async function main() {
       const t = sloop.body.translation();
       return { x: t.x, z: t.z };
     },
-    // dock: islands,  // ← IslandField.nearestDock satisfies DockProvider; wire when verified
+    dock: islands, // IslandField.nearestDock → port triggers at the real harbor pier
   });
   port.load(); // restore the saved empire (doubloons/cargo/upgrades) and mirror to boarding.gold
 
