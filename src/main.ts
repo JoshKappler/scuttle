@@ -7,7 +7,7 @@ import { createOceanField } from "./render/oceanField";
 import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
 import { createSky } from "./render/sky";
-import { buildBrig, buildSloop } from "./sim/shipwright";
+import { buildBrig, buildSloop, buildManOfWar } from "./sim/shipwright";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
 import { Ship } from "./game/ship";
@@ -128,7 +128,10 @@ async function main() {
   // the player's brig splashes down and settles (round 6: "a realistically
   // sized sixteen-hundreds-era fighting vessel"); `sloop` names the player
   // ship throughout for history's sake
-  const sloopBuild = buildBrig();
+  // ?ship=manowar sails the first-rate flagship; default is the brig (shipped). `sloop`
+  // names the player ship throughout for history's sake regardless of class.
+  const sloopBuild =
+    new URLSearchParams(location.search).get("ship") === "manowar" ? buildManOfWar() : buildBrig();
   const sloopVisual = new ShipVisual(sloopBuild);
   const sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
@@ -1213,6 +1216,13 @@ async function main() {
   (window as unknown as Record<string, unknown>).ramTest = ramTest;
 
   const devPanel = createDevPanel([
+    {
+      title: "Ship (reloads)",
+      controls: [
+        { type: "button", label: "Brig", onClick: () => { location.href = location.pathname; } },
+        { type: "button", label: "Man-o'-War", onClick: () => { location.href = location.pathname + "?ship=manowar"; } },
+      ],
+    },
     {
       // r17: pitch/roll/trim/keel-depth/heel-cap/turn-bank are GONE — attitude is now
       // emergent from the voxels. What's left are the four real physical coefficients.
