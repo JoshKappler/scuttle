@@ -1558,6 +1558,8 @@ async function main() {
         { type: "slider", label: "rays thr", obj: TUN.gfx.godrays, key: "threshold", min: 0, max: 16, step: 0.5 },
         { type: "slider", label: "reflect", obj: TUN.gfx.reflection, key: "strength", min: 0, max: 1.5, step: 0.05 },
         { type: "slider", label: "refl clamp", obj: TUN.gfx.reflection, key: "clamp", min: 0.5, max: 6, step: 0.1 },
+        { type: "slider", label: "see-depth", obj: TUN.gfx.water, key: "visibility", min: 0, max: 8, step: 0.25 },
+        { type: "slider", label: "water clarity", obj: TUN.gfx.water, key: "clarity", min: 0, max: 1, step: 0.05 },
         { type: "slider", label: "cloud cov", obj: TUN.gfx.clouds, key: "coverage", min: 0, max: 1, step: 0.02 },
         { type: "slider", label: "cloud dens", obj: TUN.gfx.clouds, key: "density", min: 0, max: 1, step: 0.02 },
         { type: "slider", label: "cloud spd", obj: TUN.gfx.clouds, key: "speed", min: 0, max: 2, step: 0.05 },
@@ -1896,6 +1898,7 @@ async function main() {
     );
     ocean.setChop(TUN.chop.strength, TUN.chop.choppiness);
     ocean.setReflStrength(TUN.gfx.reflection.strength, TUN.gfx.reflection.clamp);
+    ocean.setWaterDepth(TUN.gfx.water.visibility, TUN.gfx.water.clarity);
     renderer.toneMappingExposure = TUN.gfx.tone.exposure; // live exposure knob
     islandGritUniforms.uGritStrength.value = TUN.gfx.islandGrit.strength;
     ocean.update(world.simTime, camera.position);

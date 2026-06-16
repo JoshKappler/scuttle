@@ -84,6 +84,10 @@ export interface Ocean {
   /** dev-panel reflection strength (0 = matte water, 1 = full Fresnel reflection) +
    *  the HDR clamp on the reflected sky (caps a bright sky from whiting out the sea). */
   setReflStrength(strength: number, clamp?: number): void;
+  /** dev-panel underwater-visibility controls: how many metres of water you can see
+   *  down before the sea is fully opaque (`visibility`), and how see-through the
+   *  shallow band gets (`clarity` 0 = off/current look, 1 = max). */
+  setWaterDepth(visibility: number, clarity: number): void;
   /** Bind the static land-height field (src/game/islandField.ts buildLandField) so the
    *  surface shoals — wave displacement tapers to flat at each coast (no waves clipping
    *  through islands) — and a surf-foam line draws where the sea meets land. `min`/`size`
@@ -338,6 +342,9 @@ uniform samplerCube uSkyEnv;   // live sky+cloud reflection cube (render/sky.ts)
 uniform float uHasEnv;         // 1 when uSkyEnv is bound, else fall back to uSkyColor
 uniform float uReflStrength;   // dev: overall reflection strength
 uniform float uReflClamp;      // dev: cap on reflected HDR (stops a bright sky → white water)
+uniform vec3 uMurkColor;     // shallow see-into-water tint (deep navy); deep end returns to col
+uniform float uWaterVis;     // metres of water column visible before fully opaque
+uniform float uWaterClarity; // 0 = depth-murk OFF (current look), 1 = maximally see-through
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 uniform float uAmpTotal;
@@ -831,6 +838,12 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uHasEnv: { value: 0 },
       uReflStrength: { value: 0.22 },
       uReflClamp: { value: 1.6 },
+      // underwater visibility (depth murk). Defaults match TUN.gfx.water; main.ts
+      // overwrites uWaterVis/uWaterClarity every frame via setWaterDepth. uMurkColor
+      // is a fixed tuned constant (deep navy) — Task 4 finalises the palette.
+      uMurkColor: { value: new THREE.Color(0x0a1f3a) },
+      uWaterVis: { value: 2.5 },
+      uWaterClarity: { value: 0.85 },
       uFogColor: { value: new THREE.Color(0xc4d6d6) },
       uFogDensity: { value: 0.0016 },
       uAmpTotal: { value: ampTotal },
@@ -962,6 +975,10 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     setReflStrength(strength, clamp) {
       mat.uniforms.uReflStrength.value = strength;
       if (clamp !== undefined) mat.uniforms.uReflClamp.value = clamp;
+    },
+    setWaterDepth(visibility, clarity) {
+      mat.uniforms.uWaterVis.value = visibility;
+      mat.uniforms.uWaterClarity.value = clarity;
     },
     setLandField(tex, minX, minZ, sizeX, sizeZ) {
       mat.uniforms.uLandTex.value = tex;
