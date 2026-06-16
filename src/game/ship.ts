@@ -119,6 +119,10 @@ export class Ship {
 
   private phys: Physics;
   private deckCollider: RAPIER.Collider | null = null;
+  /** Only the player ship needs the walkable-deck trimesh (the captain never walks enemy
+   *  hulls — boarding is gone). Enemies skip it: one fewer Rapier collider each AND no
+   *  ~40 ms whole-hull deck-collider rebuild on every carve during combat. */
+  private readonly walkable: boolean;
   /** SHIP-SHIP / debris contact shape: the real voxel hull, mutated on damage (Task 1). */
   readonly hull!: HullCollider;
 
@@ -129,10 +133,11 @@ export class Ship {
   /** Lazily-materialized packed [x,y,z,...] view of `surface`, rebuilt when the set changes. */
   private surfaceCache: Int32Array | null = null;
 
-  constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }) {
+  constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }, walkable = true) {
     this.phys = phys;
     this.build = build;
     this.visual = visual;
+    this.walkable = walkable;
     this.columns = makeVoxelColumns(build.grid, build.compartments);
     this.surface = computeSurface(build.grid);
 
@@ -319,6 +324,7 @@ export class Ship {
    * holes). Rebuilt after damage so blast craters become terrain.
    */
   rebuildDeckCollider(): void {
+    if (!this.walkable) return; // enemies have no walkable deck — skip the trimesh entirely
     const { world, RAPIER: R } = this.phys;
     if (this.deckCollider) {
       world.removeCollider(this.deckCollider, false);

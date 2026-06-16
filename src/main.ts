@@ -404,7 +404,7 @@ async function main() {
     const ox = dx * Math.cos(ang) - dz * Math.sin(ang);
     const oz = dx * Math.sin(ang) + dz * Math.cos(ang);
     const pc = sloop.body.translation();
-    const ship = new Ship(physics, build, visual, { x: pc.x - ox * dist, y: 0.2, z: pc.z - oz * dist });
+    const ship = new Ship(physics, build, visual, { x: pc.x - ox * dist, y: 0.2, z: pc.z - oz * dist }, false); // enemy → no walkable deck collider
     const etr = ship.body.translation();
     const ea = -Math.atan2(pc.z - etr.z, pc.x - etr.x);
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
