@@ -28,6 +28,10 @@ export class Ship {
   readonly visual: ShipVisual;
   /** per-(x,z) hull columns of displacing cells — TRUE per-voxel buoyancy (r16). */
   columns: VoxelColumn[];
+  /** Σ of every column's cell volume (the hull's total displacing volume). Cached on any change to
+   *  `columns` so applyForces can early-break out of the dry topside yet still divide by the true
+   *  total for submergedFrac. */
+  private totalCellVolume = 0;
 
   /** Diagnostic: 0..1 share of envelope currently below the surface. */
   submergedFrac = 0;
@@ -139,6 +143,7 @@ export class Ship {
     this.visual = visual;
     this.walkable = walkable;
     this.columns = makeVoxelColumns(build.grid, build.compartments);
+    this.totalCellVolume = this.sumColumnVolume();
     this.surface = computeSurface(build.grid);
 
     // keel anchor: lowest solid cell on the midship centerline
@@ -412,6 +417,13 @@ export class Ship {
    * later stage gated on lost reserve buoyancy — a single waterline nick just settles her.
    */
   updateFlooding(dt: number, waves: Wave[], t: number): void {
+    // Fast path: an intact, dry, unpumped hull with no residual waterlog has nothing to flood, so
+    // skip the whole per-compartment orifice pass — most importantly the per-compartment hatch
+    // surfaceHeight (Gerstner) sample, which is the bulk of a healthy fleet's flooding cost. The
+    // raised hatch coaming exists precisely so a normal swell never floods an undamaged hold, so
+    // this is behaviour-preserving; the guard itself is a cheap O(compartments) scan.
+    if (!this.pumpOn && this.waterlog <= 0 && !this.hasFloodActivity()) return;
+
     // Pool surfaces + wet centroids drift slowly, but this recompute runs an O(n·log n) per-cell
     // world-Y sort over every WET compartment — the dominant CPU cost (~60 ms/frame with a fleet).
     // Throttle it to ~20 Hz instead of every substep; the inflow calc below reuses the cached poolY
@@ -477,6 +489,16 @@ export class Ship {
       }
       if (worst) worst.waterVolume = Math.max(worst.waterVolume - Ship.PUMP_RATE * dt, 0);
     }
+  }
+
+  /** True if any compartment holds water or has a hull breach — i.e. there is flooding to simulate.
+   *  Cheap O(compartments) gate for the updateFlooding fast path. */
+  private hasFloodActivity(): boolean {
+    for (const c of this.build.compartments) {
+      if (c.waterVolume > 1e-6) return true;
+      if ((this.breachCells.get(c.id)?.length ?? 0) > 0) return true;
+    }
+    return false;
   }
 
   /** Recompute pool surfaces + wet centroids for compartments that hold water or are breached. The
@@ -574,7 +596,6 @@ export class Ship {
     let torqueZ = 0;
     let waterplane = 0; // m² straddling the surface this step → live heave stiffness
     let submergedVolume = 0;
-    let totalVolume = 0;
     // centre of buoyancy (world point) — where the keel's lateral resistance acts, so
     // the leeway force there both RIGHTS her against sail heel and BANKS her in a turn.
     let cbWeight = 0; // Σ submergedFrac  (voxel volume cancels in the centroid ratio)
@@ -603,25 +624,31 @@ export class Ship {
       const y0 = col.cellY[0];
       let straddles = false;
       let colWet = false;
+      // cells are ordered bottom-up and the surface depends only on (x,z), so `frac` is monotonically
+      // non-increasing up the column while the hull is upright (upY>0): once a cell clears the water
+      // every higher cell does too → break, skipping the dry topside (≈80% of a floating hull, the
+      // bulk of this O(cells) #2-cost loop). Capsized (upY≤0) flips the order, so scan fully there.
+      // totalVolume is the cached this.totalCellVolume now, so the skipped dry cells still count.
       for (let k = 0; k < col.cellY.length; k++) {
-        totalVolume += VOXEL_VOLUME;
         // cell center world-Y, then its submerged fraction over the voxel height
         const cellWY = anchorWY + (col.cellY[k] - y0) * upY;
         const frac = Math.min(Math.max((surfaceY - cellWY) / VOXEL_SIZE + 0.5, 0), 1);
-        if (frac > 0) {
-          const f = liftPerCell * frac;
-          netLift += f;
-          // τ = r × F for a vertical F: τx = −rz·F, τz = +rx·F (ry irrelevant)
-          torqueX -= rz * f;
-          torqueZ += rx * f;
-          submergedVolume += VOXEL_VOLUME * frac;
-          cbWeight += frac;
-          cbXSum += frac * wx;
-          cbYSum += frac * cellWY;
-          cbZSum += frac * wz;
-          colWet = true;
-          if (frac < 1) straddles = true;
+        if (frac <= 0) {
+          if (upY > 0) break; // every higher cell is drier still
+          continue; // capsized: keep scanning, the submerged cells are higher up
         }
+        const f = liftPerCell * frac;
+        netLift += f;
+        // τ = r × F for a vertical F: τx = −rz·F, τz = +rx·F (ry irrelevant)
+        torqueX -= rz * f;
+        torqueZ += rx * f;
+        submergedVolume += VOXEL_VOLUME * frac;
+        cbWeight += frac;
+        cbXSum += frac * wx;
+        cbYSum += frac * cellWY;
+        cbZSum += frac * wz;
+        colWet = true;
+        if (frac < 1) straddles = true;
       }
       if (straddles) waterplane += col.area;
       if (colWet) {
@@ -658,7 +685,7 @@ export class Ship {
     // AND adding weight would double-count; weight-only handles partial submersion.
     body.addForce({ x: 0, y: netLift, z: 0 }, true);
     body.addTorque({ x: torqueX, y: 0, z: torqueZ }, true);
-    this.submergedFrac = totalVolume > 0 ? submergedVolume / totalVolume : 0;
+    this.submergedFrac = this.totalCellVolume > 0 ? submergedVolume / this.totalCellVolume : 0;
     this.bowSpray.wet = bowMaxX > -Infinity; // r18: anything in the water this step?
     // live hydrostatic heave stiffness for the critical-damping term in the drag block
     this.heaveStiffness = WATER_DENSITY * G * waterplane * TUN.phys.buoyancy;
@@ -974,6 +1001,15 @@ export class Ship {
       true,
     );
     this.columns = makeVoxelColumns(grid, this.build.compartments);
+    this.totalCellVolume = this.sumColumnVolume();
+  }
+
+  /** Total displacing volume across all columns. Cheap O(columns) sum; called only when columns
+   *  change (build + after a carve), never per step. */
+  private sumColumnVolume(): number {
+    let cells = 0;
+    for (const col of this.columns) cells += col.cellY.length;
+    return cells * VOXEL_VOLUME;
   }
 
   /** World-space position of the ship-local point (meters). Alias-safe:
