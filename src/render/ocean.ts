@@ -849,8 +849,8 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uSunColor: { value: new THREE.Color(1.0, 0.78, 0.55) },
       // a DARKER teal→navy body (round-2 tune: "the water needs to be a bit darker
       // and slightly more matte"); the (now weaker) sky reflection only adds a sheen.
-      uDeepColor: { value: new THREE.Color(0x030f17) },
-      uShallowColor: { value: new THREE.Color(0x09303a) },
+      uDeepColor: { value: new THREE.Color(0x02060e) },   // near-black navy — the "descends to black" deep end
+      uShallowColor: { value: new THREE.Color(0x07223a) }, // navy (was teal) so the body reads navy, not teal
       uSkyColor: { value: new THREE.Color(0x9fc4d4) }, // fresnel fallback only
       uSkyEnv: { value: dummyCube },
       uHasEnv: { value: 0 },
@@ -859,7 +859,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       // underwater visibility (depth murk). Defaults match TUN.gfx.water; main.ts
       // overwrites uWaterVis/uWaterClarity every frame via setWaterDepth. uMurkColor
       // is a fixed tuned constant (deep navy) — Task 4 finalises the palette.
-      uMurkColor: { value: new THREE.Color(0x0a1f3a) },
+      uMurkColor: { value: new THREE.Color(0x0a1f3a) },    // deep navy seen INTO the shallow water
       uWaterVis: { value: 2.5 },
       uWaterClarity: { value: 0.85 },
       uFogColor: { value: new THREE.Color(0xc4d6d6) },
