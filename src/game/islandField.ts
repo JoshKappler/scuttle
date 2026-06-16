@@ -3,6 +3,7 @@ import { Rng } from "../core/rng";
 import { VOXEL_SIZE } from "../core/constants";
 import type { Physics } from "./physics";
 import { buildHarborIsland, buildIsland, type IslandModel } from "../sim/islandwright";
+import { surfaceBandVoxels } from "../sim/islandCollider";
 import { IslandVisual } from "../render/islandVisual";
 
 /** Terrain voxels render much coarser than ship voxels: 0.25 m × this = 1 m cells.
@@ -133,7 +134,14 @@ export class IslandField {
       const visual = new IslandVisual(model.grid, { x: p.x, y: worldY, z: p.z }, ISLAND_VOXEL_SCALE);
       scene.add(visual.group);
 
-      // static trimesh collider (default groups → collides with the ship hull cuboid)
+      // Two static colliders on one fixed body:
+      //  • a TRIMESH (render-derived) — what the on-foot character's KCC walks on.
+      //  • a VOXELS collider for ship HULLS. rapier-compat generates NO voxel↔trimesh
+      //    contacts, so a hull (itself a Voxels shape) sails straight THROUGH the trimesh.
+      //    We build a second collider from the island's own grid — only the surface cells in
+      //    a band around the waterline a hull can reach (surfaceBandVoxels), so a ~500 k-cell
+      //    harbor island contributes ~150 k. Group 0x0002ffff matches the hull, so it grounds
+      //    ship hulls/debris while the character KCC (which filters bit 1) ignores it.
       if (visual.colliderIndices.length > 0) {
         const body = physics.world.createRigidBody(
           R.RigidBodyDesc.fixed().setTranslation(p.x, worldY, p.z),
@@ -142,6 +150,14 @@ export class IslandField {
           R.ColliderDesc.trimesh(visual.colliderVerts, visual.colliderIndices),
           body,
         );
+        const hullVoxels = surfaceBandVoxels(model.grid, model.meta.waterlineY, 6, 16);
+        if (hullVoxels.length > 0) {
+          physics.world.createCollider(
+            R.ColliderDesc.voxels(hullVoxels, { x: M_PER_VOX, y: M_PER_VOX, z: M_PER_VOX })
+              .setCollisionGroups(0x0002ffff),
+            body,
+          );
+        }
       }
 
       let dockWorld: THREE.Vector3 | null = null;
