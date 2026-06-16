@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { planIslandPlacements } from "../src/game/islandField";
+import { planIslandPlacements, planHazards } from "../src/game/islandField";
 
 describe("planIslandPlacements", () => {
   const plan = planIslandPlacements("scuttle-dev");
@@ -29,5 +29,26 @@ describe("planIslandPlacements", () => {
     expect(harbor).toBeDefined();
     const maxWild = Math.max(...plan.filter((p) => p.kind === "wild").map((p) => p.radiusM));
     expect(harbor!.radiusM).toBeGreaterThanOrEqual(1.5 * maxWild);
+  });
+});
+
+describe("planHazards", () => {
+  const islands = planIslandPlacements("scuttle-dev");
+  const stacks = planHazards("scuttle-dev", 12, islands);
+
+  it("is deterministic for a seed", () => {
+    expect(planHazards("scuttle-dev", 12, islands)).toEqual(stacks);
+  });
+  it("places sea stacks in open water clear of the spawn lagoon", () => {
+    expect(stacks.length).toBeGreaterThan(0);
+    for (const s of stacks) {
+      expect(s.kind).toBe("stack");
+      expect(Math.hypot(s.x, s.z)).toBeGreaterThan(150); // clear of the spawn lagoon
+    }
+  });
+  it("keeps stacks off the islands", () => {
+    for (const s of stacks)
+      for (const p of islands)
+        expect(Math.hypot(p.x - s.x, p.z - s.z)).toBeGreaterThan(p.radiusM + s.radiusM);
   });
 });

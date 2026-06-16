@@ -188,6 +188,13 @@ export const TUN = {
     fling: 1,
   },
 
+  /** Navigational hazards (game/islandField.ts) — extra terrain scattered at world generation.
+   *  Read ONCE when the archipelago is built (changing it needs a reload, not a live tweak). */
+  hazard: {
+    /** how many sea-stack spires to scatter in open water between the islands. */
+    seaStacks: 12,
+  },
+
   /** Flooding — the breach as a TWO-RESERVOIR orifice (sim/compartments.ts orificeFlow): flow is
    *  driven by the difference between the sea surface and the compartment's own pool at the hole,
    *  so she floods to a waterline EQUILIBRIUM (not to 100%) and DRAINS back out when a hole ends

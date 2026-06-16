@@ -96,6 +96,54 @@ export function planIslandPlacements(seed: string): IslandPlacement[] {
   return out;
 }
 
+export interface HazardPlacement {
+  kind: "stack";
+  seed: number;
+  x: number; // world metres
+  z: number;
+  radiusVox: number;
+  radiusM: number;
+  peakVox: number;
+}
+
+const STACK_R_MIN = 3;
+const STACK_R_MAX = 6;
+const STACK_PEAK_MIN = 8;
+const STACK_PEAK_MAX = 24;
+
+/**
+ * Scatter sea-stack hazards in open water between the islands. Deterministic for a seed. Stacks
+ * avoid the spawn lagoon and every island footprint, but may sit closer to one another than
+ * islands do — so they form gauntlets you must weave through.
+ */
+export function planHazards(seed: string, count: number, islands: IslandPlacement[]): HazardPlacement[] {
+  const rng = new Rng(`hazards-${seed}`);
+  const out: HazardPlacement[] = [];
+  let tries = 0;
+  while (out.length < count && tries < 2000) {
+    tries++;
+    const a = rng.range(0, Math.PI * 2);
+    const d = rng.range(LAGOON_M + 40, FIELD_M);
+    const x = Math.cos(a) * d;
+    const z = Math.sin(a) * d;
+    const radiusVox = rng.int(STACK_R_MIN, STACK_R_MAX);
+    const radiusM = radiusVox * M_PER_VOX;
+    if (Math.hypot(x, z) < LAGOON_M + radiusM) continue; // keep the spawn lagoon clear
+    if (islands.some((p) => Math.hypot(p.x - x, p.z - z) < p.radiusM + radiusM + 16)) continue; // off the islands
+    if (out.some((p) => Math.hypot(p.x - x, p.z - z) < p.radiusM + radiusM + 4)) continue; // not on another stack
+    out.push({
+      kind: "stack",
+      seed: rng.int(1, 1e9),
+      x,
+      z,
+      radiusVox,
+      radiusM,
+      peakVox: rng.int(STACK_PEAK_MIN, STACK_PEAK_MAX),
+    });
+  }
+  return out;
+}
+
 export interface IslandInstance {
   placement: IslandPlacement;
   model: IslandModel;
