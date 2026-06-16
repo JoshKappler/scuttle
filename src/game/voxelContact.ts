@@ -76,6 +76,12 @@ export class VoxelContact {
   private hvB: HullView = { surface: new Int32Array(0), isSolid: () => false, dims: [0, 0, 0], pos: [0, 0, 0], quat: [0, 0, 0, 1] };
   // contact scratch, grown to hold the smaller hull's surface (one contact per A surface cell max).
   private scratch: ContactScratch = { aCells: new Int32Array(0), bCells: new Int32Array(0), points: new Float32Array(0) };
+  // BREAK-regime scratch: the cells broken this step per hull, reused (cleared each pair) backed by
+  // a tuple pool, so a sustained ram allocates nothing classifying or carving contacts.
+  private brokenA: [number, number, number][] = [];
+  private brokenB: [number, number, number][] = [];
+  private poolA: [number, number, number][] = [];
+  private poolB: [number, number, number][] = [];
 
   /** Run the deformable contact for every ship pair this fixed step. */
   stepAll(ships: Ship[], dt: number): void {
@@ -147,9 +153,12 @@ export class VoxelContact {
     const tough = TUN.crush.toughness;
 
     // ---- classify each contact: BREAK (closing > vBreak) vs REST ----
-    let breakCount = 0, bSumX = 0, bSumY = 0, bSumZ = 0;
-    const brokenA: [number, number, number][] = [];
-    const brokenB: [number, number, number][] = [];
+    // brokenA/brokenB are reused member scratch (cleared here), backed by a tuple pool, so
+    // classifying contacts allocates nothing during a sustained ram.
+    let bSumX = 0, bSumY = 0, bSumZ = 0;
+    const brokenA = this.brokenA, brokenB = this.brokenB;
+    brokenA.length = 0;
+    brokenB.length = 0;
     if (moving) {
       for (let i = 0; i < count; i++) {
         const o = i * 3;
@@ -158,13 +167,12 @@ export class VoxelContact {
         this.velAt(this.comB, lvB, avB, px, py, pz, this.vB);
         const vci = (this.vA.x - this.vB.x) * dhx + (this.vA.z - this.vB.z) * dhz; // horizontal closing
         if (vci <= TUN.crush.vBreak) continue;
-        const ax = sc.aCells[o], ay = sc.aCells[o + 1], az = sc.aCells[o + 2];
-        const bx = sc.bCells[o], by = sc.bCells[o + 1], bz = sc.bCells[o + 2];
-        brokenA.push([ax, ay, az]);
-        brokenB.push([bx, by, bz]);
-        bSumX += px; bSumY += py; bSumZ += pz; breakCount++;
+        this.pushBroken(brokenA, this.poolA, sc.aCells[o], sc.aCells[o + 1], sc.aCells[o + 2]);
+        this.pushBroken(brokenB, this.poolB, sc.bCells[o], sc.bCells[o + 1], sc.bCells[o + 2]);
+        bSumX += px; bSumY += py; bSumZ += pz;
       }
     }
+    const breakCount = brokenA.length;
 
     let removedA = 0, removedB = 0, energy = 0, force = 0, vClose = 0;
 
@@ -251,19 +259,42 @@ export class VoxelContact {
   private lastRemovedA = 0;
   private lastRemovedB = 0;
 
-  /** Rare path: the overlapping layer's break-energy exceeds maxStepEnergy (e.g. a teleport-deep
-   *  overlap). Spend the budget cheapest-first across both hulls' candidates so we never vaporize a
-   *  huge slab in one frame; returns the energy actually spent. */
+  /** Store cell (x,y,z) into `list` at its next slot, reusing a pooled tuple so the BREAK regime
+   *  never allocates a fresh array per broken contact. */
+  private pushBroken(list: [number, number, number][], pool: [number, number, number][], x: number, y: number, z: number): void {
+    const i = list.length;
+    let t = pool[i];
+    if (t) { t[0] = x; t[1] = y; t[2] = z; }
+    else { t = [x, y, z]; pool[i] = t; }
+    list.push(t);
+  }
+
+  /** Carve the broken cells against the closing-energy budget; returns the energy actually spent.
+   *  When the budget covers every broken cell (a high-energy hit), carve them all directly — no
+   *  per-candidate object and no sort, since cheapest-first ordering is moot when all are affordable.
+   *  Only when the energy can't pay for the whole flagged layer (the energy-limited bite-and-lodge,
+   *  or the maxStepEnergy anti-vaporize clamp) does it fall back to spending cheapest-first. */
   private carveWithinBudget(
     shipA: Ship, shipB: Ship,
     brokenA: [number, number, number][], brokenB: [number, number, number][],
     gA: VoxelGrid, gB: VoxelGrid, tough: number, budget: number,
   ): number {
-    const cand: { s: 0 | 1; c: [number, number, number]; e: number }[] = [];
     // each hull's cells also pay its own hullToughness (the "Hull Reinforcement" upgrade, ≥1),
     // so a reinforced hull loses fewer voxels in a ram while still grinding the other ship.
     const toughA = tough * shipA.hullToughness;
     const toughB = tough * shipB.hullToughness;
+    let total = 0;
+    for (const c of brokenA) total += breakEnergy(gA.get(c[0], c[1], c[2])) * toughA;
+    for (const c of brokenB) total += breakEnergy(gB.get(c[0], c[1], c[2])) * toughB;
+    if (total <= budget) {
+      // everything is affordable → carve the whole broken layer, no sort/allocation
+      this.lastRemovedA = brokenA.length ? shipA.carveCells(brokenA) : 0;
+      this.lastRemovedB = brokenB.length ? shipB.carveCells(brokenB) : 0;
+      return total;
+    }
+    // energy-limited: can't break the whole flagged layer this step — spend cheapest-first so the
+    // ram bites a hole and lodges once its energy is gone (and we never vaporize a deep slab).
+    const cand: { s: 0 | 1; c: [number, number, number]; e: number }[] = [];
     for (const c of brokenA) cand.push({ s: 0, c, e: breakEnergy(gA.get(c[0], c[1], c[2])) * toughA });
     for (const c of brokenB) cand.push({ s: 1, c, e: breakEnergy(gB.get(c[0], c[1], c[2])) * toughB });
     cand.sort((x, y) => x.e - y.e);
