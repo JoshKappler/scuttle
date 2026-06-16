@@ -193,6 +193,12 @@ async function main() {
   bgScene.add(clouds.mesh);
   // throttled re-bake of the sky+cloud reflection cube (clouds drift slowly)
   let lastEnvBake = -1;
+  // throttle the two heaviest steady GPU items after post: the FFT-ocean spectral evolution to
+  // ~30 Hz (it advances from absolute simTime, so a larger step never drifts) and the shadow-map
+  // depth pass to ~15 Hz. The displacement RTs + the shadow map persist between updates, and the
+  // live analytic swell (ocean.update, every frame) keeps the big waves perfectly smooth.
+  let lastOceanFftUpdate = -1;
+  let shadowAccum = 0;
   skySetup.updateEnv(renderer, bgScene, camera.position); // initial bake
 
   // Round 14: a MULTI-CASCADE Tessendorf ocean surface (the AC4 / Sea of Thieves
@@ -1849,8 +1855,20 @@ async function main() {
     }
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
+    // refresh the (autoUpdate-off) shadow map at ~15 Hz instead of every frame — see sky.ts.
+    shadowAccum += dt;
+    if (shadowAccum >= 1 / 15) {
+      skySetup.sunLight.shadow.needsUpdate = true;
+      shadowAccum = 0;
+    }
 
-    oceanField.update(world.simTime);
+    // advance the FFT-ocean spectral sim at ~30 Hz (every ~2nd frame). The surface samples the
+    // persisted displacement/normal RTs continuously, so the chop detail evolving at 30 Hz is
+    // imperceptible while halving the ~45 full-screen DFT passes this call costs.
+    if (lastOceanFftUpdate < 0 || world.simTime - lastOceanFftUpdate >= 1 / 30) {
+      oceanField.update(world.simTime);
+      lastOceanFftUpdate = world.simTime;
+    }
     // P5/r15: advance the dynamic-wave interaction field (off-screen GPU passes),
     // now under the dev knobs, and bind its texture + snapped window/origin to the
     // ocean BEFORE the main render. Always drain spray landings (so the queue can't

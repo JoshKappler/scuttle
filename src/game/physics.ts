@@ -25,6 +25,14 @@ export async function initPhysics(): Promise<Physics> {
   await RAPIER.init();
   const world = new RAPIER.World({ x: 0, y: -G, z: 0 });
   world.timestep = FIXED_DT;
+  // The constraint solver is ~60% of the per-frame CPU budget at a full fleet, and its cost is
+  // ~linear in the iteration count (Rapier default 4). Ship-vs-ship is pulled OUT of the rigid
+  // solver entirely (filterContactPair above), so the only contacts this solver still resolves are
+  // forgiving ones — hull↔static-island, hull↔debris, deck↔character — none of which is a tall
+  // dynamic stack that needs 4 iterations to stay rigid. Halving to 2 is the single biggest CPU
+  // lever and does NOT touch the deterministic sim/ oracle (that's a separate pure layer). Bump to
+  // 3 if a resting contact (the captain on a heeled deck) ever reads mushy.
+  world.numSolverIterations = 2;
 
   const shipBodies = new Set<number>();
   const hooks: RAPIER.PhysicsHooks = {

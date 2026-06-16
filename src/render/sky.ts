@@ -87,6 +87,12 @@ export function createSky(): SkySetup {
   // that bleached the oak — shadow.intensity only touches shadowed pixels,
   // so the lit wood keeps m10's tone (round 8 v2: "same wood, was fine before").
   sunLight.shadow.intensity = 0.7;
+  // The sun is a FIXED direction (SUN_DIR), so the shadow map only needs re-rendering as ships
+  // move under it — not 60×/s. autoUpdate off + a ~15 Hz needsUpdate poke (main loop) turns a full
+  // per-frame depth pass over every hull into ~4× fewer. The shadow frustum still follows the
+  // player every frame; only the depth map refreshes on the throttle.
+  sunLight.shadow.autoUpdate = false;
+  sunLight.shadow.needsUpdate = true; // render once on the first frame
 
   // sky bounce carries the shade: at 0.55 anything out of the sun read as
   // pitch black (round 7). 1.3 + a strong IBL env then over-lit it and
