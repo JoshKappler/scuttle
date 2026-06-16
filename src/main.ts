@@ -48,6 +48,7 @@ import { createPortScreen } from "./render/portScreen";
 import { PortController } from "./game/port";
 import { createMenuScreen, type SandboxConfig } from "./render/menuScreen";
 import { PerfMonitor } from "./render/perf";
+import { AudioManager } from "./render/audio";
 
 async function main() {
   // THROWAWAY (plan Task 0): ?spike=1 runs the voxel-collider perf gate and bails.
@@ -100,6 +101,12 @@ async function main() {
   let unlockedClasses: ShipTierId[] = ["cutter"];
   let settings: Settings = defaultSettings();
   let forcedEnemyTier: ShipTierId | null = null;
+
+  // ---- audio: built early so the menu can sing and Web Audio unlocks on the first gesture ----
+  const audio = new AudioManager(camera, scene, settings);
+  const unlockAudio = () => audio.resume(); // browsers start the AudioContext suspended
+  window.addEventListener("pointerdown", unlockAudio, { once: true });
+  window.addEventListener("keydown", unlockAudio, { once: true });
 
   type StartChoice =
     | { kind: "career"; fresh: boolean }
@@ -906,6 +913,7 @@ async function main() {
     saves, // SaveManager (career/sandbox slots)
     controls,
     camera,
+    audio,
     sailing,
     contact: world.contact,
     debris,
