@@ -10,8 +10,11 @@
  */
 import type { ShipTierId } from "../game/saveState";
 
+// the ENEMY spawn pool tops out at the frigate — the Man-o'-War is the player's
+// rare flagship, not common prey — but INDEX still maps it so a player who sails
+// one is handled by the threat math.
 const ORDER: ShipTierId[] = ["cutter", "sloop", "brig", "frigate"];
-const INDEX: Record<ShipTierId, number> = { cutter: 0, sloop: 1, brig: 2, frigate: 3 };
+const INDEX: Record<ShipTierId, number> = { cutter: 0, sloop: 1, brig: 2, frigate: 3, manowar: 4 };
 
 /**
  * The "threat tier" the fleet is gravitating toward (0=cutter … 3=frigate), as a

@@ -11,7 +11,7 @@ import { createSky, HORIZON_COLOR } from "./render/sky";
 import { CloudDome } from "./render/clouds";
 import { islandGritUniforms } from "./render/islandVisual";
 import { buildCutter, buildSloop, type ShipBuild } from "./sim/shipwright";
-import { tierById, SHIP_TIERS } from "./game/shipyard";
+import { tierById, SHIP_TIERS, tierOrder } from "./game/shipyard";
 import { pickEnemyTier } from "./sim/fleetSpawn";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
@@ -467,7 +467,7 @@ async function main() {
     onLeave: () => gs.leavePort(),
     // sandbox unlocks everything so the whole ladder is buyable for free play
     getShipState: () => ({
-      unlocked: gs.isSandbox() ? (["cutter", "sloop", "brig", "frigate"] as ShipTierId[]) : unlockedClasses,
+      unlocked: gs.isSandbox() ? tierOrder() : unlockedClasses,
       current: currentTier,
     }),
     onSwapShip: (id) => swapPlayerShip(id),

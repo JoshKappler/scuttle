@@ -10,7 +10,7 @@ import { Economy, type EconomyState, defaultState as defaultEconomy } from "../s
 import type { GameMode } from "./gameState";
 
 export const SAVE_VERSION = 1;
-export type ShipTierId = "cutter" | "sloop" | "brig" | "frigate";
+export type ShipTierId = "cutter" | "sloop" | "brig" | "frigate" | "manowar";
 
 export interface Settings {
   masterVolume: number; // 0..1

@@ -8,7 +8,7 @@
  * earn the right to buy it by taking boats down. `canBuy` enforces gold + unlock +
  * not-already-owned; the unlock list itself is maintained by the game layer.
  */
-import { buildCutter, buildSloop, buildBrig, buildFrigate, type ShipBuild } from "../sim/shipwright";
+import { buildCutter, buildSloop, buildBrig, buildFrigate, buildManOfWar, type ShipBuild } from "../sim/shipwright";
 import type { ShipTierId } from "./saveState";
 
 export interface ShipTier {
@@ -24,6 +24,7 @@ export const SHIP_TIERS: ShipTier[] = [
   { id: "sloop", name: "Sloop", price: 600, build: buildSloop },
   { id: "brig", name: "Brig", price: 1800, build: buildBrig },
   { id: "frigate", name: "Frigate", price: 4200, build: buildFrigate },
+  { id: "manowar", name: "Man-o'-War", price: 9000, build: buildManOfWar },
 ];
 
 export const tierOrder = (): ShipTierId[] => SHIP_TIERS.map((t) => t.id);

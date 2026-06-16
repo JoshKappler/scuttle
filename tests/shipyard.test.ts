@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { SHIP_TIERS, tierOrder, tierById, canBuy, nextTier } from "../src/game/shipyard";
 
 describe("shipyard catalog", () => {
-  it("orders cutter → sloop → brig → frigate", () => {
-    expect(tierOrder()).toEqual(["cutter", "sloop", "brig", "frigate"]);
+  it("orders cutter → sloop → brig → frigate → manowar", () => {
+    expect(tierOrder()).toEqual(["cutter", "sloop", "brig", "frigate", "manowar"]);
   });
   it("the cutter is the free starter; bigger hulls cost more", () => {
     expect(tierById("cutter").price).toBe(0);
@@ -47,6 +47,7 @@ describe("shipyard — nextTier", () => {
   it("steps up the ladder and stops at the top", () => {
     expect(nextTier("cutter")?.id).toBe("sloop");
     expect(nextTier("brig")?.id).toBe("frigate");
-    expect(nextTier("frigate")).toBeNull();
+    expect(nextTier("frigate")?.id).toBe("manowar");
+    expect(nextTier("manowar")).toBeNull();
   });
 });
