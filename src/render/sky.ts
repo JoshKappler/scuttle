@@ -113,13 +113,15 @@ export function createSky(): SkySetup {
   // void without brightening the wood's overall tone.
   const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 0.95);
 
-  // Live sky+cloud reflection cube for the ocean. 256² — round 2 tried 512 for a sharper
-  // reflection, but baking 6 faces of the FBM cloud scene at 512 twice a second is a
-  // periodic main-thread STALL that read as "performance tanked"; reverted to 256 (round
-  // 1's smooth value). The water is matte now (reflection strength 0.22), so the reflection
-  // res barely shows anyway. mipmaps let the ocean fetch blurrier reflections at grazing/
-  // rough angles. The cube camera renders the BACKGROUND scene (sky + clouds) directly.
-  const envCube = new THREE.WebGLCubeRenderTarget(256, {
+  // Live sky+cloud reflection cube for the ocean. 128² — round 2 tried 512 for a sharper
+  // reflection, but baking 6 faces of the FBM cloud scene is a periodic main-thread STALL
+  // (512 read as "performance tanked"; 256 was round 1's smooth value). The water is matte
+  // (reflection strength 0.22) and the bake runs every frag through the cloud FBM, so the
+  // reflection res barely shows — dropped 256→128 (4× cheaper per bake, paired with
+  // rebakeHz 2→1) to shrink that periodic hitch further. mipmaps let the ocean fetch
+  // blurrier reflections at grazing/rough angles. The cube camera renders the BACKGROUND
+  // scene (sky + clouds) directly.
+  const envCube = new THREE.WebGLCubeRenderTarget(128, {
     generateMipmaps: true,
     minFilter: THREE.LinearMipmapLinearFilter,
     // HDR (HalfFloat): the sky is rendered LINEAR into the cube (no tonemap when

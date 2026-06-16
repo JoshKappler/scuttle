@@ -257,7 +257,7 @@ export const TUN = {
      *  whole bright sky → no white haze). samples = the per-pixel march length, the
      *  pass's dominant cost; read ONCE at Post construction, so a reload is needed
      *  to change it (lower = much faster). */
-    godrays: { enabled: true, strength: 0.07, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 24 },
+    godrays: { enabled: true, strength: 0.07, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 16 },
     /** final color grade (render/post.ts GradePass): contrast + saturation +
      *  a subtle vignette for the cinematic punch. */
     grade: { contrast: 1.06, saturation: 1.08, vignette: 0.22 },
@@ -266,7 +266,7 @@ export const TUN = {
      *  as its own teal body with a sky SHEEN, not liquid metal). clamp caps the
      *  reflected HDR so a bright sky can't blow the water to white. rebakeHz throttles
      *  re-rendering the sky+cloud cube (clouds drift slowly — a couple bakes/s is plenty). */
-    reflection: { strength: 0.22, rebakeHz: 2, clamp: 1.6 },
+    reflection: { strength: 0.22, rebakeHz: 1, clamp: 1.6 },
     /** underwater visibility / depth murk (render/ocean.ts). The sea becomes a
      *  translucent body you can see `visibility` metres into before it turns fully
      *  opaque, so a submerged deck dissolves into the water and the shallow seabed
