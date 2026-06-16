@@ -3,7 +3,7 @@ import { FIXED_DT } from "../core/constants";
 import { physicsWaves, type Wave } from "../sim/gerstner";
 import type { Physics } from "./physics";
 import { Ship } from "./ship";
-import { VoxelContact } from "./voxelContact";
+import { VoxelContact, type ContactTarget } from "./voxelContact";
 
 /**
  * Game orchestration: owns ships, runs the fixed-step physics loop with an
@@ -22,6 +22,9 @@ export class GameWorld {
    *  overlap, then resolves non-penetration + inelastic momentum itself (ship-ship is out of
    *  Rapier's solver, see physics.ts). main.ts may attach `.effects` for dust + read `.debug`. */
   readonly contact = new VoxelContact();
+  /** Static terrain (islands, cliffs, sea stacks) as crush hull-B; populated by main.ts after the
+   *  IslandField is built. Empty in headless tests (ship-vs-ship still runs). */
+  terrain: ContactTarget[] = [];
   simTime = 0;
   /** Called every fixed step after buoyancy, before the physics step —
    *  sailing forces, AI, projectiles hook in here. */
@@ -75,7 +78,7 @@ export class GameWorld {
       // deformable ship-vs-ship crunch: reads the real voxel overlap, carves both hulls, cancels the
       // closing velocity (inelastic) and de-penetrates by POSITION so they can't phase through. Runs
       // BEFORE the Rapier step so its velocity + position fixes integrate this step. Sets damageDirty.
-      this.contact.stepAll(this.ships, FIXED_DT);
+      this.contact.stepAll(this.ships, this.terrain, FIXED_DT);
       for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute
       // hooks: filterContactPair pulls ship-vs-ship pairs out of the rigid solver (physics.ts).
       // The EventQueue is REQUIRED for the hooks to fire in this Rapier build (see Physics.events).

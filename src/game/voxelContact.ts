@@ -1,10 +1,7 @@
 import * as THREE from "three";
 import { TUN } from "../core/tunables";
-import { VOXEL_SIZE } from "../core/constants";
 import { detectContacts, type HullView, type ContactScratch } from "../sim/voxelOverlap";
-import { breakEnergy } from "../sim/materials";
 import { breakImpulse, splitClosingImpulse } from "../sim/crush";
-import type { VoxelGrid } from "../sim/voxelGrid";
 import type { Ship } from "./ship";
 import type { Effects } from "../render/effects";
 
@@ -99,6 +96,7 @@ export class VoxelContact {
 
   // ---- temps (no per-step allocation on the hot path) ----
   private aabbs: { min: THREE.Vector3; max: THREE.Vector3 }[] = [];
+  private tAabb = { min: new THREE.Vector3(), max: new THREE.Vector3() }; // terrain broad-phase scratch
   private comA = new THREE.Vector3();
   private comB = new THREE.Vector3();
   private vA = new THREE.Vector3();
@@ -110,9 +108,9 @@ export class VoxelContact {
   // contact scratch, grown to hold the smaller hull's surface (one contact per A surface cell max).
   private scratch: ContactScratch = { aCells: new Int32Array(0), bCells: new Int32Array(0), points: new Float32Array(0) };
 
-  /** Run the deformable contact for every ship pair this fixed step. */
-  stepAll(ships: Ship[], dt: number): void {
-    if (!TUN.crush.enabled || ships.length < 2) {
+  /** Run the deformable contact for every ship↔ship and ship↔terrain pair this fixed step. */
+  stepAll(ships: Ship[], terrain: ContactTarget[], dt: number): void {
+    if (!TUN.crush.enabled) {
       this.debug = zeroDebug();
       return;
     }
@@ -120,16 +118,29 @@ export class VoxelContact {
     for (let i = 0; i < ships.length; i++) ships[i].aabbWorld(this.aabbs[i]);
 
     let best = zeroDebug();
+    // ship ↔ ship: both hulls carve (existing behavior)
     for (let i = 0; i < ships.length; i++) {
       for (let j = i + 1; j < ships.length; j++) {
         if (!aabbIntersect(this.aabbs[i], this.aabbs[j])) continue; // broad cull
-        const d = this.stepPair(ships[i], ships[j], dt);
-        if (!d) continue;
-        const dRem = d.removedA + d.removedB, bRem = best.removedA + best.removedB;
-        if (dRem > bRem || (dRem === bRem && d.overlapCount > best.overlapCount)) best = d;
+        best = this.worse(best, this.stepPair(ships[i], ships[j], dt));
+      }
+    }
+    // ship ↔ terrain: terrain is hull B — immovable + indestructible, only the SHIP erodes
+    for (let i = 0; i < ships.length; i++) {
+      for (let t = 0; t < terrain.length; t++) {
+        terrain[t].aabbWorld(this.tAabb);
+        if (!aabbIntersect(this.aabbs[i], this.tAabb)) continue;
+        best = this.worse(best, this.resolveContact(ships[i], terrain[t], dt));
       }
     }
     this.debug = best;
+  }
+
+  /** Keep whichever debug reflects the most-damaged pair this step (for the dev harness). */
+  private worse(best: ContactDebug, d: ContactDebug | null): ContactDebug {
+    if (!d) return best;
+    const dRem = d.removedA + d.removedB, bRem = best.removedA + best.removedB;
+    return dRem > bRem || (dRem === bRem && d.overlapCount > best.overlapCount) ? d : best;
   }
 
   /** Grow the contact scratch so it can hold `contacts` entries. */
@@ -139,17 +150,22 @@ export class VoxelContact {
     this.scratch = { aCells: new Int32Array(n), bCells: new Int32Array(n), points: new Float32Array(n) };
   }
 
-  /** One pair, one fixed step. Returns its debug, or null if the hulls don't overlap. */
+  /** One ship pair: walk the SMALLER hull's surface (fewer cells) as A; both ships carve. */
   private stepPair(s1: Ship, s2: Ship, dt: number): ContactDebug | null {
-    // walk the SMALLER hull's surface against the larger's occupancy (detectContacts' convention).
     const aSmaller = s1.surfaceCells().length <= s2.surfaceCells().length;
-    const shipA = aSmaller ? s1 : s2;
-    const shipB = aSmaller ? s2 : s1;
+    return aSmaller ? this.resolveContact(s1, s2, dt) : this.resolveContact(s2, s1, dt);
+  }
 
-    fillHullView(this.hvA, shipA);
-    fillHullView(this.hvB, shipB);
+  /**
+   * The ONE deformable-contact rule, run for ANY pair: ship↔ship (both carve) or ship↔terrain
+   * (B is immovable + indestructible). A's surface is walked against B's occupancy. Returns the
+   * per-pair debug, or null if the hulls don't overlap. See the module header for the two regimes.
+   */
+  resolveContact(a: ContactTarget, b: ContactTarget, dt: number): ContactDebug | null {
+    a.fillHullView(this.hvA);
+    b.fillHullView(this.hvB);
     this.ensureScratch(this.hvA.surface.length / 3);
-    const ov = detectContacts(this.hvA, this.hvB, VOXEL_SIZE, TUN.crush.buffer, this.scratch);
+    const ov = detectContacts(this.hvA, this.hvB, a.voxelSize, TUN.crush.buffer, this.scratch, b.voxelSize);
     if (!ov) return null;
 
     const sc = this.scratch;
@@ -157,10 +173,10 @@ export class VoxelContact {
     const depth = ov.depth;
 
     // world COM + velocities of both bodies, sampled once.
-    shipA.localToWorld(shipA.comLocal, this.comA);
-    shipB.localToWorld(shipB.comLocal, this.comB);
-    const lvA = shipA.body.linvel(), avA = shipA.body.angvel();
-    const lvB = shipB.body.linvel(), avB = shipB.body.angvel();
+    a.comWorld(this.comA);
+    b.comWorld(this.comB);
+    const lvA = a.linvel(), avA = a.angvel();
+    const lvB = b.linvel(), avB = b.angvel();
 
     // aggregate HORIZONTAL closing direction d̂ from the relative velocity at the contact centroid.
     // Horizontal-only so wave heave never reads as closing, and so the bite (applied at COM height)
@@ -173,10 +189,9 @@ export class VoxelContact {
     const moving = dlen > 1e-4;
     if (moving) { dhx /= dlen; dhz /= dlen; }
 
-    const mA = Math.max(shipA.body.mass(), 1);
-    const mB = Math.max(shipB.body.mass(), 1);
-    const mu = (mA * mB) / (mA + mB); // reduced mass — the collision's effective mass
-    const gA = shipA.build.grid, gB = shipB.build.grid;
+    const mA = Math.max(a.mass(), 1);
+    const mB = Math.max(b.mass(), 1);
+    const mu = (mA * mB) / (mA + mB); // reduced mass — terrain's huge mB makes this ≈ mA
     const tough = TUN.crush.toughness;
 
     // ---- classify each contact: BREAK (closing > vBreak) vs REST ----
@@ -191,10 +206,8 @@ export class VoxelContact {
         this.velAt(this.comB, lvB, avB, px, py, pz, this.vB);
         const vci = (this.vA.x - this.vB.x) * dhx + (this.vA.z - this.vB.z) * dhz; // horizontal closing
         if (vci <= TUN.crush.vBreak) continue;
-        const ax = sc.aCells[o], ay = sc.aCells[o + 1], az = sc.aCells[o + 2];
-        const bx = sc.bCells[o], by = sc.bCells[o + 1], bz = sc.bCells[o + 2];
-        brokenA.push([ax, ay, az]);
-        brokenB.push([bx, by, bz]);
+        brokenA.push([sc.aCells[o], sc.aCells[o + 1], sc.aCells[o + 2]]);
+        if (b.canCarve) brokenB.push([sc.bCells[o], sc.bCells[o + 1], sc.bCells[o + 2]]);
         bSumX += px; bSumY += py; bSumZ += pz; breakCount++;
       }
     }
@@ -208,15 +221,16 @@ export class VoxelContact {
       // carving the whole overlap for free and clipping out the far side. The broken wood's energy is
       // then taken straight out of the closing motion (breakImpulse). The carve clears the wood in the
       // way, so NO position de-penetration runs here (running it while breaking was the jar). maxStepEnergy
-      // is only an anti-vaporize clamp for a pathological (teleport) deep overlap.
+      // is only an anti-vaporize clamp for a pathological (teleport) deep overlap. Against terrain B can't
+      // carve, so ALL the budget erodes the ship — an immovable, indestructible wall takes the full hit.
       const bcx = bSumX / breakCount, bcy = bSumY / breakCount, bcz = bSumZ / breakCount;
       this.velAt(this.comA, lvA, avA, bcx, bcy, bcz, this.vA);
       this.velAt(this.comB, lvB, avB, bcx, bcy, bcz, this.vB);
       const sA = this.vA.x * dhx + this.vA.z * dhz; // A's speed along the closing axis d̂
-      const sB = this.vB.x * dhx + this.vB.z * dhz; // B's speed along d̂
+      const sB = this.vB.x * dhx + this.vB.z * dhz; // B's speed along d̂ (0 for static terrain)
       vClose = sA - sB;
       const budget = Math.min(0.5 * mu * vClose * vClose, TUN.crush.maxStepEnergy);
-      energy = this.carveWithinBudget(shipA, shipB, brokenA, brokenB, gA, gB, tough, budget);
+      energy = this.carveWithinBudget(a, b, brokenA, brokenB, tough, budget);
       removedA = this.lastRemovedA; removedB = this.lastRemovedB;
       // The fracture energy is shed as a DRAG on the hull(s) driving INTO the contact — the crumbling
       // layer carries its momentum off as debris and pushes the body behind it ~nothing, so a heavy
@@ -227,9 +241,10 @@ export class VoxelContact {
       const dvClose = breakImpulse(mu, vClose, energy, TUN.crush.biteDvCap) / mu; // closing-speed to remove
       // split into the aggressor-drag + (tunable) momentum-transfer mix (see crush.splitClosingImpulse):
       // transferFrac 0 = a stationary victim isn't shoved at all; higher = it picks up more of the hit.
+      // For static terrain (sB=0, huge mB) jA ≈ mShip·dvClose and jB lands on the immovable rock (no-op).
       const { jA, jB } = splitClosingImpulse(mA, mB, mu, sA, sB, dvClose, TUN.crush.transferFrac);
-      this.pushAtComHeight(shipA, bcx, bcz, this.comA.y, -dhx, -dhz, jA); // slow A's approach (+d̂)
-      this.pushAtComHeight(shipB, bcx, bcz, this.comB.y, dhx, dhz, jB);   // drag/transfer onto B (−d̂)
+      this.pushAtComHeight(a, bcx, bcz, this.comA.y, -dhx, -dhz, jA); // slow A's approach (+d̂)
+      this.pushAtComHeight(b, bcx, bcz, this.comB.y, dhx, dhz, jB);   // drag/transfer onto B (−d̂; no-op for terrain)
       force = (jA + jB) / dt;
 
       const removed = removedA + removedB;
@@ -249,6 +264,7 @@ export class VoxelContact {
       // bug behind "the nose rotates straight through the voxels"). The COM line never flips and points
       // sensibly along the ram for any lodge. HORIZONTAL only so buoyancy keeps owning the vertical (a
       // downward shove used to ram a holed victim past the −12 m "sunk" line → premature respawn).
+      // Against terrain (huge mB) the inverse-mass split puts ~all the de-penetration on the ship.
       let nx = this.comB.x - this.comA.x, nz = this.comB.z - this.comA.z;
       const hlen = Math.hypot(nx, nz);
       if (hlen > 1e-4) {
@@ -259,8 +275,8 @@ export class VoxelContact {
         if (vClose > 0) {
           // full inelastic cancel of the (sub-vBreak) closing — they stop moving INTO each other.
           const jv = mu * Math.min(vClose, TUN.crush.biteDvCap);
-          this.pushAtComHeight(shipA, cx, cz, this.comA.y, -nx, -nz, jv);
-          this.pushAtComHeight(shipB, cx, cz, this.comB.y, nx, nz, jv);
+          this.pushAtComHeight(a, cx, cz, this.comA.y, -nx, -nz, jv);
+          this.pushAtComHeight(b, cx, cz, this.comB.y, nx, nz, jv);
           force = jv / dt;
         }
         // POSITION de-penetration, inverse-mass split. Strong enough to actually EXPEL a lodged hull
@@ -269,11 +285,11 @@ export class VoxelContact {
         // sharing space" within a few steps instead of the ram coasting through forever. Position-only
         // (no velocity added) so a hard separation still can't "jar" / fling them.
         const corr = Math.min(depth * TUN.crush.depen, TUN.crush.maxDepenSpeed * dt);
-        const moveA = corr * (mB / (mA + mB)), moveB = corr * (mA / (mA + mB));
-        const ta = shipA.body.translation();
-        shipA.body.setTranslation({ x: ta.x - nx * moveA, y: ta.y, z: ta.z - nz * moveA }, true);
-        const tb = shipB.body.translation();
-        shipB.body.setTranslation({ x: tb.x + nx * moveB, y: tb.y, z: tb.z + nz * moveB }, true);
+        const moveA = corr * (mB / (mA + mB)), moveB = corr * (mA / (mA + mB)); // terrain's huge mB → moveA≈corr, moveB≈0
+        const ta = a.translation();
+        a.setTranslation({ x: ta.x - nx * moveA, y: ta.y, z: ta.z - nz * moveA });
+        const tb = b.translation();
+        b.setTranslation({ x: tb.x + nx * moveB, y: tb.y, z: tb.z + nz * moveB }); // no-op for terrain
       }
     }
 
@@ -284,23 +300,23 @@ export class VoxelContact {
   private lastRemovedA = 0;
   private lastRemovedB = 0;
 
-  /** Rare path: the overlapping layer's break-energy exceeds maxStepEnergy (e.g. a teleport-deep
-   *  overlap). Spend the budget cheapest-first across both hulls' candidates so we never vaporize a
-   *  huge slab in one frame; returns the energy actually spent. */
+  /** Spend the energy budget cheapest-first across both sides' broken candidates, carving only the
+   *  sides that CAN break (terrain's canCarve === false → all the energy erodes the ship). Returns
+   *  the energy actually spent; writes the two removal counts into lastRemovedA/lastRemovedB. */
   private carveWithinBudget(
-    shipA: Ship, shipB: Ship,
+    a: ContactTarget, b: ContactTarget,
     brokenA: [number, number, number][], brokenB: [number, number, number][],
-    gA: VoxelGrid, gB: VoxelGrid, tough: number, budget: number,
+    tough: number, budget: number,
   ): number {
-    const cand: { s: 0 | 1; c: [number, number, number]; e: number }[] = [];
-    for (const c of brokenA) cand.push({ s: 0, c, e: breakEnergy(gA.get(c[0], c[1], c[2])) * tough });
-    for (const c of brokenB) cand.push({ s: 1, c, e: breakEnergy(gB.get(c[0], c[1], c[2])) * tough });
+    const cand: { isA: boolean; c: [number, number, number]; e: number }[] = [];
+    if (a.canCarve) for (const c of brokenA) cand.push({ isA: true, c, e: a.cellBreakEnergy(c[0], c[1], c[2]) * tough });
+    if (b.canCarve) for (const c of brokenB) cand.push({ isA: false, c, e: b.cellBreakEnergy(c[0], c[1], c[2]) * tough });
     cand.sort((x, y) => x.e - y.e);
     let bud = budget, spent = 0;
     const remA: [number, number, number][] = [], remB: [number, number, number][] = [];
-    for (const k of cand) { if (k.e > bud) break; bud -= k.e; spent += k.e; (k.s === 0 ? remA : remB).push(k.c); }
-    this.lastRemovedA = remA.length ? shipA.carveCells(remA) : 0;
-    this.lastRemovedB = remB.length ? shipB.carveCells(remB) : 0;
+    for (const k of cand) { if (k.e > bud) break; bud -= k.e; spent += k.e; (k.isA ? remA : remB).push(k.c); }
+    this.lastRemovedA = remA.length ? a.carveCells(remA) : 0;
+    this.lastRemovedB = remB.length ? b.carveCells(remB) : 0;
     return spent;
   }
 
@@ -319,11 +335,11 @@ export class VoxelContact {
    *  the contact (px, comY, pz) — i.e. projected to the ship's OWN COM HEIGHT. Zeroing the vertical
    *  lever arm makes the torque purely vertical (YAW): a corner hit can spin her (the PIT) but can
    *  NEVER roll her — the sea holds her upright. */
-  private pushAtComHeight(ship: Ship, px: number, pz: number, comY: number, dx: number, dz: number, jMag: number): void {
+  private pushAtComHeight(target: ContactTarget, px: number, pz: number, comY: number, dx: number, dz: number, jMag: number): void {
     if (jMag === 0) return;
     this.imp.set(dx * jMag, 0, dz * jMag);
     this.pt2.set(px, comY, pz);
-    ship.body.applyImpulseAtPoint(this.imp, this.pt2, true);
+    target.applyImpulseAtPoint(this.imp, this.pt2);
   }
 }
 
@@ -333,14 +349,3 @@ function aabbIntersect(a: { min: THREE.Vector3; max: THREE.Vector3 }, b: { min: 
     a.max.z >= b.min.z && a.min.z <= b.max.z;
 }
 
-/** Populate a HullView from a live ship (pose snapshot + grid views). */
-function fillHullView(hv: HullView, ship: Ship): void {
-  hv.surface = ship.surfaceCells();
-  const grid = ship.build.grid;
-  hv.isSolid = (x, y, z) => grid.isSolid(x, y, z);
-  hv.dims = grid.dims;
-  const tr = ship.body.translation();
-  hv.pos[0] = tr.x; hv.pos[1] = tr.y; hv.pos[2] = tr.z;
-  const rot = ship.body.rotation();
-  hv.quat[0] = rot.x; hv.quat[1] = rot.y; hv.quat[2] = rot.z; hv.quat[3] = rot.w;
-}
