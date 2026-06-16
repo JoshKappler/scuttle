@@ -275,19 +275,28 @@ float stampShip(vec2 world, sampler2D prof, mat3 invRot, vec3 trans, vec2 size,
 void main() {
   vec2 world = uOrigin + vUv * uWindow;
   float add = 0.0;
-  // UNROLLED at CONSTANT sampler indices [0]/[1], mirroring the ocean.ts cascade
-  // unroll: indexing a sampler array with a loop variable is rejected by ANGLE and
-  // silently invalidates the whole program. uShipCount gates each block off.
-  if (uShipCount > 0) {
-    add += stampShip(world, uProfile[0], uInvRot[0], uTrans[0], uSize[0],
-                     uShip[0].z, uShip[0].w, uWaterY[0]);
-  }
+  // UNROLLED at CONSTANT sampler indices (ANGLE rejects loop-indexing a sampler array and silently
+  // invalidates the whole program). uShipCount gates each block at runtime; #if MAXSHIP>k compiles out
+  // the slots this field wasn't built with. EVERY visible ship stamps the field now (was a 2-ship cap),
+  // so every moving hull leaves a bow wave + trailing wake — not just the player + the nearest enemy.
+  #define STAMP(k) add += stampShip(world, uProfile[k], uInvRot[k], uTrans[k], uSize[k], uShip[k].z, uShip[k].w, uWaterY[k]);
+  if (uShipCount > 0) { STAMP(0) }
   #if MAXSHIP > 1
-  if (uShipCount > 1) {
-    add += stampShip(world, uProfile[1], uInvRot[1], uTrans[1], uSize[1],
-                     uShip[1].z, uShip[1].w, uWaterY[1]);
-  }
+  if (uShipCount > 1) { STAMP(1) }
   #endif
+  #if MAXSHIP > 2
+  if (uShipCount > 2) { STAMP(2) }
+  #endif
+  #if MAXSHIP > 3
+  if (uShipCount > 3) { STAMP(3) }
+  #endif
+  #if MAXSHIP > 4
+  if (uShipCount > 4) { STAMP(4) }
+  #endif
+  #if MAXSHIP > 5
+  if (uShipCount > 5) { STAMP(5) }
+  #endif
+  #undef STAMP
   // spray splash-down foam: stamp a small bright disc of foam where each landing
   // came down (uLandings is a plain vec3 array — loop-indexing it is fine; only
   // SAMPLER arrays carry the ANGLE constant-index restriction).

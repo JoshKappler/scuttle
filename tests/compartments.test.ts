@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { orificeFlow, floodStep, type Compartment, type BreachInput, type Opening } from "../src/sim/compartments";
+import {
+  orificeFlow,
+  floodStep,
+  floodBallastLocal,
+  equalizeFlooding,
+  type Compartment,
+  type BreachInput,
+  type Opening,
+} from "../src/sim/compartments";
+import { VOXEL_SIZE } from "../src/core/constants";
 
 function comp(volume: number, waterVolume: number, id = 0): Compartment {
   return {
@@ -93,5 +102,71 @@ describe("floodStep", () => {
     floodStep([a, b], openings, [], 0.5);
     expect(a.waterVolume).toBeGreaterThan(1); // gained from b
     expect(b.waterVolume).toBeLessThan(6);
+  });
+});
+
+// Floodwater is modelled as it SETTLES — pooled low and centred, like shifting ballast — NOT at the
+// heel-dependent wet-cell centroid that used to slide to the low side and capsize a sinking hull.
+describe("floodBallastLocal (flood weight settles low & centred)", () => {
+  it("bears at the horizontal geometric centre — no list from heel", () => {
+    const c = comp(10, 5);
+    c.centroid = [1.25, 0.6, -0.5];
+    const [lx, , lz] = floodBallastLocal(c);
+    expect(lx).toBe(1.25);
+    expect(lz).toBe(-0.5);
+  });
+
+  it("sits low and rises monotonically with fill, never above mid-compartment (bottom-heavy)", () => {
+    const c = comp(10, 0);
+    c.bboxMin = [0, 0, 0];
+    c.bboxMax = [4, 4, 4];
+    c.waterVolume = 1;
+    const lowFill = floodBallastLocal(c)[1];
+    c.waterVolume = 9;
+    const highFill = floodBallastLocal(c)[1];
+    expect(highFill).toBeGreaterThan(lowFill); // pool surface rises as it fills
+    // even half-full, the weight bears at or below the compartment's vertical middle
+    const midY = ((c.bboxMin[1] + c.bboxMax[1] + 1) / 2) * VOXEL_SIZE;
+    c.waterVolume = 5;
+    expect(floodBallastLocal(c)[1]).toBeLessThanOrEqual(midY);
+  });
+});
+
+// Bulkheads aren't perfectly watertight under a head: a substantially-flooded compartment slowly
+// overtops/seeps into its fore-aft neighbours, so a foundering hull fills EVENLY (balanced, bottom-
+// heavy) instead of pooling all in one end. Slow, fill-driven, mass-conserving, clamped.
+describe("equalizeFlooding (slow cross-compartment seepage)", () => {
+  it("a nearly-full compartment slowly sheds into its drier neighbour", () => {
+    const a = comp(10, 9, 0);
+    const b = comp(10, 0, 1);
+    equalizeFlooding([a, b], 1 / 60);
+    expect(b.waterVolume).toBeGreaterThan(0);
+    expect(a.waterVolume).toBeLessThan(9);
+    expect(a.waterVolume + b.waterVolume).toBeCloseTo(9, 9); // mass conserved
+  });
+
+  it("does NOT spread while both compartments are only lightly flooded", () => {
+    const a = comp(10, 2, 0); // 20% — below the overtopping gate
+    const b = comp(10, 0, 1);
+    equalizeFlooding([a, b], 1 / 60);
+    expect(b.waterVolume).toBe(0);
+  });
+
+  it("is SLOW — a single step moves only a sliver, not a gush", () => {
+    const a = comp(10, 10, 0);
+    const b = comp(10, 0, 1);
+    equalizeFlooding([a, b], 1 / 60);
+    expect(b.waterVolume).toBeGreaterThan(0);
+    expect(b.waterVolume).toBeLessThan(0.2);
+  });
+
+  it("converges toward equal FILL over time; never negative or over capacity", () => {
+    const a = comp(10, 10, 0);
+    const b = comp(8, 0, 1); // different capacity — equalize by fraction, not volume
+    for (let i = 0; i < 6000; i++) equalizeFlooding([a, b], 1 / 60);
+    expect(a.waterVolume / a.volume).toBeCloseTo(b.waterVolume / b.volume, 2);
+    expect(a.waterVolume).toBeGreaterThanOrEqual(0);
+    expect(b.waterVolume).toBeLessThanOrEqual(b.volume);
+    expect(a.waterVolume + b.waterVolume).toBeCloseTo(10, 6);
   });
 });

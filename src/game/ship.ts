@@ -7,7 +7,14 @@ import { makeVoxelColumns, type VoxelColumn } from "../sim/buoyancy";
 import { planCarve } from "../sim/carve";
 import { planCrush } from "../sim/crush";
 import { computeSurface, updateSurfaceAfterRemoval, unpackCell } from "../sim/surfaceSet";
-import { floodStep, type BreachInput, type Opening, type Compartment } from "../sim/compartments";
+import {
+  floodStep,
+  equalizeFlooding,
+  floodBallastLocal,
+  type BreachInput,
+  type Opening,
+  type Compartment,
+} from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
 import { MATERIALS, breakEnergy } from "../sim/materials";
 import { segmentBoxHit, segmentMastHit, segmentSailHit } from "../sim/rigDamage";
@@ -479,6 +486,10 @@ export class Ship implements ContactTarget {
     }
 
     floodStep(this.build.compartments, this.openings, breaches, dt);
+    // Bulkheads aren't watertight under a head: a substantially-flooded compartment slowly seeps into
+    // its neighbours so she fills EVENLY (balanced, bottom-heavy) instead of pooling in one end and
+    // listing/trimming hard. Slow + mass-conserving; pairs with the low floodwater ballast below.
+    equalizeFlooding(this.build.compartments, dt);
 
     // Foundering is the END stage, gated on lost reserve buoyancy (she's settling under), NOT on a
     // compartment merely topping up — so a single waterline breach settles & survives. `waterlog`
@@ -733,22 +744,16 @@ export class Ship implements ContactTarget {
     // diagnostic only now (the heel force comes from applying lateral drag at the CB).
     this.heelArm = com0.y - cbWorldY;
 
-    // flooded water is cargo: its weight bears at the WET-cell centroid, which pools to the LOW
-    // side as she heels — so a flooded bow pulls the bow down AND a list deepens itself (the free
-    // surface effect). List, and asymmetric-flood capsize, are emergent. Fall back to the geometric
-    // centroid + fill height before the flood-geom pass has produced a wet set.
+    // Flooded water is cargo that has SETTLED: its weight bears LOW and CENTRED in each compartment
+    // (floodBallastLocal), so flooding makes her more bottom-heavy and the per-voxel buoyancy holds
+    // her upright as she sinks. This replaced the wet-cell centroid, which ranked cells by world-Y and
+    // slid to the LOW side as she heeled — a free-surface moment that deepened any list until she
+    // turned turtle and bobbed there inverted. Fore/aft trim from an unevenly-flooded hull still
+    // emerges (compartments bear at their own x); the slow seep above keeps it from running away.
+    // Asymmetric LATERAL capsize is intentionally gone — a foundering ship should settle and go down.
     for (const c of this.build.compartments) {
       if (c.waterVolume <= 0) continue;
-      const g = this.floodGeom.get(c.id);
-      let lx: number, ly: number, lz: number;
-      if (g && g.hasWater) {
-        lx = g.cx; ly = g.cy; lz = g.cz;
-      } else {
-        const fill = c.waterVolume / c.volume;
-        lx = c.centroid[0];
-        ly = (c.bboxMin[1] + (c.bboxMax[1] + 1 - c.bboxMin[1]) * fill * 0.5 + 0.5) * VOXEL_SIZE;
-        lz = c.centroid[2];
-      }
+      const [lx, ly, lz] = floodBallastLocal(c);
       const wp = this.tmpV.set(lx, ly, lz).applyQuaternion(this.tmpQ);
       body.addForceAtPoint(
         { x: 0, y: -c.waterVolume * WATER_DENSITY * 9.81, z: 0 },
