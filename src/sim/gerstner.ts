@@ -159,14 +159,38 @@ export function surfaceVelocity(waves: Wave[], x0: number, z0: number, t: number
  * steepness values.
  */
 export function surfaceHeight(waves: Wave[], x: number, z: number, t: number): number {
+  // Invert the horizontal Gerstner displacement with a few fixed-point iterations
+  // (Crest-style); 3 is ample at game steepness. INLINED + allocation-free: the
+  // inversion only needs the displaced X/Z (the `cos` term), so we skip the Y (`sin`)
+  // that displace() computes and the iteration immediately discards, and we avoid the
+  // per-call [x,y,z] array. Bit-identical to the displace()-based version — the
+  // discarded Y never feeds the X/Z fixed point — but ~half the trig and zero garbage.
+  // This is THE hot path: buoyancy samples it once per hull column, for every ship,
+  // every physics substep, so a fleet of big hulls spends most of its CPU here.
   let px = x;
   let pz = z;
   for (let i = 0; i < 3; i++) {
-    const [dx, , dz] = displace(waves, px, pz, t);
+    let dx = px;
+    let dz = pz;
+    for (const w of waves) {
+      const k = (2 * Math.PI) / w.wavelength;
+      const phase = k * (w.dirX * px + w.dirZ * pz) - k * w.phaseSpeed * t;
+      const qa = Math.min(w.steepness, 1) * w.amplitude;
+      const c = Math.cos(phase);
+      dx += w.dirX * qa * c;
+      dz += w.dirZ * qa * c;
+    }
     px += x - dx;
     pz += z - dz;
   }
-  return displace(waves, px, pz, t)[1];
+  // final pass: only the surface height (Y) at the inverted rest point.
+  let y = 0;
+  for (const w of waves) {
+    const k = (2 * Math.PI) / w.wavelength;
+    const phase = k * (w.dirX * px + w.dirZ * pz) - k * w.phaseSpeed * t;
+    y += w.amplitude * Math.sin(phase);
+  }
+  return y;
 }
 
 /** Approximate surface normal at (x, z) via central differences. */
