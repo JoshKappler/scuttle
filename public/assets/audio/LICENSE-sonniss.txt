@@ -1,0 +1,18 @@
+SONNISS #GameAudioGDC BUNDLE — LICENSE
+======================================
+
+No Sonniss bundle files are currently shipped in this repo. The starter audio in
+this folder is original/procedural (see README.md).
+
+When you drop in sounds from a Sonniss #GameAudioGDC bundle (royalty-free for
+commercial use, NOT CC0), paste the bundle's full license text here, and note in
+../CREDITS.md which files came from it.
+
+Summary of the Sonniss terms (verify against the version you downloaded):
+- Worldwide, non-exclusive, royalty-free use in personal AND commercial projects.
+- No attribution required.
+- You may modify and synchronise the sounds with audio/visual projects (games, etc.).
+- You may NOT resell/redistribute the raw sounds on their own, or claim authorship.
+- AI/ML training on the sounds is prohibited.
+
+Source: https://sonniss.com/gameaudiogdc/  and  https://sonniss.com/gdc-bundle-license/
