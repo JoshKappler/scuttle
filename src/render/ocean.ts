@@ -725,7 +725,9 @@ void main() {
   // today's look. clarity 0 gives shallowAlpha 1 AND murk 0, an exact no-op.
   float columnDepth = vWorldPos.y - floorY;
   float visFrac = clamp(columnDepth / max(uWaterVis, 0.05), 0.0, 1.0);
-  float shallowAlpha = mix(1.0, 0.08, uWaterClarity); // 0.08 = min alpha floor at full clarity (never quite invisible)
+  float shallowAlpha = mix(1.0, 0.45, uWaterClarity); // min alpha floor: shallow water stays murky-opaque (~0.53 at
+                                                      // clarity .85) — you still read the sandy shelf through it, but it
+                                                      // is never a see-through window onto the void where no mesh is behind
   float murk = uWaterClarity * (1.0 - visFrac);        // navy veil, 0 when off OR deep
   float seaAlpha = mix(shallowAlpha, 1.0, visFrac);
   col = mix(col, uMurkColor, murk);

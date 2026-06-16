@@ -68,6 +68,18 @@ export function createSky(): SkySetup {
   const sunDir = SUN_DIR.clone();
   uniforms.sunPosition.value.copy(sunDir);
 
+  // Black out the dome's LOWER hemisphere. The ocean is drawn OVER the sky, so anywhere the sea
+  // is thin/see-through — the shallow depth-murk ring around islands, or a cutaway — the bright
+  // below-horizon sky used to show straight through as a white "void box". Fading the dome to
+  // black just under the horizon makes any such gap read as dark water, never a white hole.
+  // `direction` (= normalize(vWorldPosition - cameraPosition)) is already in scope in Sky's frag.
+  sky.material.fragmentShader = sky.material.fragmentShader.replace(
+    "gl_FragColor = vec4( texColor, 1.0 );",
+    "float belowHorizon = clamp( -direction.y * 6.0, 0.0, 1.0 );\n" +
+      "\tgl_FragColor = vec4( mix( texColor, vec3( 0.0 ), belowHorizon ), 1.0 );",
+  );
+  sky.material.needsUpdate = true;
+
   const sunColor = new THREE.Color(0xffd9b0);
   const sunLight = new THREE.DirectionalLight(sunColor.getHex(), 2.6);
   sunLight.position.copy(sunDir.clone().multiplyScalar(120));
