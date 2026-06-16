@@ -16,13 +16,15 @@ import type { ShipBuild } from "../sim/shipwright";
 import type { ShipVisual, SailRecord } from "../render/shipVisual";
 import type { Physics } from "./physics";
 import { HullCollider } from "./hullCollider";
+import type { HullView } from "../sim/voxelOverlap";
+import type { ContactTarget } from "./voxelContact";
 
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
  * Buoyancy/flood/drag forces are applied at probe points every fixed step;
  * listing, trim, and sinking are emergent — nothing here scripts motion.
  */
-export class Ship {
+export class Ship implements ContactTarget {
   readonly body: RAPIER.RigidBody;
   readonly build: ShipBuild;
   readonly visual: ShipVisual;
@@ -983,4 +985,34 @@ export class Ship {
   expectedSubmergedFrac(): number {
     return this.build.grid.totalMass() / (WATER_DENSITY * this.build.envelopeVolume);
   }
+
+  // ---- ContactTarget (game/voxelContact.ts B-side): Ship is a full participant in the one
+  //      deformable-contact rule. carveCells() and aabbWorld() already exist above. ----
+  readonly voxelSize = VOXEL_SIZE;
+  readonly canCarve = true;
+
+  fillHullView(hv: HullView): void {
+    hv.surface = this.surfaceCells();
+    const grid = this.build.grid;
+    hv.isSolid = (x, y, z) => grid.isSolid(x, y, z);
+    hv.dims = grid.dims;
+    const tr = this.body.translation();
+    hv.pos[0] = tr.x; hv.pos[1] = tr.y; hv.pos[2] = tr.z;
+    const rot = this.body.rotation();
+    hv.quat[0] = rot.x; hv.quat[1] = rot.y; hv.quat[2] = rot.z; hv.quat[3] = rot.w;
+  }
+
+  comWorld(out: THREE.Vector3): THREE.Vector3 {
+    return this.localToWorld(this.comLocal, out);
+  }
+
+  linvel(): { x: number; y: number; z: number } { return this.body.linvel(); }
+  angvel(): { x: number; y: number; z: number } { return this.body.angvel(); }
+  mass(): number { return this.body.mass(); }
+  cellBreakEnergy(x: number, y: number, z: number): number { return breakEnergy(this.build.grid.get(x, y, z)); }
+  applyImpulseAtPoint(impulse: THREE.Vector3, point: { x: number; y: number; z: number }): void {
+    this.body.applyImpulseAtPoint(impulse, point, true);
+  }
+  translation(): { x: number; y: number; z: number } { return this.body.translation(); }
+  setTranslation(t: { x: number; y: number; z: number }): void { this.body.setTranslation(t, true); }
 }

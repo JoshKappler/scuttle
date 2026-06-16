@@ -59,9 +59,9 @@ export class IslandTarget implements ContactTarget {
   linvel() { return ZERO; }
   angvel() { return ZERO; }
   mass() { return TERRAIN_MASS; }
-  cellBreakEnergy(): number { return 0; } // never called (canCarve === false)
-  carveCells(): number { return 0; }      // indestructible — no-op
-  applyImpulseAtPoint(): void { /* immovable — no-op */ }
+  cellBreakEnergy(_x: number, _y: number, _z: number): number { return 0; } // never called (canCarve === false)
+  carveCells(_cells: [number, number, number][]): number { return 0; }      // indestructible — no-op
+  applyImpulseAtPoint(_impulse: THREE.Vector3, _point: { x: number; y: number; z: number }): void { /* immovable — no-op */ }
   translation() { return this.pos; }
-  setTranslation(): void { /* immovable — no-op */ }
+  setTranslation(_t: { x: number; y: number; z: number }): void { /* immovable — no-op */ }
 }
