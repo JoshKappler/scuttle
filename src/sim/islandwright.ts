@@ -269,7 +269,7 @@ function makeHeightField(o: IslandOpts, nx: number, nz: number): Float32Array {
   // --- 3. elevation = coast-distance base + shore-cliff variation + inland crags ---
   const hf = new Float32Array(nx * nz);
   const mountainScale = R * 0.85;
-  const cliffAmp = Math.max(4, peak * 0.4); // sea-cliff height where the cliff field is high
+  const cliffAmp = Math.max(6, peak * 0.55); // taller sea-cliffs (cliffier coasts pass)
   const ridgeAmp = peak * 0.5;
   for (let x = 0; x < nx; x++)
     for (let z = 0; z < nz; z++) {
@@ -282,7 +282,7 @@ function makeHeightField(o: IslandOpts, nx: number, nz: number): Float32Array {
       // shore cliffs: only the top ~third of the cliff-noise becomes sheer rock —
       // the rest of the coast stays sand beach (cliffs VARY around the island)
       const cn = 0.5 + 0.5 * fbm(cliffN, x * Fc * 1.3, z * Fc * 1.3, 2);
-      const cliffSel = smoothstep(0.5, 0.9, cn);
+      const cliffSel = smoothstep(0.38, 0.82, cn); // more of the coast becomes sheer cliff
       const shoreBump = 1 - smoothstep(3, 13, cd); // strong at the coast, gone by ~13 vox inland
       const cliff = cliffSel * cliffAmp * shoreBump;
 
