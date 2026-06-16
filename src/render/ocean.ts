@@ -402,6 +402,11 @@ uniform float uLandOn;
 void main() {
   #include <clipping_planes_fragment>
 
+  // metres of water standing over a SUBMERGED deck beneath this fragment (>=0 only where a deck here
+  // has gone under the mean sea). Set by the hull cuts below; drives the translucent depth-fade at the
+  // end, so a sinking hull DISSOLVES into the sea instead of leaving a void where the cut used to be.
+  float submrg = -1.0;
+
   // dry bilges, ALWAYS: the sea does not exist inside an intact hull. The
   // surface is discarded within each ship's waterline ellipse so the hold
   // shows timber, not "the wake and the water flowing by" through the hatch
@@ -436,7 +441,10 @@ void main() {
     // angles"). beamProfile narrows the cut toward the ends so it follows the timber.
     float along2 = al0 * al0;
     float beamProfile = (1.0 - along2) * (0.5 + 0.5 * (1.0 - along2));
-    if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) discard;
+    if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) {
+      if (deckY > 0.3) discard;             // dry deck → cut the sea (no ocean in the hold)
+      else submrg = max(submrg, 0.3 - deckY); // submerged → let the sea close over it, faded by depth
+    }
   }
 
   // P4 voxel-accurate cut — EVERY hull. Pose this fragment into each live hull's LOCAL frame and
@@ -450,7 +458,16 @@ void main() {
     vec2 puv = vec2(lp.x / uProfileSize[s].x, lp.z / uProfileSize[s].y);
     if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
       vec2 kd = texture2D(uProfileAtlas, vec2(puv.x, (puv.y + float(s)) / float(MAXVIS))).rg; // keel, deck (m)
-      if (kd.y > kd.x && lp.y > kd.x && lp.y < kd.y + 2.0) discard;
+      if (kd.y > kd.x && lp.y > kd.x) {
+        // world height of THIS column's deck top (local→world Y = trans.y + dot(R⁻¹'s y-column, localPt)).
+        float deckWY = uProfileTrans[s].y + dot(uProfileInvRot[s][1], vec3(lp.x, kd.y, lp.z));
+        // dry deck (still has freeboard) → cut the sea so the hold shows timber, not ocean. Submerged
+        // deck → DON'T cut: let the sea close over it and record the depth for the fade below, so a
+        // sinking bow dissolves into the water. (The old "lp.y < deck + 2 m" band kept carving a hole
+        // 2 m above a submerged deck → you saw straight through the bow to the skybox — the void bug.)
+        if (deckWY > 0.3) discard;
+        else submrg = max(submrg, 0.3 - deckWY);
+      }
     }
   }
 
@@ -683,7 +700,11 @@ void main() {
   float fog = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
   col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
 
-  gl_FragColor = vec4(col, cutAlpha);
+  // where the sea has closed over a SUBMERGED deck, fade from translucent (just awash) to opaque
+  // (a couple of metres down) so the drowned hull dissolves into the murk instead of hard-clipping
+  // to a void. Open water and dry hulls keep submrg<0 → full opacity, unchanged.
+  float seaAlpha = submrg >= 0.0 ? clamp(0.12 + submrg * 0.4, 0.12, 1.0) : 1.0;
+  gl_FragColor = vec4(col, min(cutAlpha, seaAlpha));
 }
 `;
 
