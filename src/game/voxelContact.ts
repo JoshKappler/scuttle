@@ -42,6 +42,39 @@ import type { Effects } from "../render/effects";
  * grid, so the carve (carveCells) can't touch them — the "spare the props" requirement is structural.
  */
 
+/**
+ * The "other body" (hull B) in a deformable contact. A ship implements this as a thin pass-through
+ * (ship-vs-ship is unchanged); IslandTarget implements it for static terrain (infinite mass, zero
+ * velocity, never carved). The contact rule (resolveContact) is written entirely against this
+ * interface, so terrain is just another hull — THE LAW invariant #4, one destruction rule.
+ */
+export interface ContactTarget {
+  /** This body's voxel cell size in metres (ship 0.25, terrain 1.0). */
+  readonly voxelSize: number;
+  /** False for indestructible terrain — its voxels are never carved. */
+  readonly canCarve: boolean;
+  /** Fill a HullView for overlap detection. Surface is only walked when this body is hull A. */
+  fillHullView(hv: HullView): void;
+  /** World AABB of this body's voxel envelope, written into out (broad-phase cull). */
+  aabbWorld(out: { min: THREE.Vector3; max: THREE.Vector3 }): void;
+  /** World centre (closing direction + point velocity), into out. */
+  comWorld(out: THREE.Vector3): THREE.Vector3;
+  linvel(): { x: number; y: number; z: number };
+  angvel(): { x: number; y: number; z: number };
+  /** Effective mass (kg); terrain reports a huge value so it acts immovable. */
+  mass(): number;
+  /** Joules to break the local cell (only called when canCarve). */
+  cellBreakEnergy(x: number, y: number, z: number): number;
+  /** Remove local cells; returns count removed (only called when canCarve). */
+  carveCells(cells: [number, number, number][]): number;
+  /** Apply a world impulse at a world point (no-op for immovable terrain). */
+  applyImpulseAtPoint(impulse: THREE.Vector3, point: { x: number; y: number; z: number }): void;
+  /** Current world translation (for de-penetration). */
+  translation(): { x: number; y: number; z: number };
+  /** Set world translation (no-op for immovable terrain). */
+  setTranslation(t: { x: number; y: number; z: number }): void;
+}
+
 /** Live per-step readback for the dev harness. Reflects the most-damaged pair this step. */
 export interface ContactDebug {
   overlapCount: number; // voxel-contacts found this step
