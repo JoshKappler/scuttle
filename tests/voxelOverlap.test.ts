@@ -91,6 +91,21 @@ describe("detectContacts", () => {
     for (let i = 0; i < r!.count; i++) expect(aCell(s, i)[0]).toBe(3);
   });
 
+  it("mismatched voxel sizes: a fine hull A overlapping a coarse hull B finds the contacts", () => {
+    // B: a 2^3 block at voxel size 2 -> world extent [0,4)^3
+    const b = block(2, [0, 0, 0], ID);
+    // A: a 4^3 block at voxel size 1, shifted so only A's x=0 layer (centre 3.5) lands inside B
+    const a = block(4, [3, 0, 0], ID); // A world x [3,7)
+    const s = scratch(64);
+    const r = detectContacts(a, b, 1, 0, s, 2); // vsA=1, vsB=2
+    expect(r).not.toBeNull();
+    expect(r!.count).toBe(16); // A's x=0 face layer, 4x4 in y,z
+    for (let i = 0; i < r!.count; i++) {
+      expect(aCell(s, i)[0]).toBe(0); // A's leading (-x) layer into B
+      expect(bCell(s, i)[0]).toBe(1); // world 3.5 -> B-local floor(3.5/2) = 1
+    }
+  });
+
   it("respects scratch capacity (never writes past the end)", () => {
     const vs = 1;
     const a = block(4, [0, 0, 0], ID);

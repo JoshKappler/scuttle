@@ -92,14 +92,16 @@ export function detectContacts(
   voxelSize: number,
   buffer: number,
   scratch: ContactScratch,
+  voxelSizeB: number = voxelSize, // B's cell size (terrain is 4× the ship's); defaults to A's for ship-ship
 ): ContactResult | null {
-  const vs = voxelSize;
+  const vs = voxelSize;   // A — the hull whose surface cells we walk
+  const vsB = voxelSizeB; // B — the occupancy-lookup target
   const cap = (scratch.aCells.length / 3) | 0;
   if (cap === 0) return null;
 
   // B's world AABB, padded by the buffer, for a cheap per-cell broad reject.
-  worldAabb(b, vs, _bMin, _bMax);
-  const pad = buffer * vs;
+  worldAabb(b, vsB, _bMin, _bMax);
+  const pad = buffer * vsB;
   _bMin[0] -= pad; _bMin[1] -= pad; _bMin[2] -= pad;
   _bMax[0] += pad; _bMax[1] += pad; _bMax[2] += pad;
 
@@ -121,7 +123,7 @@ export function detectContacts(
     if (wx < _bMin[0] || wx > _bMax[0] || wy < _bMin[1] || wy > _bMax[1] || wz < _bMin[2] || wz > _bMax[2]) continue;
     // world -> B local (inverse rotate by B's quat = rotate by its conjugate), in CELL units
     qRot(-b.quat[0], -b.quat[1], -b.quat[2], b.quat[3], wx - b.pos[0], wy - b.pos[1], wz - b.pos[2], _blocal);
-    const ux = _blocal[0] / vs, uy = _blocal[1] / vs, uz = _blocal[2] / vs;
+    const ux = _blocal[0] / vsB, uy = _blocal[1] / vsB, uz = _blocal[2] / vsB;
 
     // The cell that contains the point; prefer it (deepest contact) if solid.
     const cx = Math.floor(ux), cy = Math.floor(uy), cz = Math.floor(uz);
@@ -164,7 +166,7 @@ export function detectContacts(
 
   // axis = the thin world axis, signed from the contact centroid toward B's centre.
   const cax = sumWX / count, cay = sumWY / count, caz = sumWZ / count;
-  qRot(b.quat[0], b.quat[1], b.quat[2], b.quat[3], (b.dims[0] * vs) / 2, (b.dims[1] * vs) / 2, (b.dims[2] * vs) / 2, _bc);
+  qRot(b.quat[0], b.quat[1], b.quat[2], b.quat[3], (b.dims[0] * vsB) / 2, (b.dims[1] * vsB) / 2, (b.dims[2] * vsB) / 2, _bc);
   const bcx = _bc[0] + b.pos[0], bcy = _bc[1] + b.pos[1], bcz = _bc[2] + b.pos[2];
   const axis: [number, number, number] = [0, 0, 0];
   axis[axisIdx] = 1;
