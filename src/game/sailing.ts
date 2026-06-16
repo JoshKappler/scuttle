@@ -29,6 +29,11 @@ export class SailingController {
   // separate temp for the up vector — reusing tmpF here once ALIASED fwd
   // (thrust silently pointed straight up; both ships drifted at 2 kn)
   private tmpU = new THREE.Vector3();
+  // force-application points: dedicated scratch (NOT tmpF — that is aliased to fwd and read
+  // inside the mast loop). Were `tmpF.clone()` ×2 per mast per ship per step — the single
+  // densest GC source in the per-step glue at a full fleet.
+  private tmpAp = new THREE.Vector3();
+  private tmpHp = new THREE.Vector3();
 
   /** Current forward speed (m/s, signed) for the HUD. */
   speed = 0;
@@ -92,7 +97,7 @@ export class SailingController {
         const mz = (m.z + 0.5) * 0.25;
         // drive applied at COM height (thrust high on the mast buried the
         // bow; pitch is the trim controller's job now)
-        const ap = ship.localToWorld([mx, ship.comLocal[1], mz], this.tmpF.clone());
+        const ap = ship.localToWorld([mx, ship.comLocal[1], mz], this.tmpAp);
         body.addForceAtPoint(
           {
             x: (fwd.x * thrust * canvas) / masts.length,
@@ -105,7 +110,7 @@ export class SailingController {
         // the wind's LATERAL push on the canvas, applied up the mast: this is
         // what actually heels a square-rigger on a reach, and the deep keel
         // resisting the resulting leeway completes the couple
-        const hp = ship.localToWorld([mx, ship.comLocal[1] + m.h * 0.23, mz], this.tmpF.clone());
+        const hp = ship.localToWorld([mx, ship.comLocal[1] + m.h * 0.23, mz], this.tmpHp);
         body.addForceAtPoint(
           { x: latX * heelF * canvas, y: 0, z: latZ * heelF * canvas },
           hp,

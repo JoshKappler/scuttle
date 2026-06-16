@@ -1155,10 +1155,12 @@ async function main() {
   // identically first-person or orbit). Looking more along the keel than across it lays
   // the bow/stern CHASERS; looking across it lays the broadside you're facing.
   const lookV = new THREE.Vector3();
+  const _aimInv = new THREE.Quaternion(); // reused — aimBearing() runs several times/frame
+  const _camFollow = new THREE.Vector3(); // reused — char third-person follow target each frame
   type Bearing = 1 | -1 | "fore" | "aft";
   function aimBearing(): Bearing {
     const rot2 = sloop.body.rotation();
-    const inv = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w).invert();
+    const inv = _aimInv.set(rot2.x, rot2.y, rot2.z, rot2.w).invert();
     camera.getWorldDirection(lookV).applyQuaternion(inv);
     if (Math.abs(lookV.x) > Math.abs(lookV.z)) return lookV.x >= 0 ? "fore" : "aft";
     return lookV.z >= 0 ? 1 : -1;
@@ -1257,7 +1259,8 @@ async function main() {
     const v = ship.body.linvel();
     const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
     const rot = ship.body.rotation();
-    wakeF.set(1, 0, 0).applyQuaternion(new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w));
+    _poseQuat.set(rot.x, rot.y, rot.z, rot.w); // reused below for the pose matrix too
+    wakeF.set(1, 0, 0).applyQuaternion(_poseQuat);
     wakeF.y = 0;
     wakeF.normalize();
     const fp = ship.build.footprint;
@@ -1279,7 +1282,7 @@ async function main() {
     );
     // P4: feed BOTH hulls' live world→local pose so each ship's voxel-accurate cut
     // tracks its own heave/pitch/roll (the shader skips that slot's analytic ellipse).
-    _poseQuat.set(rot.x, rot.y, rot.z, rot.w);
+    // (_poseQuat already set from rot at the top of feedWake)
     _poseM4.makeRotationFromQuaternion(_poseQuat);
     _poseInvRot.setFromMatrix4(_poseM4).transpose(); // R⁻¹ = Rᵀ for a rotation
     _poseTrans.set(tr.x, tr.y, tr.z);
@@ -1813,7 +1816,7 @@ async function main() {
       // (V's default view) instead of the whole ship.
       viewModel.visible = false;
       const pp = character.player.body.translation();
-      controls.updateFollowCamera(camera, new THREE.Vector3(pp.x, pp.y, pp.z));
+      controls.updateFollowCamera(camera, _camFollow.set(pp.x, pp.y, pp.z));
     } else {
       viewModel.visible = false;
       // bird's-eye orbit on the ship's CENTER (the body origin is the grid

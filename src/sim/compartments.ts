@@ -70,19 +70,18 @@ export function floodStep(
   breaches: BreachInput[],
   dt: number,
 ): void {
-  const byId = new Map<number, Compartment>();
-  for (const c of compartments) byId.set(c.id, c);
-
+  // compartment ids are dense 0..N-1 indices === array position (assigned in findCompartments),
+  // so a direct index resolves them — no need to rebuild an id→compartment Map every step.
   for (const br of breaches) {
-    const c = byId.get(br.compartmentId);
+    const c = compartments[br.compartmentId];
     if (!c) continue;
     const next = c.waterVolume + orificeFlow(br.area, br.extHead, br.intHead) * dt;
     c.waterVolume = Math.max(0, Math.min(next, c.volume));
   }
 
   for (const o of openings) {
-    const a = byId.get(o.a);
-    const b = byId.get(o.b);
+    const a = compartments[o.a];
+    const b = compartments[o.b];
     if (!a || !b) continue;
     const fillA = a.waterVolume / a.volume;
     const fillB = b.waterVolume / b.volume;
