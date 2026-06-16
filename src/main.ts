@@ -144,6 +144,7 @@ async function main() {
   // list so they never trip the ship-vs-ship destruction code.
   const { IslandField } = await import("./game/islandField");
   const islands = new IslandField(seed, physics, scene);
+  world.terrain = islands.contactTargets; // ship↔terrain deformable destruction (game/voxelContact.ts)
 
   // dev/playtest convenience: ?at=harbor drops you in clear water just seaward of
   // the town dock, so you can look the island over without the opening sail out to

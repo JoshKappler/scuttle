@@ -1,9 +1,12 @@
 import * as THREE from "three";
 import { Rng } from "../core/rng";
 import { VOXEL_SIZE } from "../core/constants";
+import { TUN } from "../core/tunables";
+import type { VoxelGrid } from "../sim/voxelGrid";
 import type { Physics } from "./physics";
-import { buildHarborIsland, buildIsland, type IslandModel } from "../sim/islandwright";
+import { buildHarborIsland, buildIsland, buildSeaStack, type IslandModel } from "../sim/islandwright";
 import { IslandVisual } from "../render/islandVisual";
+import { IslandTarget } from "./islandTarget";
 
 /** Terrain voxels render much coarser than ship voxels: 0.25 m × this = 1 m cells.
  *  Coarse cells let islands be hundreds of metres across (dwarfing the 34 m ship)
@@ -161,10 +164,13 @@ export interface IslandInstance {
  */
 export class IslandField {
   readonly islands: IslandInstance[] = [];
+  /** Every terrain piece (islands, cliffs, sea stacks) as a crush hull-B for game/voxelContact.ts.
+   *  main.ts hands this to GameWorld.terrain so the ship-vs-terrain crush runs each step. */
+  readonly contactTargets: IslandTarget[] = [];
 
   constructor(seed: string, physics: Physics, scene: THREE.Scene) {
-    const R = physics.RAPIER;
-    for (const p of planIslandPlacements(seed)) {
+    const placements = planIslandPlacements(seed);
+    for (const p of placements) {
       const model =
         p.kind === "harbor"
           ? buildHarborIsland({ seed: p.seed, radiusVox: p.radiusVox, peakVox: p.peakVox })
@@ -180,17 +186,7 @@ export class IslandField {
       const worldY = -model.meta.waterlineY * M_PER_VOX;
       const visual = new IslandVisual(model.grid, { x: p.x, y: worldY, z: p.z }, ISLAND_VOXEL_SCALE);
       scene.add(visual.group);
-
-      // static trimesh collider (default groups → collides with the ship hull cuboid)
-      if (visual.colliderIndices.length > 0) {
-        const body = physics.world.createRigidBody(
-          R.RigidBodyDesc.fixed().setTranslation(p.x, worldY, p.z),
-        );
-        physics.world.createCollider(
-          R.ColliderDesc.trimesh(visual.colliderVerts, visual.colliderIndices),
-          body,
-        );
-      }
+      this.registerTerrain(physics, model.grid, visual, { x: p.x, y: worldY, z: p.z });
 
       let dockWorld: THREE.Vector3 | null = null;
       if (model.meta.dock) {
@@ -203,6 +199,40 @@ export class IslandField {
       }
       this.islands.push({ placement: p, model, visual, dockWorld });
     }
+
+    // sea-stack hazards: terrain too → same crush + render path (no new physics/render code)
+    for (const h of planHazards(seed, TUN.hazard.seaStacks, placements)) {
+      const model = buildSeaStack({ seed: h.seed, radiusVox: h.radiusVox, peakVox: h.peakVox });
+      const worldY = -model.meta.waterlineY * M_PER_VOX;
+      const visual = new IslandVisual(model.grid, { x: h.x, y: worldY, z: h.z }, ISLAND_VOXEL_SCALE);
+      scene.add(visual.group);
+      this.registerTerrain(physics, model.grid, visual, { x: h.x, y: worldY, z: h.z });
+    }
+  }
+
+  /** Build the static trimesh collider + the crush contact target for one terrain grid. */
+  private registerTerrain(
+    physics: Physics,
+    grid: VoxelGrid,
+    visual: IslandVisual,
+    worldPos: { x: number; y: number; z: number },
+  ): void {
+    const R = physics.RAPIER;
+    if (visual.colliderIndices.length > 0) {
+      const body = physics.world.createRigidBody(
+        R.RigidBodyDesc.fixed().setTranslation(worldPos.x, worldPos.y, worldPos.z),
+      );
+      const col = physics.world.createCollider(
+        R.ColliderDesc.trimesh(visual.colliderVerts, visual.colliderIndices),
+        body,
+      );
+      // ship↔terrain is DEFORMABLE: tag the body as terrain (physics.ts filterContactPair pulls
+      // ship↔terrain out of the rigid solver) and flag the collider so the contact hook fires.
+      // Character/debris↔terrain still solve rigidly (not ships) — the captain still walks the dock.
+      physics.terrainBodies.add(body.handle);
+      col.setActiveHooks(R.ActiveHooks.FILTER_CONTACT_PAIRS);
+    }
+    this.contactTargets.push(new IslandTarget(grid, worldPos, M_PER_VOX));
   }
 
   /** Nearest harbor dock anchor to a world point (future docking interaction). */
