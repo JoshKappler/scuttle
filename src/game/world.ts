@@ -23,6 +23,9 @@ export class GameWorld {
    *  Rapier's solver, see physics.ts). main.ts may attach `.effects` for dust + read `.debug`. */
   readonly contact = new VoxelContact();
   simTime = 0;
+  /** Buoyancy wave-sampling LOD focus — set to the player ship. Ships far from it sample the (smooth)
+   *  swell more coarsely in applyForces; null → no LOD (tests/headless sample every column exactly). */
+  focus: Ship | null = null;
   /** Per-frame CPU timing breakdown in ms — pure diagnostics (perf HUD + DEBUG.world.timing),
    *  never read by physics or the vitest oracle. `substeps` = fixed steps run this frame (1 at
    *  60 fps, up to 2 when the frame is slow and the accumulator saturates → the work multiplier). */
@@ -76,6 +79,13 @@ export class GameWorld {
     // which only makes the next frame slower — a positive-feedback spiral that pinned the fleet at
     // ~10 fps. Capping at 2 trades a touch of slow-motion under extreme load for a stable frame.
     this.accumulator = Math.min(this.accumulator + dt, FIXED_DT * 2);
+    // buoyancy LOD focus (the player ship), sampled once per frame — distant ships sample the swell coarsely
+    let focusX: number | undefined, focusZ: number | undefined;
+    if (this.focus) {
+      const ft = this.focus.body.translation();
+      focusX = ft.x;
+      focusZ = ft.z;
+    }
     while (this.accumulator >= FIXED_DT) {
       this.accumulator -= FIXED_DT;
       this.simTime += FIXED_DT;
@@ -84,7 +94,7 @@ export class GameWorld {
         const a = performance.now();
         ship.updateFlooding(FIXED_DT, this.physWaves, this.simTime);
         const b = performance.now();
-        ship.applyForces(this.physWaves, this.simTime);
+        ship.applyForces(this.physWaves, this.simTime, focusX, focusZ);
         tm.flood += b - a;
         tm.buoy += performance.now() - b;
       }

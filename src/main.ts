@@ -271,6 +271,7 @@ async function main() {
   let sloopVisual = new ShipVisual(sloopBuild);
   let sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
+  world.focus = sloop; // buoyancy LOD centres on the player ship
   // the on-foot captain (deck-walk / kick / first-third person). He spends most of
   // his time at the wheel; the old boarding system (grapple/crew/chest) is gone.
   const character = new PlayerCharacter(physics, scene, sloop);
@@ -520,6 +521,7 @@ async function main() {
     };
     world.addShip(fresh);
     sloop = fresh;
+    world.focus = fresh; // keep the buoyancy LOD focus on the live player hull
     sloopVisual = visual;
     port.setShip(fresh);
     fleet.setTarget(fresh);

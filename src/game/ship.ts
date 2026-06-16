@@ -17,6 +17,14 @@ import type { ShipVisual, SailRecord } from "../render/shipVisual";
 import type { Physics } from "./physics";
 import { HullCollider } from "./hullCollider";
 
+// Buoyancy wave-sampling LOD thresholds (distance² to the player) + reuse-cell sizes (m). The swell
+// (λ≥14 m) varies little over a metre, so a distant ship can reuse one surfaceHeight sample across a
+// small world-space cell with imperceptible error — and the per-column trig is a fleet's CPU wall.
+const BUOY_LOD_NEAR2 = 70 * 70; // ≤70 m from the player: EXACT per-column sampling (no LOD)
+const BUOY_LOD_FAR2 = 140 * 140; // >140 m: coarsest sampling
+const BUOY_CELL_MID = 0.8; // m reuse radius at mid range (~5× fewer evals, <5% amplitude error)
+const BUOY_CELL_FAR = 1.8; // m reuse radius far away (~10×; slight bob, invisible at distance)
+
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
  * Buoyancy/flood/drag forces are applied at probe points every fixed step;
@@ -567,7 +575,7 @@ export class Ship {
   }
 
   /** Apply buoyancy + water drag for one fixed step. Call before world.step(). */
-  applyForces(waves: Wave[], t: number): void {
+  applyForces(waves: Wave[], t: number, focusX?: number, focusZ?: number): void {
     const body = this.body;
     body.resetForces(true);
     body.resetTorques(true);
@@ -612,13 +620,36 @@ export class Ship {
     let sxz = 0; // Σ area·rx·rz
     let bowMaxX = -Infinity; // r18: frontmost wet column → voxel bow-spray origin
     this.waterlineN = 0;
+    // Buoyancy wave-sampling LOD: a ship far from the focus (the player) reuses a surfaceHeight sample
+    // until the column's world position moves past `waveCell` metres — invisible at range, ~5-10× fewer
+    // trig-heavy evals. Near/player ships (or no focus → tests/headless) keep waveCell 0 = EXACT per column.
+    let waveCell = 0;
+    if (focusX !== undefined && focusZ !== undefined) {
+      const fdx = tr.x - focusX,
+        fdz = tr.z - focusZ;
+      const fd2 = fdx * fdx + fdz * fdz;
+      if (fd2 > BUOY_LOD_FAR2) waveCell = BUOY_CELL_FAR;
+      else if (fd2 > BUOY_LOD_NEAR2) waveCell = BUOY_CELL_MID;
+    }
+    let cacheWx = Infinity,
+      cacheWz = Infinity,
+      cacheSurf = 0;
     for (const col of this.columns) {
       // column anchor (its lowest cell) → world; sample the surface once here
       const aw = this.tmpV.set(col.x, col.cellY[0], col.z).applyQuaternion(this.tmpQ);
       const wx = aw.x + tr.x;
       const wz = aw.z + tr.z;
       const anchorWY = aw.y + tr.y;
-      const surfaceY = surfaceHeight(waves, wx, wz, t);
+      // LOD: reuse the cached sample while still within waveCell metres of it (Manhattan); else resample.
+      let surfaceY: number;
+      if (waveCell > 0 && Math.abs(wx - cacheWx) + Math.abs(wz - cacheWz) < waveCell) {
+        surfaceY = cacheSurf;
+      } else {
+        surfaceY = surfaceHeight(waves, wx, wz, t);
+        cacheWx = wx;
+        cacheWz = wz;
+        cacheSurf = surfaceY;
+      }
       const rx = wx - com0.x; // horizontal lever arm of this column from the COM
       const rz = wz - com0.z;
       const y0 = col.cellY[0];

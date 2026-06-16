@@ -70,6 +70,8 @@ export class PerfMonitor {
   private evalAccum = 0; // seconds since the last governor decision
   private holdAccum = 99; // seconds since the last tier CHANGE (anti-flap cooldown)
   private total = 0; // total seconds the monitor has run (for the warm-up grace)
+  private lowAccum = 0; // seconds of continuous low fps on a HARDWARE GPU (stale-GPU-profile hint)
+  private lowHintShown = false;
   private overlay: HTMLDivElement | null = null;
   private banner: HTMLDivElement | null = null;
   private gpu: GpuInfo;
@@ -107,6 +109,7 @@ export class PerfMonitor {
       TUN.gfx.auto.scale = 1;
       TUN.gfx.auto.suppressGodrays = false;
     }
+    this.checkStaleGpu(dt, fps);
     this.updateOverlay(fps);
   }
 
@@ -149,6 +152,25 @@ export class PerfMonitor {
     TUN.gfx.auto.tier = tier;
     TUN.gfx.auto.scale = TIERS[tier].scale;
     TUN.gfx.auto.suppressGodrays = TIERS[tier].dropGodrays;
+  }
+
+  /** Stale-GPU-profile hint. A healthy discrete GPU renders this game well above 30 fps; if the frame
+   *  rate sits low for several seconds on a HARDWARE GPU (the software path has its own banner), the
+   *  browser is most likely on a STALE / degraded GPU profile — the exact failure mode behind a
+   *  "wrong GPU name + ~20 fps" report (e.g. a machine upgraded from an old card whose browser profile
+   *  cached the old GPU). A full browser restart spins up a fresh GPU process and fixes it. Fires once. */
+  private checkStaleGpu(dt: number, fps: number): void {
+    if (this.gpu.software || this.lowHintShown || this.total < 10) return;
+    this.lowAccum = fps < 28 ? this.lowAccum + dt : 0;
+    if (this.lowAccum > 6) {
+      this.lowHintShown = true;
+      this.showBanner(
+        `⚠ Low frame rate (~${fps.toFixed(0)} fps) on a hardware GPU: ${shortGpu(this.gpu.name)}. If that name ` +
+          `looks wrong or this persists, your browser is likely on a stale GPU profile — fully QUIT and reopen the ` +
+          `browser (then Ctrl+Shift+R to hard-reload), or try another browser.`,
+        "#6b4a12",
+      );
+    }
   }
 
   // ---- HUD overlay (small fps/ms/tier/GPU readout, top-left) ----
