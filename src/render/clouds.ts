@@ -53,13 +53,13 @@ void main() {
   float up = d.y;
   if (up < 0.02) discard; // below the horizon: leave the sky alone
 
-  // cloud-PLANE projection: trace the view ray to a flat cloud deck overhead and
-  // sample noise at the hit point's XZ. round 2: the OLD floor (0.18) let the
-  // projection stretch cloud cells into long horizontal SMEARS between up≈0.18..0.5
-  // — the "melts down at the edges" the player saw. A higher floor (0.30) clamps that
-  // stretch much sooner, and the *1.7 scale (was 1.1) makes the cells finer = less
-  // blobby / "higher resolution".
-  vec2 uv = (d.xz / max(up, 0.30)) * 1.7;
+  // cloud projection by VIEW DIRECTION (zero parallax → reads as infinitely far). round 3
+  // (2026-06-16): the hard floor max(up,0.30) FROZE the projection below up=0.30 into a static
+  // SMEAR RING hugging the horizon — the "painted ceiling / wall" the player kept seeing. A small
+  // additive bias (up+0.16) instead lets the cells stretch CONTINUOUSLY toward the horizon (no
+  // frozen band); the fade + haze-tint below DISSOLVE that stretched low band into the horizon haze
+  // rather than standing it up as a wall. (Research: direction-sampled clouds, viewDir.xz/(viewDir.y+bias).)
+  vec2 uv = (d.xz / (up + 0.16)) * 1.7;
   uv += uTime * uSpeed * 0.01 * vec2(1.0, 0.6);
 
   float n = fbm(uv); // ~0.2..0.75, mean ~0.45
@@ -68,12 +68,11 @@ void main() {
   float t = mix(0.60, 0.28, clamp(uCoverage, 0.0, 1.0));
   float soft = mix(0.16, 0.05, clamp(uDensity, 0.0, 1.0));
   float alpha = smoothstep(t, t + soft, n);
-  // round 3 (2026-06-16): the OLD narrow fade (0.06..0.16) left clouds at FULL opacity across
-  // up≈0.16..0.30, where the projection is frozen (max(up,0.30)) — a stretched cloud SMEAR ring
-  // hugging the horizon that read as "walls coming down ... a painted ceiling" (playtest). Fade them
-  // out across the WHOLE stretch-prone band so they reach full strength only ABOVE the freeze zone;
-  // the overhead cloudscape stays, the horizon smear is gone.
-  alpha *= smoothstep(0.20, 0.48, up);
+  // DISSOLVE clouds into the horizon: fade alpha to 0 by the horizon so the (now continuously
+  // stretched) low band reads as thinning haze, not a hard cloud edge / ring. Clouds reach full
+  // strength a little above the horizon; the haze-tint below then pulls the faint low band toward
+  // the sky's horizon colour, so sea, sky and cloud all converge on ONE band at the horizon.
+  alpha *= smoothstep(0.05, 0.32, up);
 
   // a second, finer FBM tints the puffs so they aren't flat
   float detail = fbm(uv * 2.7 + 11.0);
