@@ -409,12 +409,10 @@ uniform float uLandOn;
 void main() {
   #include <clipping_planes_fragment>
 
-  // metres of water standing over a SUBMERGED deck beneath this fragment (>=0 only where a deck here
-  // has gone under the mean sea). Set by the hull cuts below; drives the translucent depth-fade at the
-  // end, so a sinking hull DISSOLVES into the sea instead of leaving a void where the cut used to be.
   // world-Y of the SHALLOWEST solid beneath this fragment (a submerged hull/deck from the
   // cut loops below, or the island seabed). Stays very low where nothing is in range (open
   // deep water) so the depth-murk at the end leaves those fragments fully opaque, unchanged.
+  // It drives the translucent depth-fade so a sinking hull DISSOLVES into the sea (no void).
   float floorY = -1000.0;
 
   // dry bilges, ALWAYS: the sea does not exist inside an intact hull. The
@@ -727,7 +725,7 @@ void main() {
   // today's look. clarity 0 gives shallowAlpha 1 AND murk 0, an exact no-op.
   float columnDepth = vWorldPos.y - floorY;
   float visFrac = clamp(columnDepth / max(uWaterVis, 0.05), 0.0, 1.0);
-  float shallowAlpha = mix(1.0, 0.08, uWaterClarity); // shallowest band's opacity
+  float shallowAlpha = mix(1.0, 0.08, uWaterClarity); // 0.08 = min alpha floor at full clarity (never quite invisible)
   float murk = uWaterClarity * (1.0 - visFrac);        // navy veil, 0 when off OR deep
   float seaAlpha = mix(shallowAlpha, 1.0, visFrac);
   col = mix(col, uMurkColor, murk);
