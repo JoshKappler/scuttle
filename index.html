@@ -128,6 +128,24 @@
     <div id="toast"></div>
     <div id="hints"></div>
     <div id="banner"></div>
+    <!-- dev-only build badge: shows the git commit the dev server is serving (see vite.config.ts
+         /__build), so you can confirm at a glance you're testing the latest commit. The packaged
+         build 404s /__build, so this stays hidden there. -->
+    <div id="build-badge" style="position:fixed;left:56px;top:18px;z-index:99999;font:600 11px/1.4 ui-monospace,Consolas,'Courier New',monospace;color:#9ad7b0;background:rgba(6,16,20,0.72);border:1px solid rgba(154,215,176,0.4);border-radius:4px;padding:2px 7px;letter-spacing:0.03em;pointer-events:none;user-select:none;display:none;box-shadow:0 2px 8px rgba(0,0,0,0.5)"></div>
+    <script>
+      fetch('/__build', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (b) {
+          if (!b) return;
+          var el = document.getElementById('build-badge');
+          el.textContent = 'build ' + b.hash + (b.dirty ? ' *' : '');
+          el.title = b.dirty ? 'working tree has UNCOMMITTED changes (not a clean commit)' : 'matches the latest commit';
+          el.style.color = b.dirty ? '#f2c879' : '#9ad7b0';
+          el.style.borderColor = b.dirty ? 'rgba(242,200,121,0.5)' : 'rgba(154,215,176,0.4)';
+          el.style.display = 'block';
+        })
+        .catch(function () {});
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

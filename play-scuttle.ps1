@@ -1,14 +1,15 @@
-# SCUTTLE — play the LIVE dev build on the correct GPU. (Desktop-icon launcher.)
+# SCUTTLE - play the LIVE dev build, in a real browser tab, on the correct GPU. (Desktop-icon launcher.)
 #
 # WHY this exists (the recurring "stale game" trap, root-caused 2026-06-16):
-#   • The desktop EXE is a FROZEN snapshot — stale until re-wrapped with `npm run dist`. Relaunching
-#     the dev server / hard-refreshing a browser does NOTHING to it, because the EXE is a separate
-#     delivery path. That is the circle we kept running in.
-#   • A long-lived DAILY browser profile caches a degraded GPU state — the bogus "GTX 980" + ~20 fps,
-#     when the real card is an RTX 5080 (a freshly-launched profile on the same PC reports the 5080 and
-#     runs ~180 fps).
-# This launcher serves the live Vite dev server (ALWAYS current source — no build step, never stale)
-# in a DEDICATED-profile Chrome, so the GPU process is fresh (the real discrete GPU) and nothing caches.
+#   * The desktop EXE was a FROZEN snapshot - stale until re-wrapped with `npm run dist`. Relaunching
+#     the dev server / hard-refreshing did NOTHING to it (a separate delivery path). That was the circle.
+#   * A long-lived DAILY browser profile caches a degraded GPU state - the bogus "GTX 980" + ~20 fps,
+#     when the real card is an RTX 5080 (a freshly-launched profile reports the 5080 and runs ~180 fps).
+# This launcher serves the live Vite dev server (ALWAYS current source - no build step, never stale) and
+# opens it in a DEDICATED-profile browser WINDOW: a NORMAL tab with an address bar + refresh (NOT the old
+# frameless `--app` window), whose render/GPU caches are wiped each launch. So it reads as a browser, the
+# GPU process is fresh (the real discrete card), and nothing is served stale. The in-game build badge
+# (top-left) prints the exact commit, so you can SEE you are testing the latest committed version.
 $ErrorActionPreference = 'SilentlyContinue'
 $root = $PSScriptRoot
 Set-Location $root
@@ -34,9 +35,7 @@ if (-not $ok) {
   Start-Sleep 8; exit 1
 }
 
-# 3) Launch a DEDICATED-profile Chrome (fresh GPU state = the real discrete GPU, never the cached
-#    degraded one; isolated cache = never stale) in app mode, forcing the high-performance GPU
-#    (same switches the EXE used). Falls back to Edge if Chrome is absent.
+# 3) Pick Chrome (preferred) or Edge.
 $browser = @(
   "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
   "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
@@ -47,13 +46,23 @@ if (-not $browser) {
 }
 if (-not $browser) { Write-Host 'SCUTTLE: no Chrome or Edge found.'; Start-Sleep 8; exit 1 }
 
+# 4) Wipe the dedicated profile's render/code/GPU caches so NOTHING is served stale and the GPU is
+#    re-probed fresh (kills any cached "GTX 980"). Locked files (a SCUTTLE window already open) are
+#    skipped harmlessly - Vite serves source with no-cache, so a reload is always current anyway.
 $profileDir = Join-Path $env:LOCALAPPDATA 'scuttle-play-profile'
+foreach ($c in @('Default\Cache', 'Default\Code Cache', 'Default\GPUCache', 'Default\GrShaderCache', 'Default\DawnCache', 'GPUCache', 'ShaderCache', 'GrShaderCache', 'DawnCache')) {
+  Remove-Item -Recurse -Force (Join-Path $profileDir $c) -ErrorAction SilentlyContinue
+}
+
+# 5) Launch a NORMAL dedicated-profile browser window (tab + address bar + refresh) forcing the
+#    high-performance GPU. A normal window - NOT `--app` - so it reads as a browser and you can see the
+#    URL / hard-refresh; the build badge (top-left) confirms the exact commit it is running.
 $browserArgs = @(
-  '--app=http://localhost:5173',
   "--user-data-dir=$profileDir",
-  '--force_high_performance_gpu', # pick the dGPU on hybrid rigs (mirrors the EXE)
+  '--force_high_performance_gpu', # pick the dGPU on hybrid rigs
   '--ignore-gpu-blocklist',       # don't shove a brand-new card to software
-  '--new-window'
+  '--new-window',
+  'http://localhost:5173'
 )
 Start-Process -FilePath $browser -ArgumentList $browserArgs
 Write-Host "SCUTTLE: launched the live build in a fresh-profile window ($([System.IO.Path]::GetFileName($browser)))."
