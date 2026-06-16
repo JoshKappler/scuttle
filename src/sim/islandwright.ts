@@ -353,9 +353,13 @@ export function buildIsland(o: IslandOpts): IslandModel {
       const cliffThresh = t > 0.2 ? 3 : 2; // cliffs form unevenly across the island
       const isCliff = slope >= cliffThresh + 1;
       const colBase = x + nxny * z; // data idx = colBase + nx*y
+      // a low, gently-sloped coastal column: its beach AND its submerged rim are sand, so the
+      // shelf reads as sand through the translucent shallows (not the ROCK seafloor base).
+      const lowGentle = topY <= WATERLINE_Y + beachBand && slope <= 1;
       for (let y = 0; y <= topY; y++) {
         let mat: number;
         if (y < SEABED_Y) mat = ROCK; // seafloor base
+        else if (lowGentle && y <= WATERLINE_Y) mat = SAND; // submerged shelf + waterline rim = sand
         else if (isCliff)
           mat = y < topY - 2 || t < -0.1 ? DARKROCK : ROCK; // varied exposed cliff face
         else if (y === topY) {

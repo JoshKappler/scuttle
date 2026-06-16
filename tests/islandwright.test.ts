@@ -56,6 +56,14 @@ describe("buildIsland", () => {
     expect((counts[ROCK] ?? 0) + (counts[DARKROCK] ?? 0)).toBeGreaterThan(0);
     expect(counts[EMPTY]).toBeUndefined();
   });
+  it("lays a sandy shelf BELOW the waterline so the submerged shallows read as sand", () => {
+    const { grid, meta } = buildIsland(opts);
+    let submergedSand = 0;
+    grid.forEachSolid((_x, y, _z, m) => {
+      if (m === SAND && y < meta.waterlineY) submergedSand++; // sand STRICTLY below sea level
+    });
+    expect(submergedSand).toBeGreaterThan(20);
+  });
   it("scatters palms (trunk + canopy) on the highland", () => {
     const { grid } = buildIsland({ seed: 3, radiusVox: 70, peakVox: 45, ruggedness: 0.4 });
     const counts: Record<number, number> = {};
