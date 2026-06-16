@@ -87,6 +87,89 @@ async function main() {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 5000);
 
+  // ---- game shell: built BEFORE the world so the menu shows on a clean screen ----
+  // The heavy world (sky / ocean FFT / physics / ship / islands / fleet) is built only
+  // AFTER the player picks a mode: main() awaits the choice below, so nothing loads or
+  // renders behind the menu. (Old behaviour: the whole world was built up front and the
+  // menu floated as a translucent overlay over a frozen game.)
+  const gs = new GameState();
+  const saves = new SaveManager(localStorage);
+  // menu-facing state, hoisted here so the sandbox-config defaults can read currentTier
+  // at click time; the world build + save/restore below read & write these same bindings.
+  let currentTier: ShipTierId = "cutter";
+  let unlockedClasses: ShipTierId[] = ["cutter"];
+  let settings: Settings = defaultSettings();
+  let forcedEnemyTier: ShipTierId | null = null;
+
+  type StartChoice =
+    | { kind: "career"; fresh: boolean }
+    | { kind: "sandbox"; cfg: SandboxConfig };
+  let resolveChoice!: (c: StartChoice) => void;
+  const choicePromise = new Promise<StartChoice>((res) => {
+    resolveChoice = res;
+  });
+  // false until the world is built. The FIRST Start resolves the await-gate (triggering the
+  // build); later Starts (after Quit-to-Menu — world already built) re-apply directly.
+  let worldReady = false;
+  const start = (c: StartChoice) => {
+    if (worldReady) applyChoice(c);
+    else resolveChoice(c);
+  };
+
+  // Start buttons dispatch through start(); Resume/Quit fire only in-game, so they may close
+  // over saveCurrent/applyChoice defined further down.
+  const menu = createMenuScreen({
+    onNewCareer: () => start({ kind: "career", fresh: true }),
+    onContinue: () => start({ kind: "career", fresh: false }),
+    onSandbox: () =>
+      menu.showSandboxConfig({
+        tiers: SHIP_TIERS.map((t) => ({ id: t.id, name: t.name })),
+        maxEnemies: MAXVIS,
+        defaults: { shipTier: currentTier, enemyCount: Math.round(TUN.fleet.enemyCount), enemyTier: "mixed" },
+        onBack: () => menu.showStart(saves.hasSave("career")),
+        onStart: (cfg: SandboxConfig) => start({ kind: "sandbox", cfg }),
+      }),
+    onResume: () => {
+      gs.resume();
+      menu.hide();
+    },
+    onQuitToMenu: () => {
+      saveCurrent();
+      gs.quitToMenu();
+      document.body.classList.add("menu-active"); // hide the game HUD behind the menu
+      menu.showStart(saves.hasSave("career"));
+    },
+  });
+
+  // a clean dark screen behind the DOM menu while we wait for the player to choose
+  renderer.setClearColor(0x05080a, 1);
+  renderer.setAnimationLoop(() => {
+    renderer.setRenderTarget(null);
+    renderer.clear();
+  });
+  menu.showStart(saves.hasSave("career"));
+
+  // BLOCK here until the player picks a mode — only then does the world build below run.
+  const startChoice = await choicePromise;
+  menu.hide();
+  // a brief loading screen while the (main-thread-blocking) world build runs; paint it first.
+  const loadingEl = document.createElement("div");
+  loadingEl.textContent = "Setting sail…";
+  Object.assign(loadingEl.style, {
+    position: "fixed",
+    inset: "0",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#05080a",
+    color: "#d8c9a3",
+    font: "italic 600 22px Georgia, serif",
+    letterSpacing: "0.08em",
+    zIndex: "10005",
+  } as Partial<CSSStyleDeclaration>);
+  document.body.appendChild(loadingEl);
+  await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
   const seed = new URLSearchParams(location.search).get("seed") ?? "scuttle-dev";
   const rng = new Rng(seed);
   // 16-wave directional spectrum (round 8: four waves read as "the same
@@ -170,11 +253,6 @@ async function main() {
     await loadPirateLibrary();
   }
   const world = new GameWorld(physics, waves, scene);
-
-  // game-shell state: the mode/phase machine + the wallet & toast of record, plus
-  // the save manager (career/sandbox slots). The render loop reads gs.isSimRunning().
-  const gs = new GameState();
-  const saves = new SaveManager(localStorage);
 
   // the player's brig splashes down and settles (round 6: "a realistically
   // sized sixteen-hundreds-era fighting vessel"); `sloop` names the player
@@ -385,16 +463,7 @@ async function main() {
     onSwapShip: (id) => swapPlayerShip(id),
   });
 
-  // ---- game-shell save/restore + the start / pause menu ----
-  // What the save carries beyond the economy. Ship tiers land in a later phase;
-  // for now the tier/unlocks are tracked + persisted but the hull is unchanged.
-  let currentTier: ShipTierId = "cutter";
-  let unlockedClasses: ShipTierId[] = ["cutter"];
-  let settings: Settings = defaultSettings();
-  // sandbox-only: force every spawn to a chosen enemy tier (null = the notoriety-scaled
-  // spread, which is what Career always uses). Set from the sandbox config screen.
-  let forcedEnemyTier: ShipTierId | null = null;
-
+  // ---- game-shell save/restore (tier/unlocks/settings are hoisted to the top of main) ----
   const applySave = (s: SaveState) => {
     economy.state = s.economy;
     unlockedClasses = s.unlockedClasses.slice();
@@ -416,56 +485,8 @@ async function main() {
     });
   };
 
-  const menu = createMenuScreen({
-    onNewCareer: () => {
-      forcedEnemyTier = null; // Career always uses the notoriety-scaled spawn spread
-      saves.wipe("career");
-      applySave(defaultSave("career"));
-      gs.startGame("career");
-      menu.hide();
-    },
-    onContinue: () => {
-      forcedEnemyTier = null;
-      applySave(saves.load("career"));
-      gs.startGame("career");
-      menu.hide();
-    },
-    onSandbox: () => {
-      // open the sandbox setup screen; "Set Sail" applies the chosen scene and starts.
-      menu.showSandboxConfig({
-        tiers: SHIP_TIERS.map((t) => ({ id: t.id, name: t.name })),
-        maxEnemies: MAXVIS,
-        defaults: { shipTier: currentTier, enemyCount: Math.round(TUN.fleet.enemyCount), enemyTier: "mixed" },
-        onBack: () => menu.showStart(saves.hasSave("career")),
-        onStart: (cfg: SandboxConfig) => {
-          applySave(saves.load("sandbox"));
-          // free play: top up to a deep purse so every hull + upgrade is buyable
-          // (the whole tier ladder is already unlocked for sandbox via getShipState).
-          if (economy.state.doubloons < 50000) {
-            economy.state.doubloons = 50000;
-            gs.wallet.set(50000);
-          }
-          // apply the player's chosen scene
-          forcedEnemyTier = cfg.enemyTier === "mixed" ? null : (cfg.enemyTier as ShipTierId);
-          TUN.fleet.enemyCount = Math.max(0, Math.min(MAXVIS, Math.round(cfg.enemyCount)));
-          if (cfg.shipTier !== currentTier) swapPlayerShip(cfg.shipTier as ShipTierId);
-          gs.startGame("sandbox");
-          menu.hide();
-        },
-      });
-    },
-    onResume: () => {
-      gs.resume();
-      menu.hide();
-    },
-    onQuitToMenu: () => {
-      saveCurrent();
-      gs.quitToMenu();
-      menu.showStart(saves.hasSave("career"));
-    },
-  });
-  // boot to the title screen — the world is built but frozen behind it (phase = menu).
-  menu.showStart(saves.hasSave("career"));
+  // (the start/pause menu is created at the top of main(); the player's choice was
+  // awaited there and is applied just below, once the world is fully built.)
 
   // ---- hull swap (shipyard purchase / save restore / respawn) ----
   // Rebuild the player ship as a fresh hull, keeping world position/heading, and
@@ -1639,11 +1660,52 @@ async function main() {
       `flood ${t.flood.toFixed(1)} · contact ${t.contact.toFixed(1)} · ai/sail ${t.fixed.toFixed(1)} · flush ${t.flush.toFixed(1)}`;
   };
 
+  // Applies a menu choice to the (built) world and starts the sim. Runs once after the
+  // initial build and again for every later Start after a Quit-to-Menu (world is reused).
+  function applyChoice(choice: StartChoice): void {
+    if (choice.kind === "career") {
+      forcedEnemyTier = null; // Career always uses the notoriety-scaled spawn spread
+      if (choice.fresh) {
+        saves.wipe("career");
+        applySave(defaultSave("career"));
+      } else {
+        applySave(saves.load("career"));
+      }
+      gs.startGame("career");
+    } else {
+      applySave(saves.load("sandbox"));
+      // free play: top up to a deep purse so every hull + upgrade is buyable
+      if (economy.state.doubloons < 50000) {
+        economy.state.doubloons = 50000;
+        gs.wallet.set(50000);
+      }
+      const cfg = choice.cfg;
+      forcedEnemyTier = cfg.enemyTier === "mixed" ? null : (cfg.enemyTier as ShipTierId);
+      TUN.fleet.enemyCount = Math.max(0, Math.min(MAXVIS, Math.round(cfg.enemyCount)));
+      if (cfg.shipTier !== currentTier) swapPlayerShip(cfg.shipTier as ShipTierId);
+      gs.startGame("sandbox");
+    }
+    menu.hide();
+    document.body.classList.remove("menu-active"); // reveal the game HUD now that we're sailing
+  }
+
+  worldReady = true; // later Starts now re-apply directly instead of resolving the gate
+  applyChoice(startChoice); // apply the choice that opened the gate
+  loadingEl.remove();
+
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
     perf.tick(dt); // measure real frame time → HUD + adaptive-quality governor
-    // the sim only advances while PLAYING — the menu, pause and port screens freeze
-    // the world (the render loop still draws, so overlays composite over a still frame).
+    // Quit-to-Menu returns here with the world still built — show a clean screen instead
+    // of drawing the frozen world behind the menu. (Pause/port still render the freeze.)
+    if (gs.phase === "menu") {
+      renderer.setRenderTarget(null);
+      renderer.setClearColor(0x05080a, 1);
+      renderer.clear();
+      return;
+    }
+    // the sim only advances while PLAYING — pause and port screens freeze the world
+    // (the render loop still draws, so overlays composite over a still frame).
     if (gs.isSimRunning()) world.step(dt);
     // ---- per-frame fleet LOD ----
     fleet.rankLOD(camera.position);
