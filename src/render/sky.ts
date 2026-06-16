@@ -1,13 +1,33 @@
 import * as THREE from "three";
-import { Sky } from "three/addons/objects/Sky.js";
 
 /**
  * Sky, sun, and scene lighting. Late-afternoon sun for long glints and warm
  * highlights (spec: lighting carries the look). Exports the sun direction so
  * the ocean shader and the directional light agree exactly.
+ *
+ * The sky is a cheap PROCEDURAL GRADIENT DOME (replaced THREE.Sky's atmospheric
+ * scattering, 2026-06-15): a big inward-facing sphere whose fragment shader ramps
+ * a horizon haze up to a zenith blue and paints a warm sun disc + halo. Two reasons
+ * over the scattering model: (1) full control of the HORIZON — the lower hemisphere
+ * holds the horizon haze colour (never the black skirt the scattering hack left, and
+ * no "stretched tablecloth" droop), and that same colour is fed to the ocean fog so
+ * the distant sea and the sky meet in ONE seamless band; (2) it is much cheaper,
+ * especially re-baked into the reflection cube ×6 faces. VISUAL ONLY (THE LAW #1).
  */
+
+/** The horizon haze colour — the SINGLE source of truth shared by the dome's lower
+ *  band AND the ocean's distance fog (main.ts calls ocean.setFogColor with this), so
+ *  the far sea fades into the sky with no visible seam, void box, or floating islands. */
+// LINEAR working-space values (setRGB defaults to the linear working space), tuned in-browser on
+// the real GPU through ACES + the 0.76 exposure — a luminous late-afternoon haze, not the dark
+// stormy first guess.
+export const HORIZON_COLOR = new THREE.Color().setRGB(0.64, 0.74, 0.81);
+/** Zenith blue overhead. */
+const ZENITH_COLOR = new THREE.Color().setRGB(0.2, 0.4, 0.66);
+
 export interface SkySetup {
-  sky: Sky;
+  /** The gradient sky dome mesh (lives in the background scene). */
+  sky: THREE.Mesh;
   sunDir: THREE.Vector3; // unit vector pointing FROM scene TOWARD the sun
   sunColor: THREE.Color; // warm sun tint shared by the dir light, clouds, ocean
   sunLight: THREE.DirectionalLight;
@@ -20,6 +40,11 @@ export interface SkySetup {
    *  background scene (rendered first, behind everything — see render/post.ts). The
    *  caller adds the cloud dome to the same bgScene. */
   addTo(mainScene: THREE.Scene, bgScene: THREE.Scene): void;
+  /** Recentre the dome on the camera (it follows so the camera is always at its centre,
+   *  like the cloud dome — the object-space view-dir shader then works for BOTH the main
+   *  camera and the env-cube camera, and the camera can never sail "out" of the dome).
+   *  Call once per frame before render + before updateEnv. */
+  follow(center: THREE.Vector3): void;
   /** Re-render the background scene (sky + clouds) into envCube from `center` (the
    *  player camera position, so the camera-following cloud dome is sampled at its
    *  own centre). */
@@ -41,46 +66,78 @@ export const SUN_DIR = new THREE.Vector3().setFromSphericalCoords(
   THREE.MathUtils.degToRad(SUN_AZIMUTH_DEG),
 );
 
+const DOME_VERT = /* glsl */ `
+varying vec3 vDir;
+void main() {
+  // object-space position = direction from the dome centre (the dome follows the camera,
+  // so the camera sits at the centre). The same dir works from the env-cube camera too.
+  vDir = position;
+  vec4 mvp = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  // pin to the far plane (z = w) so the huge backdrop dome is never near/far-clipped,
+  // regardless of its radius or how far the camera has sailed.
+  gl_Position = mvp.xyww;
+}
+`;
+
+const DOME_FRAG = /* glsl */ `
+precision highp float;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uZenith;
+uniform vec3 uHorizon;
+varying vec3 vDir;
+
+void main() {
+  vec3 d = normalize(vDir);
+  // vertical gradient: a generous horizon-haze band easing up to the zenith blue. The
+  // 0.42 power keeps plenty of haze near the horizon line so the sea-meets-sky band reads
+  // soft and atmospheric, not a hard ring.
+  float up = clamp(d.y, 0.0, 1.0);
+  vec3 col = mix(uHorizon, uZenith, pow(up, 0.42));
+  // a faint extra glow right on the horizon line, fading out by ~10 degrees up.
+  col += uHorizon * 0.08 * (1.0 - smoothstep(0.0, 0.18, up));
+  // BELOW the horizon: hold the horizon haze (never black). The ocean fog fades the far
+  // sea to this exact colour, so sea and sky meet in one seamless band — no void, no skirt.
+  if (d.y < 0.0) col = uHorizon;
+
+  // sun: a warm disc with a soft halo. The disc is HDR (core ~12) so it still blooms and can
+  // seed the god-rays; the pre-bloom clamp (TUN.gfx.bloom.clamp) caps it from white-washing.
+  float md = max(dot(d, normalize(uSunDir)), 0.0);
+  float halo = pow(md, 230.0) * 0.55 + pow(md, 22.0) * 0.16;
+  float disc = smoothstep(0.9972, 0.9990, md);
+  col += uSunColor * halo;
+  col += uSunColor * disc * 12.0;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
 export function createSky(): SkySetup {
-  const sky = new Sky();
-  sky.scale.setScalar(450000);
-  // draw the sky FIRST (before the cloud dome at -999 and all scene geometry), so
-  // the opaque, depthTest-off cloud layer paints over it. render/clouds.ts relies
-  // on this ordering.
-  sky.renderOrder = -1000;
-
-  const uniforms = sky.material.uniforms;
-  // Calmed from the first visual pass (turbidity 8 / rayleigh 2.2 / mie 0.011 / g 0.92),
-  // which tonemapped the whole upper sky to a blinding white and wrapped the sun in a
-  // huge glowing halo. Lower turbidity clears the haze, lower mieCoefficient + g shrink
-  // the sun-glow to a disc instead of a screen-filling smear.
-  uniforms.turbidity.value = 5;
-  uniforms.rayleigh.value = 1.8;
-  // round 3: the sun still read as too bright, so pull the Mie scattering WAY down —
-  // lower mieCoefficient dims the whole forward-scatter glow, and a much lower g (0.8→0.55)
-  // broadens it from a hot forward spike into a soft, dim halo. (The disc's hard ceiling
-  // is the pre-tonemap ClampShader = TUN.gfx.bloom.clamp; this softens what surrounds it.)
-  uniforms.mieCoefficient.value = 0.0013;
-  uniforms.mieDirectionalG.value = 0.55;
-
-  // sun placement now lives at module scope (SUN_DIR) so the sail back-light
+  // sun placement lives at module scope (SUN_DIR) so the sail back-light
   // (render/shipVisual.ts) reads the SAME direction — single source of truth.
   const sunDir = SUN_DIR.clone();
-  uniforms.sunPosition.value.copy(sunDir);
-
-  // Black out the dome's LOWER hemisphere. The ocean is drawn OVER the sky, so anywhere the sea
-  // is thin/see-through — the shallow depth-murk ring around islands, or a cutaway — the bright
-  // below-horizon sky used to show straight through as a white "void box". Fading the dome to
-  // black just under the horizon makes any such gap read as dark water, never a white hole.
-  // `direction` (= normalize(vWorldPosition - cameraPosition)) is already in scope in Sky's frag.
-  sky.material.fragmentShader = sky.material.fragmentShader.replace(
-    "gl_FragColor = vec4( texColor, 1.0 );",
-    "float belowHorizon = clamp( -direction.y * 6.0, 0.0, 1.0 );\n" +
-      "\tgl_FragColor = vec4( mix( texColor, vec3( 0.0 ), belowHorizon ), 1.0 );",
-  );
-  sky.material.needsUpdate = true;
-
   const sunColor = new THREE.Color(0xffd9b0);
+
+  // The gradient dome. depthTest/Write OFF (a backdrop; render/post.ts clears depth after
+  // it and draws the scene over it), BackSide (we view the inner surface), renderOrder
+  // -1000 so it paints FIRST — before the cloud dome at -999 and all scene geometry.
+  const domeMat = new THREE.ShaderMaterial({
+    vertexShader: DOME_VERT,
+    fragmentShader: DOME_FRAG,
+    side: THREE.BackSide,
+    depthTest: false,
+    depthWrite: false,
+    uniforms: {
+      uSunDir: { value: sunDir.clone() },
+      uSunColor: { value: sunColor.clone() },
+      uZenith: { value: ZENITH_COLOR.clone() },
+      uHorizon: { value: HORIZON_COLOR.clone() },
+    },
+  });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(4000, 32, 16), domeMat);
+  sky.frustumCulled = false;
+  sky.renderOrder = -1000;
+
   const sunLight = new THREE.DirectionalLight(sunColor.getHex(), 2.6);
   sunLight.position.copy(sunDir.clone().multiplyScalar(120));
   sunLight.castShadow = true;
@@ -124,13 +181,13 @@ export function createSky(): SkySetup {
   const envCube = new THREE.WebGLCubeRenderTarget(128, {
     generateMipmaps: true,
     minFilter: THREE.LinearMipmapLinearFilter,
-    // HDR (HalfFloat): the sky is rendered LINEAR into the cube (no tonemap when
-    // rendering to a target), so its values run far past 1. An LDR cube would clamp
+    // HDR (HalfFloat): the dome is rendered LINEAR into the cube (no tonemap when
+    // rendering to a target), so the sun disc runs far past 1. An LDR cube would clamp
     // the whole bright sky to white; HalfFloat preserves it so the water reflects a
     // real sky gradient, and the ocean's own post chain tonemaps the result.
     type: THREE.HalfFloatType,
   });
-  // far must clear the 450000-unit sky dome; near small. Position is set per bake.
+  // far must clear the dome; near small. Position is set per bake.
   const cubeCam = new THREE.CubeCamera(1, 1_000_000, envCube);
 
   return {
@@ -145,6 +202,9 @@ export function createSky(): SkySetup {
       mainScene.add(sunLight);
       mainScene.add(sunLight.target);
       mainScene.add(fillLight);
+    },
+    follow(center: THREE.Vector3) {
+      sky.position.copy(center);
     },
     updateEnv(renderer, bgScene, center) {
       cubeCam.position.copy(center);

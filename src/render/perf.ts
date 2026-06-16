@@ -55,12 +55,14 @@ function shortGpu(name: string): string {
 
 /** quality tiers the governor walks: render-scale + whether god rays are dropped.
  *  tier 0 = full; higher = cheaper. Scale multiplies the post chain's resolution
- *  (the dominant fill cost), god rays are the next-heaviest pass. */
+ *  (the dominant fill cost), god rays are the next-heaviest pass.
+ *  FLOORED at 0.8 (was 0.5): the deep resolution drops were the soft "mush" the player
+ *  disliked — with MSAA off + FXAA + the cheaper sky, the frame holds full res in normal
+ *  play, and the worst case the governor can reach is a barely-soft 0.8, never 0.5. */
 const TIERS: { scale: number; dropGodrays: boolean }[] = [
   { scale: 1.0, dropGodrays: false },
-  { scale: 0.8, dropGodrays: false },
-  { scale: 0.65, dropGodrays: true },
-  { scale: 0.5, dropGodrays: true },
+  { scale: 0.85, dropGodrays: false },
+  { scale: 0.8, dropGodrays: true },
 ];
 
 export class PerfMonitor {

@@ -4,6 +4,7 @@ import { Pass } from "three/addons/postprocessing/Pass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
 import type { SeamMask } from "./seamMask";
 import { TUN } from "../core/tunables";
 
@@ -171,6 +172,7 @@ export class Post {
   private clampPass: ShaderPass;
   private godray: ShaderPass;
   private grade: ShaderPass;
+  private fxaa: ShaderPass;
   private _tmp = new THREE.Vector2();
   private _lastW = 0;
   private _lastH = 0;
@@ -187,18 +189,18 @@ export class Post {
     this._lastW = size.x;
     this._lastH = size.y;
 
-    // HDR + stencil + MSAA render target. HalfFloat keeps linear highlights (the
-    // sun, glints) un-clipped so the ACES rolloff in OutputPass reads nicely;
-    // stencilBuffer:true is REQUIRED for the seam mask; samples:2 keeps edges AA'd
-    // (the canvas's own antialias does nothing once we render to a target) — 2 not 4
-    // because MSAA-resolving a full-screen HalfFloat target is bandwidth-heavy and 4
-    // was a real share of the frame cost; 2 still removes the worst voxel-edge jaggies
-    // and bloom softens the rest.
+    // HDR + stencil render target. HalfFloat keeps linear highlights (the sun, glints)
+    // un-clipped so the ACES rolloff in OutputPass reads nicely; stencilBuffer:true is
+    // REQUIRED for the seam mask. MSAA is OFF (samples:0): resolving a full-screen HalfFloat
+    // MSAA target was a real share of the frame cost, and the adaptive governor then dropped
+    // RESOLUTION to claw it back (the blur the player disliked). A cheap FXAA pass at the very
+    // end (one filter on the tonemapped image) removes the worst voxel-edge jaggies for a small
+    // fraction of an MSAA resolve — the "crisp & fast" trade.
     this.rt = new THREE.WebGLRenderTarget(size.x, size.y, {
       type: THREE.HalfFloatType,
       depthBuffer: true,
       stencilBuffer: true,
-      samples: 2,
+      samples: 0,
     });
 
     this.composer = new EffectComposer(renderer, this.rt);
@@ -229,9 +231,20 @@ export class Post {
     this.composer.addPass(this.godray);
 
     this.composer.addPass(new OutputPass()); // ACES tonemap + sRGB (to a buffer)
-    // colour grade runs LAST in display space (reads OutputPass's sRGB result).
+    // colour grade in display space (reads OutputPass's sRGB result).
     this.grade = new ShaderPass(GradeShader);
     this.composer.addPass(this.grade);
+    // FXAA runs LAST on the final tonemapped image — with MSAA off this cheap edge filter cleans
+    // the voxel-edge jaggies for a fraction of an MSAA resolve. Its `resolution` uniform = 1/drawbuffer,
+    // kept current in setSize()/render().
+    this.fxaa = new ShaderPass(FXAAShader);
+    this.composer.addPass(this.fxaa);
+    this.setFxaaResolution(size.x, size.y);
+  }
+
+  /** FXAA needs the inverse drawing-buffer size; refresh whenever the post target resizes. */
+  private setFxaaResolution(w: number, h: number): void {
+    (this.fxaa.uniforms.resolution.value as THREE.Vector2).set(1 / Math.max(1, w), 1 / Math.max(1, h));
   }
 
   /** Feed the sun's projected screen position (UV 0..1) + whether it's on-screen. */
@@ -266,6 +279,7 @@ export class Post {
     this._lastH = size.y;
     this.composer.setSize(size.x, size.y);
     this.bloom.setSize(size.x, size.y);
+    this.setFxaaResolution(size.x, size.y);
   }
 
   render(): void {
@@ -277,6 +291,7 @@ export class Post {
       this._lastH = t.y;
       this.composer.setSize(t.x, t.y);
       this.bloom.setSize(t.x, t.y);
+      this.setFxaaResolution(t.x, t.y);
     }
     // live dev-panel knobs
     this.clampPass.uniforms.uMax.value = TUN.gfx.bloom.clamp;

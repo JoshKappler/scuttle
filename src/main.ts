@@ -7,7 +7,7 @@ import { Post } from "./render/post";
 import { createOceanField } from "./render/oceanField";
 import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
-import { createSky } from "./render/sky";
+import { createSky, HORIZON_COLOR } from "./render/sky";
 import { CloudDome } from "./render/clouds";
 import { islandGritUniforms } from "./render/islandVisual";
 import { buildCutter, buildSloop, type ShipBuild } from "./sim/shipwright";
@@ -199,6 +199,7 @@ async function main() {
   // live analytic swell (ocean.update, every frame) keeps the big waves perfectly smooth.
   let lastOceanFftUpdate = -1;
   let shadowAccum = 0;
+  skySetup.follow(camera.position); // centre the dome on the camera before the first bake
   skySetup.updateEnv(renderer, bgScene, camera.position); // initial bake
 
   // Round 14: a MULTI-CASCADE Tessendorf ocean surface (the AC4 / Sea of Thieves
@@ -235,6 +236,7 @@ async function main() {
   });
   const ocean = createOcean(waves, skySetup.sunDir, oceanField);
   ocean.setSkyEnv(skySetup.envCube.texture); // mirror the live sky+cloud cube
+  ocean.setFogColor(HORIZON_COLOR); // far sea fades to the sky's horizon band → one seamless horizon
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
@@ -905,6 +907,8 @@ async function main() {
     sailing,
     contact: world.contact,
     debris,
+    ocean, // ocean surface (setFogColor / setWaterDepth / setReflStrength) — live shader tuning
+    sky: skySetup, // gradient dome (sky.material.uniforms uZenith/uHorizon/uSunColor) — live sky tuning
     oceanField,
     dynWaves,
     spray,
@@ -1903,8 +1907,9 @@ async function main() {
     islandGritUniforms.uGritStrength.value = TUN.gfx.islandGrit.strength;
     ocean.update(world.simTime, camera.position);
 
-    // drifting clouds follow the camera; re-bake the sky+cloud reflection cube at
-    // TUN.gfx.reflection.rebakeHz so the sea's reflection keeps up with the drift.
+    // the sky dome + drifting clouds follow the camera (camera always at the dome centre);
+    // then re-bake the sky+cloud reflection cube at TUN.gfx.reflection.rebakeHz.
+    skySetup.follow(camera.position);
     clouds.update(world.simTime, camera.position);
     const bakeInterval = 1 / Math.max(0.1, TUN.gfx.reflection.rebakeHz);
     if (lastEnvBake < 0 || world.simTime - lastEnvBake >= bakeInterval) {

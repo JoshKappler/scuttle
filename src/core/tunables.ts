@@ -238,7 +238,7 @@ export const TUN = {
      *  (telemetry + outputs, not user knobs); `enabled`/`targetFps`/`hud` are the knobs.
      *  `hud` shows a small fps/ms/GPU readout (also names SOFTWARE rendering, the usual
      *  real cause of the 5-fps launches). */
-    auto: { enabled: true, targetFps: 55, hud: true, scale: 1, suppressGodrays: false, fps: 0, tier: 0 },
+    auto: { enabled: true, targetFps: 50, hud: true, scale: 1, suppressGodrays: false, fps: 0, tier: 0 },
     /** global ACES exposure (renderer.toneMappingExposure). <1 calms an over-bright
      *  sky/sun uniformly without touching the individual effects. Nested in its own
      *  flat object so the dev-panel slider's `obj` stays a Bag (the gfx root has

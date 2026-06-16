@@ -21,7 +21,11 @@ import { MAXVIS } from "../core/constants";
  */
 
 const R_NEAR = 0.8; // m — innermost ring
-const R_FAR = 950; // m — horizon ring (fog owns everything past it)
+// The sea reaches the horizon. Fog fades the surface to the sky's HORIZON_COLOR well before this
+// radius, so distant islands sit on (hazy) water instead of floating over a void; bumping the radius
+// is nearly free — it covers the same screen pixels (the disk already fills down to the horizon line),
+// it just makes the water "real" much further out. Fog hides the coarser far rings.
+const R_FAR = 2400; // m — horizon ring
 const RINGS = 156;
 const SECTORS = 160;
 
@@ -88,6 +92,9 @@ export interface Ocean {
    *  down before the sea is fully opaque (`visibility`), and how see-through the
    *  shallow band gets (`clarity` 0 = off/current look, 1 = max). */
   setWaterDepth(visibility: number, clarity: number): void;
+  /** Set the distance-fog colour. main.ts feeds the sky's HORIZON_COLOR so the far sea
+   *  fades into the sky's horizon band seamlessly — no void box, no floating islands. */
+  setFogColor(color: THREE.Color): void;
   /** Bind the static land-height field (src/game/islandField.ts buildLandField) so the
    *  surface shoals — wave displacement tapers to flat at each coast (no waves clipping
    *  through islands) — and a surf-foam line draws where the sea meets land. `min`/`size`
@@ -313,7 +320,10 @@ void main() {
     vec2 luv = (rest.xz - uLandMin) / uLandSize;
     if (luv.x > 0.0 && luv.x < 1.0 && luv.y > 0.0 && luv.y < 1.0) {
       float landY = texture2D(uLandTex, luv).r * 160.0 - 100.0; // decode terrain-top world-Y (m); deep sea ≈ -100
-      float shoal = clamp((-0.3 - landY) / 5.5, 0.0, 1.0); // 0 at/above shore … 1 by ~5.5 m depth
+      // Waves run ALL THE WAY to the shoreline and flatten only in the last ~1.3 m at the wet sand
+      // (was a fat 5.5 m band → a flat "navy moat" ringing every island). Full waves by ~1.4 m depth,
+      // tapering to flat right at the waterline. Minor crest-clip in the surf zone reads as breaking surf.
+      float shoal = clamp((-0.1 - landY) / 1.3, 0.0, 1.0); // 0 at the wet sand … 1 by ~1.4 m depth
       shoal = shoal * shoal * (3.0 - 2.0 * shoal);   // smootherstep so the calm band eases in
       p = mix(rest, p, shoal);                       // pull the surface back to flat near land
       crest *= shoal;
@@ -342,7 +352,6 @@ uniform samplerCube uSkyEnv;   // live sky+cloud reflection cube (render/sky.ts)
 uniform float uHasEnv;         // 1 when uSkyEnv is bound, else fall back to uSkyColor
 uniform float uReflStrength;   // dev: overall reflection strength
 uniform float uReflClamp;      // dev: cap on reflected HDR (stops a bright sky → white water)
-uniform vec3 uMurkColor;     // shallow see-into-water tint (deep navy); deep end returns to col
 uniform float uWaterVis;     // metres of water column visible before fully opaque
 uniform float uWaterClarity; // 0 = depth-murk OFF (current look), 1 = maximally see-through
 uniform vec3 uFogColor;
@@ -535,15 +544,20 @@ void main() {
     // FINER tiles (0.14 / 0.055 m/texel) catch the grazing specular as a crosshatch
     // lattice — the grid nemesis. Downweight the fine cascades hard for SHADING;
     // their chop SHAPE is already in the geometry, so the sea still reads sharp.
-    vec3 cn;
-    cn = texture2D(uCascadeNormal[0], vWorldPos.xz / uCascadeTile[0]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 1.0;
-    #if NCASC > 1
-    cn = texture2D(uCascadeNormal[1], vWorldPos.xz / uCascadeTile[1]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.55;
-    #endif
-    #if NCASC > 2
-    cn = texture2D(uCascadeNormal[2], vWorldPos.xz / uCascadeTile[2]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.28;
-    #endif
-    nSum *= nFade * 0.7;
+    // PERF: the cascade-normal detail is scaled by nFade, which is 0 for the far/grazing water that
+    // fills most of the screen — so skip the 3 dependent texture fetches there entirely (output is
+    // bit-identical, they were multiplied to ~0 anyway). Pure fill savings on the dominant ocean pass.
+    if (nFade > 0.001) {
+      vec3 cn;
+      cn = texture2D(uCascadeNormal[0], vWorldPos.xz / uCascadeTile[0]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 1.0;
+      #if NCASC > 1
+      cn = texture2D(uCascadeNormal[1], vWorldPos.xz / uCascadeTile[1]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.55;
+      #endif
+      #if NCASC > 2
+      cn = texture2D(uCascadeNormal[2], vWorldPos.xz / uCascadeTile[2]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.28;
+      #endif
+      nSum *= nFade * 0.7;
+    }
   }
   vec3 Nd = normalize(N + nSum);
 
@@ -719,18 +733,18 @@ void main() {
   float fog = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
   col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
 
-  // UNDERWATER VISIBILITY (depth murk). columnDepth = metres of water over the shallowest solid
-  // beneath this fragment. Shallow → translucent + navy-tinted (a sinking deck dissolves, the
-  // sandy shelf shows through); deep / open water → floorY very low → visFrac 1 → fully opaque,
-  // today's look. clarity 0 gives shallowAlpha 1 AND murk 0, an exact no-op.
+  // UNDERWATER VISIBILITY — depth-absorption translucency (no additive colour → NO waterline rim).
+  // columnDepth = metres of water over the shallowest solid beneath this fragment. The sea is a body
+  // you see DOWN into: shallow water over a solid (the sandy shelf, a submerged deck) is translucent so
+  // the bottom shows through and DISSOLVES into the opaque deep-water colour by uWaterVis metres down —
+  // carried by ALPHA ALONE. A dark deck therefore reads DARKER through the water, never the LIGHTER
+  // one-voxel rim the old additive murk-mix produced (its tint was brighter than the deep
+  // water, and the veil peaked in the thinnest shallow band at the waterline). Deep / open water
+  // (floorY very low → visFrac 1) stays fully opaque, unchanged. clarity 0 → shallowAlpha 1, an exact no-op.
   float columnDepth = vWorldPos.y - floorY;
   float visFrac = clamp(columnDepth / max(uWaterVis, 0.05), 0.0, 1.0);
-  float shallowAlpha = mix(1.0, 0.45, uWaterClarity); // min alpha floor: shallow water stays murky-opaque (~0.53 at
-                                                      // clarity .85) — you still read the sandy shelf through it, but it
-                                                      // is never a see-through window onto the void where no mesh is behind
-  float murk = uWaterClarity * (1.0 - visFrac);        // navy veil, 0 when off OR deep
-  float seaAlpha = mix(shallowAlpha, 1.0, visFrac);
-  col = mix(col, uMurkColor, murk);
+  float shallowAlpha = mix(1.0, 0.38, uWaterClarity); // how see-through the shallowest water gets; clarity 0 → opaque
+  float seaAlpha = mix(shallowAlpha, 1.0, visFrac);    // shallow translucent → deep opaque (MONOTONIC → no rim)
   gl_FragColor = vec4(col, min(cutAlpha, seaAlpha));
 }
 `;
@@ -858,10 +872,9 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uHasEnv: { value: 0 },
       uReflStrength: { value: 0.22 },
       uReflClamp: { value: 1.6 },
-      // underwater visibility (depth murk). Defaults match TUN.gfx.water; main.ts
-      // overwrites uWaterVis/uWaterClarity every frame via setWaterDepth. uMurkColor
-      // is a fixed tuned constant (deep navy) — Task 4 finalises the palette.
-      uMurkColor: { value: new THREE.Color(0x0a1f3a) },    // deep navy seen INTO the shallow water
+      // underwater visibility (depth-absorption translucency). Defaults match TUN.gfx.water;
+      // main.ts overwrites uWaterVis/uWaterClarity every frame via setWaterDepth. The veil is
+      // alpha-only now (no colour added), so there is no separate murk-tint uniform.
       uWaterVis: { value: 2.5 },
       uWaterClarity: { value: 0.85 },
       uFogColor: { value: new THREE.Color(0xc4d6d6) },
@@ -999,6 +1012,9 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     setWaterDepth(visibility, clarity) {
       mat.uniforms.uWaterVis.value = visibility;
       mat.uniforms.uWaterClarity.value = clarity;
+    },
+    setFogColor(color) {
+      (mat.uniforms.uFogColor.value as THREE.Color).copy(color);
     },
     setLandField(tex, minX, minZ, sizeX, sizeZ) {
       mat.uniforms.uLandTex.value = tex;
