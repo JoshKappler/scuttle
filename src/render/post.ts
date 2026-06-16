@@ -174,6 +174,7 @@ export class Post {
   private _tmp = new THREE.Vector2();
   private _lastW = 0;
   private _lastH = 0;
+  private _sunVisible = false;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
@@ -237,6 +238,7 @@ export class Post {
   setSun(x: number, y: number, visible: boolean): void {
     (this.godray.uniforms.uSunScreen.value as THREE.Vector2).set(x, y);
     this.godray.uniforms.uSunVisible.value = visible ? 1 : 0;
+    this._sunVisible = visible;
   }
 
   /** The pixel size the post chain renders at. The renderer's drawing buffer is
@@ -282,8 +284,11 @@ export class Post {
     this.bloom.strength = TUN.gfx.bloom.strength;
     this.bloom.radius = TUN.gfx.bloom.radius;
     this.bloom.threshold = TUN.gfx.bloom.threshold;
-    // the adaptive governor drops god rays (the heaviest pass after fill) at low tiers
-    this.godray.enabled = TUN.gfx.godrays.enabled && !TUN.gfx.auto.suppressGodrays;
+    // the adaptive governor drops god rays (the heaviest pass after fill) at low tiers. Also skip
+    // the whole pass whenever the sun is off-screen: the shader is a pure pass-through copy then
+    // (uSunVisible<0.5), so skipping it is bit-identical output but saves a full-screen 24-tap pass
+    // every frame the camera isn't facing the sun — a large fraction of normal sailing.
+    this.godray.enabled = TUN.gfx.godrays.enabled && !TUN.gfx.auto.suppressGodrays && this._sunVisible;
     this.godray.uniforms.uStrength.value = TUN.gfx.godrays.strength;
     this.godray.uniforms.uDensity.value = TUN.gfx.godrays.density;
     this.godray.uniforms.uDecay.value = TUN.gfx.godrays.decay;
