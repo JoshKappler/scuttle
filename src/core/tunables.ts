@@ -267,6 +267,13 @@ export const TUN = {
      *  reflected HDR so a bright sky can't blow the water to white. rebakeHz throttles
      *  re-rendering the sky+cloud cube (clouds drift slowly — a couple bakes/s is plenty). */
     reflection: { strength: 0.22, rebakeHz: 2, clamp: 1.6 },
+    /** underwater visibility / depth murk (render/ocean.ts). The sea becomes a
+     *  translucent body you can see `visibility` metres into before it turns fully
+     *  opaque, so a submerged deck dissolves into the water and the shallow seabed
+     *  shows through. `clarity` 0 = OFF (exact current look); 1 = maximally see-through.
+     *  The murk/deep COLOURS are tuned constants in ocean.ts (uMurkColor/uDeepColor),
+     *  not sliders. */
+    water: { visibility: 2.5, clarity: 0.85 },
     /** procedural cloud dome (render/clouds.ts): coverage = how much sky is cloud,
      *  density = opacity/contrast of each puff, speed = drift rate. */
     clouds: { coverage: 0.5, density: 0.7, speed: 0.6 },
