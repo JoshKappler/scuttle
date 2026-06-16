@@ -597,7 +597,6 @@ async function main() {
 
   world.onFixedStep = (t, dt) => {
     controls.modePressed = false; // legacy T — the wheel gates the helm now
-    controls.grapplePressed = false; // legacy G — boarding removed; consume so it can't queue
     port.update(dt); // dock proximity → canDock + "press E — make port" hint
 
     // wheel + ladder positions in world (for E proximity)

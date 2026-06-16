@@ -76,22 +76,6 @@ describe("FleetManager.reconcile", () => {
     expect(world.ships).toContain(mid);
   });
 
-  it("never despawns the boarding target", () => {
-    const near = fakeShip(5),
-      far = fakeShip(100);
-    const ships = [near, far];
-    let i = 0;
-    const { fleet, world } = makeFleet(() => ships[i++]);
-    TUN.fleet.enemyCount = 2;
-    fleet.reconcile();
-    fleet.reconcile();
-    fleet.boardingTarget = far; // we're grappled to the far one
-    TUN.fleet.enemyCount = 1;
-    fleet.reconcile();
-    expect(world.ships).toContain(far); // protected
-    expect(world.ships).not.toContain(near); // next-farthest removed instead
-  });
-
   it("clamps the target to maxVis", () => {
     let i = 0;
     const { fleet, world } = makeFleet(() => fakeShip(10 + i++));

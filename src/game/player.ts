@@ -29,8 +29,6 @@ export class PlayerControls {
   kickPressed = false;
   /** Set on KeyE keydown (interact, on foot). */
   interactPressed = false;
-  /** Set on KeyG keydown (grapple toggle). */
-  grapplePressed = false;
   /** Set on KeyT keydown (helm/foot toggle). */
   modePressed = false;
   /** True while RMB is held — the mouse works the guns, not the camera. */
@@ -81,7 +79,6 @@ export class PlayerControls {
       if (e.code === "KeyP") this.pumpPressed = true;
       if (e.code === "KeyC") this.kickPressed = true;
       if (e.code === "KeyE") this.interactPressed = true;
-      if (e.code === "KeyG") this.grapplePressed = true;
       if (e.code === "KeyT") this.modePressed = true;
     });
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));

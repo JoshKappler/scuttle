@@ -40,8 +40,6 @@ export class FleetManager {
   readonly units: EnemyUnit[] = [];
   /** nearest living enemy (with hysteresis) — gets the premium ocean slot 1. */
   premiumEnemy: Ship | null = null;
-  /** set by the caller to the grappled ship so reconcile won't despawn it. */
-  boardingTarget: Ship | null = null;
 
   private readonly world: FleetWorld;
   private target: Ship; // the player ship — reassigned when the player swaps hulls
@@ -99,13 +97,12 @@ export class FleetManager {
     }
   }
 
-  /** The farthest unit from the player that isn't the boarding target. */
+  /** The farthest unit from the player. */
   private farthestDespawnable(): EnemyUnit | null {
     const p = this.target.body.translation();
     let best: EnemyUnit | null = null;
     let bestD = -1;
     for (const u of this.units) {
-      if (u.ship === this.boardingTarget) continue;
       const t = u.ship.body.translation();
       const d = (t.x - p.x) ** 2 + (t.z - p.z) ** 2;
       if (d > bestD) {

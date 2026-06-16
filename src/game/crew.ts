@@ -192,7 +192,7 @@ export class Pirate {
   // r18.1: first person shows the REAL right arm + cutlass. The body is ONE skinned mesh, so we
   // can't hide sub-meshes — instead we collapse the non-arm BONES (head/neck/left arm/legs) and
   // hold the right-arm chain in a fixed "carry" pose so the real blade sits in frame. fpArmPose
-  // is local-euler per bone, tunable live via DEBUG.boarding.player.fpArmPose then baked here.
+  // is local-euler per bone, baked in here (was live-tunable under the old boarding DEBUG hook).
   private fpCullBones: THREE.Object3D[] = [];
   private rArm: { shoulder?: THREE.Object3D; upper?: THREE.Object3D; lower?: THREE.Object3D } = {};
   private fpBonesFound = false;
