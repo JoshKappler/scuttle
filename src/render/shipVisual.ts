@@ -60,8 +60,9 @@ export class ShipVisual {
         t.colorSpace = THREE.SRGBColorSpace;
         t.anisotropy = 4;
       };
-      ShipVisual.deckTex = loader.load("/assets/textures/deck.jpg", setup);
-      ShipVisual.hullTex = loader.load("/assets/textures/hull.jpg", setup);
+      // relative paths so they load under file:// in the packaged EXE — see universalModel.ts
+      ShipVisual.deckTex = loader.load("assets/textures/deck.jpg", setup);
+      ShipVisual.hullTex = loader.load("assets/textures/hull.jpg", setup);
       setup(ShipVisual.deckTex);
       setup(ShipVisual.hullTex);
     }
@@ -328,7 +329,7 @@ export class ShipVisual {
     // dark weathered oak for every spar, carriage, rudder, ladder and wheel —
     // 0xb89878 was a pale tan that read birch next to the hull (round 9)
     const woodMat = new THREE.MeshStandardMaterial({ map: rigTex, color: 0x5a4128, roughness: 0.85 });
-    const sailTex = new THREE.TextureLoader().load("/assets/textures/sail.jpg", (t) => {
+    const sailTex = new THREE.TextureLoader().load("assets/textures/sail.jpg", (t) => {
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.colorSpace = THREE.SRGBColorSpace;
       t.repeat.set(3, 2.2);

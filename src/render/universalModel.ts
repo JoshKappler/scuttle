@@ -21,9 +21,14 @@ import type { ClipKey, PirateRig } from "./pirateModel";
  */
 export type UniversalName = "superhero_male";
 
-const CHAR_URL = "/assets/characters/universal/web/Superhero_Male_FullBody.gltf";
-const CLIPS_URL = "/assets/characters/universal/web/clips.glb";
-const OUTFIT_URL = "/assets/characters/outfits/web/Male_Ranger.gltf";
+// Paths are RELATIVE (no leading slash) so they resolve against the page's base
+// URL. On the dev server (http://localhost:5173/) that's the web root; in the
+// packaged Electron EXE the page is a file:// URL, where a leading "/" would
+// escape to the drive root (C:\assets\…) and 404 — the bug that dropped the
+// captain to the procedural placeholder. Relative paths resolve inside dist/.
+const CHAR_URL = "assets/characters/universal/web/Superhero_Male_FullBody.gltf";
+const CLIPS_URL = "assets/characters/universal/web/clips.glb";
+const OUTFIT_URL = "assets/characters/outfits/web/Male_Ranger.gltf";
 
 /** ClipKey → Universal Animation Library 2 clip name. */
 const CLIP_NAMES: Record<ClipKey, string> = {
