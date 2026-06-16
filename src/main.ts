@@ -189,7 +189,7 @@ async function main() {
 
   // procedural drifting clouds over the atmospheric sky; also rendered into the
   // sky env cube (skySetup.updateEnv) so the sea reflects them. Follows the camera.
-  const clouds = new CloudDome(skySetup.sunDir, skySetup.sunColor);
+  const clouds = new CloudDome(skySetup.sunDir, skySetup.sunColor, HORIZON_COLOR);
   bgScene.add(clouds.mesh);
   // throttled re-bake of the sky+cloud reflection cube (clouds drift slowly)
   let lastEnvBake = -1;
@@ -1035,6 +1035,12 @@ async function main() {
   const hdgV = new THREE.Vector3();
   let wasUnder = false;
   const underFog = new THREE.FogExp2(0x0c3a44, 0.055);
+  // ABOVE water: a FAR-biased linear haze that fades only DISTANT islands/ships into the same
+  // HORIZON_COLOR the sky dome + ocean far-fog converge on — so far land melts into the horizon
+  // instead of sitting crisp over a hazy sea, while near gameplay (within ~900 m) stays sharp.
+  // (The ocean keeps its own clear-zoned shader fog; both target HORIZON_COLOR pre-tonemap.)
+  const aboveFog = new THREE.Fog(HORIZON_COLOR.clone(), 900, 2600);
+  scene.fog = aboveFog; // above-water is the default; the toggle below only swaps to underFog under the surface
 
   function updateHud(dt: number, tr: { x: number; y: number; z: number }): void {
     // smooth elements every frame
@@ -1849,7 +1855,7 @@ async function main() {
     if (camUnder !== wasUnder) {
       wasUnder = camUnder;
       hudEls.underwater.style.opacity = camUnder ? "1" : "0";
-      scene.fog = camUnder ? underFog : null;
+      scene.fog = camUnder ? underFog : aboveFog;
     }
 
     if (cutaway) {

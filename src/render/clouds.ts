@@ -31,6 +31,7 @@ uniform vec3 uSunColor;
 uniform float uCoverage;  // 0..1 — how much sky is cloud
 uniform float uDensity;   // 0..1 — opacity/contrast of each puff
 uniform float uSpeed;     // drift rate
+uniform vec3 uHorizon;    // sky horizon-haze colour — low clouds dissolve into it (no "wall")
 varying vec3 vDir;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -67,11 +68,12 @@ void main() {
   float t = mix(0.60, 0.28, clamp(uCoverage, 0.0, 1.0));
   float soft = mix(0.16, 0.05, clamp(uDensity, 0.0, 1.0));
   float alpha = smoothstep(t, t + soft, n);
-  // round 2: fade clouds OUT across up≈0.06..0.16 — the higher projection floor (0.30)
-  // already stops the smear, so clouds can fill most of the visible sky; this fade just
-  // keeps the very-near-horizon band (most stretch-prone) clear so no melt reaches the
-  // horizon line, while the follow-cam still sees a proper cloudscape above it.
-  alpha *= smoothstep(0.06, 0.16, up);
+  // round 3 (2026-06-16): the OLD narrow fade (0.06..0.16) left clouds at FULL opacity across
+  // up≈0.16..0.30, where the projection is frozen (max(up,0.30)) — a stretched cloud SMEAR ring
+  // hugging the horizon that read as "walls coming down ... a painted ceiling" (playtest). Fade them
+  // out across the WHOLE stretch-prone band so they reach full strength only ABOVE the freeze zone;
+  // the overhead cloudscape stays, the horizon smear is gone.
+  alpha *= smoothstep(0.20, 0.48, up);
 
   // a second, finer FBM tints the puffs so they aren't flat
   float detail = fbm(uv * 2.7 + 11.0);
@@ -85,6 +87,11 @@ void main() {
   vec3 sunlit = mix(vec3(1.7, 1.7, 1.8), uSunColor * 1.9, 0.35);
   float litFactor = clamp(0.30 + 0.45 * detail + 0.35 * pow(sun, 2.0), 0.0, 1.0);
   vec3 col = mix(shadowed, sunlit, litFactor);
+  // atmospheric perspective: tint clouds toward the horizon haze as they near the horizon, so the
+  // faint low clouds DISSOLVE into the same haze the sky dome and the ocean's far-fog fade to — sea,
+  // sky and cloud all converge on ONE colour at the horizon (no "Hollywood set" wall or ceiling edge).
+  float haze = 1.0 - smoothstep(0.16, 0.52, up);
+  col = mix(col, uHorizon, haze * 0.85);
 
   gl_FragColor = vec4(col, alpha);
 }
@@ -94,7 +101,7 @@ export class CloudDome {
   readonly mesh: THREE.Mesh;
   private mat: THREE.ShaderMaterial;
 
-  constructor(sunDir: THREE.Vector3, sunColor: THREE.Color, radius = 2000) {
+  constructor(sunDir: THREE.Vector3, sunColor: THREE.Color, horizonColor: THREE.Color, radius = 2000) {
     const geo = new THREE.SphereGeometry(radius, 32, 24);
     // The cloud dome lives in the separate BACKGROUND scene (render/post.ts renders
     // it first, then clears depth and draws the main scene over it, so the ship and
@@ -115,6 +122,7 @@ export class CloudDome {
         uCoverage: { value: TUN.gfx.clouds.coverage },
         uDensity: { value: TUN.gfx.clouds.density },
         uSpeed: { value: TUN.gfx.clouds.speed },
+        uHorizon: { value: horizonColor.clone() },
       },
     });
     this.mesh = new THREE.Mesh(geo, this.mat);

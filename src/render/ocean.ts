@@ -320,11 +320,13 @@ void main() {
     vec2 luv = (rest.xz - uLandMin) / uLandSize;
     if (luv.x > 0.0 && luv.x < 1.0 && luv.y > 0.0 && luv.y < 1.0) {
       float landY = texture2D(uLandTex, luv).r * 160.0 - 100.0; // decode terrain-top world-Y (m); deep sea ≈ -100
-      // Waves run ALL THE WAY to the shoreline and flatten only in the last ~1.3 m at the wet sand
-      // (was a fat 5.5 m band → a flat "navy moat" ringing every island). Full waves by ~1.4 m depth,
-      // tapering to flat right at the waterline. Minor crest-clip in the surf zone reads as breaking surf.
-      float shoal = clamp((-0.1 - landY) / 1.3, 0.0, 1.0); // 0 at the wet sand … 1 by ~1.4 m depth
-      shoal = shoal * shoal * (3.0 - 2.0 * shoal);   // smootherstep so the calm band eases in
+      // GRADUAL shoaling: the swell eases down to calm over a ~4.5 m depth band approaching each coast,
+      // instead of the 1.3 m hard ring that "abruptly cut off" the waves at the island edge (playtest).
+      // Full waves by ~4.5 m of depth → glassy-calm right at the wet sand. The water is OPAQUE now (the
+      // see-through void was fixed), so the calmed band reads as a sheltered shore, not a flat navy moat.
+      // Paired with the deleted shore surf-foam line (no white ring) in the fragment stage.
+      float shoal = clamp((0.0 - landY) / 4.5, 0.0, 1.0); // 0 at the waterline … 1 by 4.5 m depth
+      shoal = shoal * shoal * (3.0 - 2.0 * shoal);   // smootherstep so the calming eases in
       p = mix(rest, p, shoal);                       // pull the surface back to flat near land
       crest *= shoal;
       nx *= shoal;
@@ -356,6 +358,7 @@ uniform float uWaterVis;     // metres of water column visible before fully opaq
 uniform float uWaterClarity; // 0 = depth-murk OFF (current look), 1 = maximally see-through
 uniform vec3 uFogColor;
 uniform float uFogDensity;
+uniform float uFogStart;   // metres of crystal-clear water before the distance haze begins
 uniform float uAmpTotal;
 uniform vec3 uCameraPos;
 uniform float uTime;
@@ -678,17 +681,11 @@ void main() {
   }
   wash += 0.7 * wlFoam;
 
-  // shore surf: a foam line in the shallow band where the sea breaks on each coast (same land
-  // field as the vertex shoaling). Brightest right at the waterline, gone in deeper water and
-  // up the dry beach. One texture tap, gated by uLandOn.
-  if (uLandOn > 0.5) {
-    vec2 sluv = (vWorldPos.xz - uLandMin) / uLandSize;
-    if (sluv.x > 0.0 && sluv.x < 1.0 && sluv.y > 0.0 && sluv.y < 1.0) {
-      float slandY = texture2D(uLandTex, sluv).r * 160.0 - 100.0;
-      float surf = smoothstep(-2.2, -0.2, slandY) * (1.0 - smoothstep(0.1, 1.2, slandY));
-      wash += surf * 0.55;
-    }
-  }
+  // (REMOVED 2026-06-16) the shore surf-foam line. It drew a bright white ring in the shallow band
+  // around every coast — the "white line of wake that abruptly cuts off" the waves at the island edge
+  // (playtest: "if we just got rid of that white wake it would go a long way"). The sea now eases to
+  // calm at the shore by the VERTEX shoaling alone (gradual, no ring), and dropping it saves a
+  // per-near-island texture tap. Whitewater still comes from the ship wake above.
 
   for (int i = 0; i < 63; i++) {
     if (i == 31) continue; // slot boundary: don't lace ship 0's tail to ship 1's head
@@ -726,9 +723,13 @@ void main() {
   // upstream; they are simply no longer sampled into the surface colour.
   col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.6, 0.0, 0.95));
 
-  // exponential-squared fog toward horizon
+  // exponential-squared fog toward the horizon, with a CLEAR-ZONE: the near/mid sea (and the islands
+  // you sail up to) stays crisp, and haze only builds past uFogStart, fading the far sea into the
+  // sky's HORIZON_COLOR by the horizon. (Was an immediate exp² from the camera → a veil over the
+  // mid-field islands the playtest called "too intense ... should only be a thing in the far distance".)
   float dist = length(uCameraPos - vWorldPos);
-  float fog = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
+  float fogD = max(dist - uFogStart, 0.0);
+  float fog = 1.0 - exp(-uFogDensity * uFogDensity * fogD * fogD);
   col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
 
   // UNDERWATER VISIBILITY — depth-absorption translucency (no additive colour → NO waterline rim).
@@ -877,6 +878,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uWaterClarity: { value: 0.85 },
       uFogColor: { value: new THREE.Color(0xc4d6d6) },
       uFogDensity: { value: 0.0016 },
+      uFogStart: { value: 520 }, // crystal-clear out to ~520 m, then haze builds toward the horizon
       uAmpTotal: { value: ampTotal },
       uCameraPos: { value: new THREE.Vector3() },
       uCutOn: { value: 0 },
