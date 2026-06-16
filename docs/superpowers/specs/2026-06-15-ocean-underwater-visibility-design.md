@@ -66,10 +66,13 @@ cFinal       = mix(col, uMurkColor, murk)       // thin shallow water = light mu
 
 - `col` is today's fully-lit surface colour (reflection/spec/wash all unchanged); it stays
   the **opaque/deep** end.
-- `uMurkColor` is a new **tuned constant** (a muted, slightly-lighter teal than the near-black
-  deep, e.g. ~`0x123f44`), handled like `uDeepColor`/`uShallowColor` (a uniform in
-  `ocean.ts`, not a dev slider). It gives the see-through band a *water* colour instead of
-  tinting revealed geometry toward black.
+- **Palette: deep navy blue descending to black.** `uMurkColor` is a new **tuned constant** —
+  a **deep navy blue** (e.g. ~`0x0a1f3a`), handled like `uDeepColor`/`uShallowColor` (a uniform
+  in `ocean.ts`, not a dev slider). The shallow see-into-water band reads navy and, as the
+  column deepens (`visFrac → 1`), `cFinal` returns to the opaque deep sea, which we nudge toward
+  **near-black** (`uDeepColor`, currently `0x030f17` — fine, or push toward `~0x01060d` for a
+  truer black). Net gradient looking down into the water: deep navy → black. (Drop the teal
+  `uShallowColor` influence in the look if it fights the navy; starting hexes are feel-tune.)
 - **`clarity 0` is an exact no-op:** `shallowAlpha → 1` and `murk → 0`, so `seaAlpha → 1`
   and `cFinal → col` for every fragment — byte-identical to today. `clarity 1` = maximally
   see-through, murk-tinted shallows. (Both the alpha *and* the tint are gated by `clarity`,
@@ -142,8 +145,17 @@ is a zero-cost off switch if ever needed.
 - **Underwater camera treatment** (camera below the surface). `DoubleSide` already shows the
   surface from beneath; no change here.
 
-## To verify during implementation
+### 5. Seeing sand in the shallows (required)
 
-- Whether `render/islandVisual.ts` draws the **seabed below the waterline**. If yes, the
-  shallows reveal sand through the murk; if not, the shallows still correctly *lighten* by
-  depth (no visible bottom), and drawing it is a small follow-up — not a blocker.
+The murk model reveals whatever solid sits beneath the surface; the seabed geometry to reveal
+**already exists**. `sim/islandwright.ts` builds a seafloor base below sea level
+(`SEABED_Y = 2`, `WATERLINE_Y = 3`; `if (y < SEABED_Y) mat = ROCK`) and the hydraulic-erosion
+pass deposits sand at the coast — so each island carries a shallowly-submerged shelf out to its
+local grid extent (open ocean beyond has no seabed mesh, which is correct → opaque deep there).
+
+So sand-through-the-shallows comes mostly **for free** once the surface is translucent over it.
+The one refinement to make it read as **sand, not rock**: extend the coastal **sand** material
+a row or two **below** the waterline (around `WATERLINE_Y`/`SEABED_Y` in `islandwright.ts`'s
+column loop) so the shallow shelf band is sand-coloured rather than the `ROCK` seafloor base.
+Confirm the submerged shelf actually renders (not back-face/again-cull removed) during the
+in-browser verify.
