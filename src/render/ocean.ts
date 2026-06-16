@@ -488,16 +488,14 @@ void main() {
     }
   }
 
-  // SEABED contributor to the water column: where the island land-field is bound and this
-  // fragment sits over terrain, the seabed world-Y is a floor the sea can be seen down to.
-  // Deep sea decodes to ~ -100 m so the column is huge and stays opaque (open water untouched).
-  if (uLandOn > 0.5) {
-    vec2 fuv = (vWorldPos.xz - uLandMin) / uLandSize;
-    if (fuv.x > 0.0 && fuv.x < 1.0 && fuv.y > 0.0 && fuv.y < 1.0) {
-      float fLandY = texture2D(uLandTex, fuv).r * 160.0 - 100.0;
-      floorY = max(floorY, fLandY);
-    }
-  }
+  // (REMOVED 2026-06-16) island SEABED contributor to the water column. It raised floorY from the
+  // BLED land-field in a wide apron AROUND each island — far beyond the island's actual underwater
+  // mesh — so the depth-fade turned the sea TRANSLUCENT there with NO geometry behind it, revealing
+  // the sky backdrop: the "light see-through void cutout" ringing every island (verified real-GPU A/B
+  // on clarity). The sea near islands is now OPAQUE ("coloured underneath", as intended). Submerged
+  // HULLS still dissolve — their floorY comes from the per-hull profile cut above, which is REAL
+  // geometry the translucent water is actually in front of. The land-field still drives the VERTEX
+  // shoaling (waves taper to the shore) and the surf-foam line below; only this see-through floor is gone.
 
   // cutaway: the sea over the hull footprint is removed outright (the hold
   // is air, not water); the bounded wedge on the camera side of the cut
