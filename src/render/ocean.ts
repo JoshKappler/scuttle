@@ -412,7 +412,10 @@ void main() {
   // metres of water standing over a SUBMERGED deck beneath this fragment (>=0 only where a deck here
   // has gone under the mean sea). Set by the hull cuts below; drives the translucent depth-fade at the
   // end, so a sinking hull DISSOLVES into the sea instead of leaving a void where the cut used to be.
-  float submrg = -1.0;
+  // world-Y of the SHALLOWEST solid beneath this fragment (a submerged hull/deck from the
+  // cut loops below, or the island seabed). Stays very low where nothing is in range (open
+  // deep water) so the depth-murk at the end leaves those fragments fully opaque, unchanged.
+  float floorY = -1000.0;
 
   // dry bilges, ALWAYS: the sea does not exist inside an intact hull. The
   // surface is discarded within each ship's waterline ellipse so the hold
@@ -450,7 +453,7 @@ void main() {
     float beamProfile = (1.0 - along2) * (0.5 + 0.5 * (1.0 - along2));
     if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) {
       if (deckY > 0.3) discard;             // dry deck → cut the sea (no ocean in the hold)
-      else submrg = max(submrg, 0.3 - deckY); // submerged → let the sea close over it, faded by depth
+      else floorY = max(floorY, deckY);     // submerged → record the deck top as the column floor
     }
   }
 
@@ -473,8 +476,19 @@ void main() {
         // sinking bow dissolves into the water. (The old "lp.y < deck + 2 m" band kept carving a hole
         // 2 m above a submerged deck → you saw straight through the bow to the skybox — the void bug.)
         if (deckWY > 0.3) discard;
-        else submrg = max(submrg, 0.3 - deckWY);
+        else floorY = max(floorY, deckWY); // submerged deck top → column floor
       }
+    }
+  }
+
+  // SEABED contributor to the water column: where the island land-field is bound and this
+  // fragment sits over terrain, the seabed world-Y is a floor the sea can be seen down to.
+  // Deep sea decodes to ~ -100 m so the column is huge and stays opaque (open water untouched).
+  if (uLandOn > 0.5) {
+    vec2 fuv = (vWorldPos.xz - uLandMin) / uLandSize;
+    if (fuv.x > 0.0 && fuv.x < 1.0 && fuv.y > 0.0 && fuv.y < 1.0) {
+      float fLandY = texture2D(uLandTex, fuv).r * 160.0 - 100.0;
+      floorY = max(floorY, fLandY);
     }
   }
 
@@ -707,10 +721,16 @@ void main() {
   float fog = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
   col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
 
-  // where the sea has closed over a SUBMERGED deck, fade from translucent (just awash) to opaque
-  // (a couple of metres down) so the drowned hull dissolves into the murk instead of hard-clipping
-  // to a void. Open water and dry hulls keep submrg<0 → full opacity, unchanged.
-  float seaAlpha = submrg >= 0.0 ? clamp(0.12 + submrg * 0.4, 0.12, 1.0) : 1.0;
+  // UNDERWATER VISIBILITY (depth murk). columnDepth = metres of water over the shallowest solid
+  // beneath this fragment. Shallow → translucent + navy-tinted (a sinking deck dissolves, the
+  // sandy shelf shows through); deep / open water → floorY very low → visFrac 1 → fully opaque,
+  // today's look. clarity 0 gives shallowAlpha 1 AND murk 0, an exact no-op.
+  float columnDepth = vWorldPos.y - floorY;
+  float visFrac = clamp(columnDepth / max(uWaterVis, 0.05), 0.0, 1.0);
+  float shallowAlpha = mix(1.0, 0.08, uWaterClarity); // shallowest band's opacity
+  float murk = uWaterClarity * (1.0 - visFrac);        // navy veil, 0 when off OR deep
+  float seaAlpha = mix(shallowAlpha, 1.0, visFrac);
+  col = mix(col, uMurkColor, murk);
   gl_FragColor = vec4(col, min(cutAlpha, seaAlpha));
 }
 `;
