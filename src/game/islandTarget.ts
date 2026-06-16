@@ -20,6 +20,7 @@ const EMPTY_SURFACE = new Int32Array(0);
  */
 export class IslandTarget implements ContactTarget {
   readonly canCarve = false;
+  readonly hullToughness = 1; // unused (never carves), but the ContactTarget interface requires it
   private readonly cx: number;
   private readonly cy: number;
   private readonly cz: number;

@@ -18,6 +18,9 @@ export class AICaptain {
   readonly sailing = new SailingController();
   readonly cannons: Cannons;
   private tmpQ = new THREE.Quaternion();
+  // reused per update() instead of allocating two Vector3 per enemy per fixed step
+  private tmpRel = new THREE.Vector3();
+  private tmpWind = new THREE.Vector3();
   private accuracyJitter: number;
 
   constructor(
@@ -41,7 +44,7 @@ export class AICaptain {
     const rot = this.ship.body.rotation();
     this.tmpQ.set(rot.x, rot.y, rot.z, rot.w).invert();
     const tt = target.body.translation();
-    const rel = new THREE.Vector3(tt.x - tr.x, 0, tt.z - tr.z).applyQuaternion(this.tmpQ);
+    const rel = this.tmpRel.set(tt.x - tr.x, 0, tt.z - tr.z).applyQuaternion(this.tmpQ);
     const range = Math.hypot(rel.x, rel.z);
     const bearingDeg = (Math.atan2(rel.z, rel.x) * 180) / Math.PI;
 
@@ -51,7 +54,7 @@ export class AICaptain {
     }
 
     // bearing of the wind's source in ship frame
-    const wrel = new THREE.Vector3(-wind.dirX, 0, -wind.dirZ).applyQuaternion(this.tmpQ);
+    const wrel = this.tmpWind.set(-wind.dirX, 0, -wind.dirZ).applyQuaternion(this.tmpQ);
     const windBearingDeg = (Math.atan2(wrel.z, wrel.x) * 180) / Math.PI;
 
     const d = decideAI({

@@ -46,6 +46,9 @@ export class Cannons {
    *  firing one gun from the deck must not lock the whole battery. */
   private portReloadAt = new Map<string, number>();
   static RELOAD = 6; // s — player battery; AI crews pass a slower reload
+  /** Reload UPGRADE multiplier (≤1 = faster). Per-instance, so the "Faster Reload"
+   *  upgrade speeds ONLY the player's battery; the AI captains keep their own at 1. */
+  reloadMul = 1;
   /** Dev panel "semi-auto": when true every gun is treated as always loaded — the
    *  reload wait is removed, nothing else changes (you still click each shot). Per
    *  instance, so flipping the player's panel can't speed up the AI's own battery. */
@@ -120,7 +123,7 @@ export class Cannons {
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
       if (!this.bears(ship.build.cannonPorts[p], key)) continue;
       if (this.portReload(ship, p, simTime) > 0) continue;
-      this.portReloadAt.set(this.portKey(ship, p), simTime + this.reloadS);
+      this.portReloadAt.set(this.portKey(ship, p), simTime + this.reloadS * this.reloadMul);
       this.pendingShots.push({
         delay: i * STAGGER,
         portIndex: p,

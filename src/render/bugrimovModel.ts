@@ -21,8 +21,9 @@ import type { PirateRig } from "./pirateModel";
  */
 export type BugrimovName = "captain";
 
-const MESH_URL = "/assets/characters/bugrimov/web/pirate.glb";
-const TEX_DIR = "/assets/characters/bugrimov/web/";
+// relative paths so they load under file:// in the packaged EXE — see universalModel.ts
+const MESH_URL = "assets/characters/bugrimov/web/pirate.glb";
+const TEX_DIR = "assets/characters/bugrimov/web/";
 
 /** Texture set → the 1K PNG basenames produced by the Pillow transcode. */
 interface TexSet {

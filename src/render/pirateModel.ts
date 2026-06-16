@@ -14,12 +14,14 @@ export type ClipKey = "idle" | "walk" | "run" | "attack" | "punch" | "hit" | "de
 export type ModelName = "captain" | "anne" | "henry" | "mako" | "sharky" | "skeleton";
 
 const MODEL_URLS: Record<ModelName, string> = {
-  captain: "/assets/characters/captain.glb",
-  anne: "/assets/characters/anne.glb",
-  henry: "/assets/characters/henry.glb",
-  mako: "/assets/characters/mako.glb",
-  sharky: "/assets/characters/sharky.glb",
-  skeleton: "/assets/characters/skeleton.glb",
+  // relative paths (no leading slash) so they resolve under file:// in the
+  // packaged EXE, not just under the dev server — see universalModel.ts.
+  captain: "assets/characters/captain.glb",
+  anne: "assets/characters/anne.glb",
+  henry: "assets/characters/henry.glb",
+  mako: "assets/characters/mako.glb",
+  sharky: "assets/characters/sharky.glb",
+  skeleton: "assets/characters/skeleton.glb",
 };
 
 /** captain.glb ships two characters in one file; hide the spare. */

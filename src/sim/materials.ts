@@ -56,17 +56,18 @@ export const MATERIALS: Record<number, Material> = {
   // through victims without itself taking damage). Density matched to oak so the OAK→RAM swap is
   // mass-neutral: it changes toughness only, never the hull's tuned draft/trim (THE LAW #2).
   [RAM]: { name: "ram", density: 430, color: [0.04, 0.025, 0.015], strength: 4.5 },
-  // Terrain palette — linear RGB, brighter than the ship woods because islands
-  // render with a plain vertex-color material (no plank-texture darkening pass).
-  // Starting values; tuned in-browser under the ACES tonemap.
-  [SAND]: { name: "sand", density: 1600, color: [0.62, 0.54, 0.36], strength: 1 },
-  [ROCK]: { name: "rock", density: 2600, color: [0.34, 0.34, 0.37], strength: 20 },
-  [DARKROCK]: { name: "darkrock", density: 2900, color: [0.19, 0.2, 0.23], strength: 30 },
-  [GRASS]: { name: "grass", density: 1500, color: [0.15, 0.33, 0.12], strength: 1 },
-  [DIRT]: { name: "dirt", density: 1500, color: [0.2, 0.13, 0.07], strength: 1 },
-  [PALMWOOD]: { name: "palmwood", density: 350, color: [0.2, 0.12, 0.05], strength: 2 },
-  [FOLIAGE]: { name: "foliage", density: 100, color: [0.09, 0.34, 0.11], strength: 1 },
-  [ROOFTILE]: { name: "rooftile", density: 1900, color: [0.42, 0.13, 0.07], strength: 4 },
+  // Terrain palette — linear RGB. Visual-pass-1: DARKENED + desaturated ~35–45%
+  // off the old bright values (player: islands "much too bright … like a super
+  // early version of Minecraft"). Weathered, grittier tones; render/islandVisual.ts
+  // adds triplanar procedural grit on top. Tuned in-browser under the ACES tonemap.
+  [SAND]: { name: "sand", density: 1600, color: [0.4, 0.345, 0.225], strength: 1 },
+  [ROCK]: { name: "rock", density: 2600, color: [0.2, 0.2, 0.22], strength: 20 },
+  [DARKROCK]: { name: "darkrock", density: 2900, color: [0.115, 0.12, 0.14], strength: 30 },
+  [GRASS]: { name: "grass", density: 1500, color: [0.082, 0.18, 0.07], strength: 1 },
+  [DIRT]: { name: "dirt", density: 1500, color: [0.12, 0.078, 0.04], strength: 1 },
+  [PALMWOOD]: { name: "palmwood", density: 350, color: [0.13, 0.078, 0.033], strength: 2 },
+  [FOLIAGE]: { name: "foliage", density: 100, color: [0.055, 0.19, 0.065], strength: 1 },
+  [ROOFTILE]: { name: "rooftile", density: 1900, color: [0.3, 0.095, 0.05], strength: 4 },
 };
 
 /** Joules required to break one voxel of the given material (0 for empty/unknown). */

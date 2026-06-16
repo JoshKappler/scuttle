@@ -27,6 +27,7 @@ class FakeTarget implements ContactTarget {
   removed: [number, number, number][] = [];
   impulses: { imp: THREE.Vector3; pt: { x: number; y: number; z: number } }[] = [];
   moved: { x: number; y: number; z: number }[] = [];
+  hullToughness = 1;
   constructor(
     public grid: VoxelGrid,
     public pos: { x: number; y: number; z: number },

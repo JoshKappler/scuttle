@@ -12,7 +12,15 @@
  */
 
 import type { UpgradeId } from "../sim/economy";
+import type { ShipTierId } from "../game/saveState";
 
+export interface ShipRow {
+  id: ShipTierId;
+  name: string;
+  price: number;
+  state: "owned" | "locked" | "buy";
+  affordable: boolean;
+}
 export interface CargoRow {
   name: string;
   qty: number;
@@ -36,11 +44,13 @@ export interface PortView {
   cargoCap: number;
   repairCost: number; // 0 when the hull is whole
   upgrades: UpgradeRow[];
+  ships: ShipRow[];
 }
 export interface PortActions {
   onSell(): void;
   onRepair(): void;
   onBuy(id: UpgradeId): void;
+  onBuyShip(id: ShipTierId): void;
   onClose(): void;
 }
 export interface PortScreen {
@@ -233,6 +243,25 @@ export function createPortScreen(actions: PortActions): PortScreen {
       const maxed = u.cost === null;
       const label = maxed ? "Max" : `Buy — ⛀ ${u.cost}`;
       r.append(left, button(label, () => actions.onBuy(u.id), !maxed && u.affordable));
+      body.appendChild(r);
+    }
+
+    // ---- Shipyard ----
+    body.appendChild(heading("Shipyard"));
+    for (const s of v.ships) {
+      const r = row();
+      const left = document.createElement("div");
+      const name = document.createElement("div");
+      name.textContent = s.name;
+      name.style.color = PARCH;
+      const note = document.createElement("div");
+      note.textContent = s.state === "owned" ? "your ship" : s.state === "locked" ? "sink one to unlock her" : `⛀ ${s.price}`;
+      note.style.color = s.state === "owned" ? GOLD : MUTE;
+      note.style.fontSize = "11px";
+      note.style.fontStyle = "italic";
+      left.append(name, note);
+      const label = s.state === "owned" ? "Owned" : s.state === "locked" ? "Locked" : `Buy — ⛀ ${s.price}`;
+      r.append(left, button(label, () => actions.onBuyShip(s.id), s.state === "buy" && s.affordable));
       body.appendChild(r);
     }
 

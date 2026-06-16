@@ -219,6 +219,82 @@ export const TUN = {
   fleet: {
     enemyCount: 1,
   },
+
+  /** Visual-pass-1 graphics knobs — read by render/post.ts, render/sky.ts,
+   *  render/clouds.ts and render/ocean.ts. Pure VISUALS: none of these are read
+   *  by the deterministic vitest oracle, and none feed physics (THE LAW #1).
+   *  Every effect is independently togglable so the browser demo can dial down
+   *  while the Steam build runs full. */
+  gfx: {
+    /** master switch for the whole post-processing composer. Off → main.ts uses
+     *  the legacy direct renderer.render path (no bloom/god rays/grade) — a perf
+     *  floor + safety valve if the composer ever misbehaves.
+     *  PERF (these are the big levers — the post chain is fill-bound):
+     *  maxPixelRatio caps the resolution the WHOLE chain renders at (1 = native
+     *  pixels even on a 2× HiDPI display → up to 4× fewer pixels through bloom +
+     *  god-rays; the final pass upscales to the canvas). scale multiplies that
+     *  further (0.75 = render at 3/4 res for more speed; 1 = no extra scaling). */
+    post: { enabled: true, maxPixelRatio: 1, scale: 1.0 },
+    /** adaptive-quality governor + perf HUD (render/perf.ts). This is the answer to
+     *  "why does it oscillate between 5 fps and smooth?": when `enabled`, a watchdog
+     *  measures the real frame time and walks the post-FX DOWN (an extra resolution
+     *  `scale` multiplier, then dropping god rays via `suppressGodrays`) whenever the
+     *  framerate sits below `targetFps`, stepping back up when there's headroom — so the
+     *  frame can't silently park at single digits. On a healthy GPU it stays at tier 0 and
+     *  changes nothing. `scale`/`suppressGodrays`/`fps`/`tier` are WRITTEN by the governor
+     *  (telemetry + outputs, not user knobs); `enabled`/`targetFps`/`hud` are the knobs.
+     *  `hud` shows a small fps/ms/GPU readout (also names SOFTWARE rendering, the usual
+     *  real cause of the 5-fps launches). */
+    auto: { enabled: true, targetFps: 50, hud: true, scale: 1, suppressGodrays: false, fps: 0, tier: 0 },
+    /** global ACES exposure (renderer.toneMappingExposure). <1 calms an over-bright
+     *  sky/sun uniformly without touching the individual effects. Nested in its own
+     *  flat object so the dev-panel slider's `obj` stays a Bag (the gfx root has
+     *  sub-objects, which a Bag = Record<string, number|boolean> can't hold). */
+    tone: { exposure: 0.76 },
+    /** UnrealBloomPass — glows the sun disc, the sun-glint path and bright foam.
+     *  Mild by design ("grounded realism with punch", not a bloom-fest). clamp caps
+     *  the HDR fed to bloom — and, because the ClampShader runs before BOTH bloom and
+     *  the OutputPass tonemap, it is the real CEILING on the sun disc itself (the three
+     *  Sky renders it white-hot otherwise). Round 3: dropped 4→2.4 so the disc tonemaps
+     *  to a soft warm-white, not a blinding star — the single biggest "subtle sun" lever. */
+    bloom: { enabled: true, strength: 0.03, radius: 0.5, threshold: 1.7, clamp: 2.4 },
+    /** screen-space god rays (render/post.ts GodRayPass) anchored at the sun's
+     *  projected position; occlusion is free (dark geometry blocks the shafts).
+     *  threshold gates which pixels seed shafts (high = only the sun disc, not the
+     *  whole bright sky → no white haze). samples = the per-pixel march length, the
+     *  pass's dominant cost; read ONCE at Post construction, so a reload is needed
+     *  to change it (lower = much faster). */
+    godrays: { enabled: true, strength: 0.07, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 16 },
+    /** final color grade (render/post.ts GradePass): contrast + saturation +
+     *  a subtle vignette for the cinematic punch. */
+    grade: { contrast: 1.06, saturation: 1.08, vignette: 0.22 },
+    /** water reflection of the sky env cube (render/ocean.ts): strength scales the
+     *  Fresnel-weighted reflection (high = chrome mirror; the sea should mostly read
+     *  as its own teal body with a sky SHEEN, not liquid metal). clamp caps the
+     *  reflected HDR so a bright sky can't blow the water to white. rebakeHz throttles
+     *  re-rendering the sky+cloud cube (clouds drift slowly — a couple bakes/s is plenty). */
+    reflection: { strength: 0.22, rebakeHz: 1, clamp: 1.6 },
+    /** underwater visibility / depth murk (render/ocean.ts). The sea becomes a
+     *  translucent body you can see `visibility` metres into before it turns fully
+     *  opaque, so a submerged deck dissolves into the water and the shallow seabed
+     *  shows through. `clarity` 0 = OFF (exact current look); 1 = maximally see-through.
+     *  The murk/deep COLOURS are tuned constants in ocean.ts (uMurkColor/uDeepColor),
+     *  not sliders. */
+    water: { visibility: 2.5, clarity: 0.85 },
+    /** procedural cloud dome (render/clouds.ts): coverage = how much sky is cloud,
+     *  density = opacity/contrast of each puff, speed = drift rate. */
+    clouds: { coverage: 0.5, density: 0.7, speed: 0.6 },
+    /** triplanar procedural grit on island voxels (render/islandVisual.ts) — 0 =
+     *  flat vertex color, 1 = full weathered variation. Silhouettes stay crisp. */
+    islandGrit: { strength: 0.65 },
+    /** sail canvas (render/shipVisual.ts): the sail stays fully OPAQUE (same texture);
+     *  glow = strength of the warm back-light ADDED where the sun lights the cloth's FAR
+     *  side — i.e. when the sail is between the sun and the camera (0 = none/matte, higher
+     *  = more sun glowing through the canvas). No see-through; this only adds light.
+     *  0.6 (was 0.35) + a broader lobe in the shader makes it actually read on every
+     *  ship instead of being a sliver only at the exact sun-dead-behind angle. */
+    sail: { glow: 0.6 },
+  },
 };
 
 export type Tunables = typeof TUN;

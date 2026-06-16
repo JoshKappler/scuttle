@@ -19,6 +19,14 @@ import { HullCollider } from "./hullCollider";
 import type { HullView } from "../sim/voxelOverlap";
 import type { ContactTarget } from "./voxelContact";
 
+// Buoyancy wave-sampling LOD thresholds (distance² to the player) + reuse-cell sizes (m). The swell
+// (λ≥14 m) varies little over a metre, so a distant ship can reuse one surfaceHeight sample across a
+// small world-space cell with imperceptible error — and the per-column trig is a fleet's CPU wall.
+const BUOY_LOD_NEAR2 = 70 * 70; // ≤70 m from the player: EXACT per-column sampling (no LOD)
+const BUOY_LOD_FAR2 = 140 * 140; // >140 m: coarsest sampling
+const BUOY_CELL_MID = 0.8; // m reuse radius at mid range (~5× fewer evals, <5% amplitude error)
+const BUOY_CELL_FAR = 1.8; // m reuse radius far away (~10×; slight bob, invisible at distance)
+
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
  * Buoyancy/flood/drag forces are applied at probe points every fixed step;
@@ -30,6 +38,10 @@ export class Ship implements ContactTarget {
   readonly visual: ShipVisual;
   /** per-(x,z) hull columns of displacing cells — TRUE per-voxel buoyancy (r16). */
   columns: VoxelColumn[];
+  /** Σ of every column's cell volume (the hull's total displacing volume). Cached on any change to
+   *  `columns` so applyForces can early-break out of the dry topside yet still divide by the true
+   *  total for submergedFrac. */
+  private totalCellVolume = 0;
 
   /** Diagnostic: 0..1 share of envelope currently below the surface. */
   submergedFrac = 0;
@@ -64,8 +76,15 @@ export class Ship implements ContactTarget {
   /** Per mast: 1 = whole canvas → 0.15 floor as shot full of holes. */
   sailIntegrity: number[];
   rudderHp = 3;
-  /** Steering authority 0.15..1 — yaw torque multiplier. */
+  /** Steering authority 0.15..1 — yaw torque multiplier (DAMAGE state). */
   rudderEff = 1;
+  /** Turning UPGRADE multiplier (≥1), independent of rudder damage. Set from the
+   *  "Sharper Rudder" upgrade in the port layer; sailing multiplies yaw by it. */
+  rudderPower = 1;
+  /** Hull-durability UPGRADE multiplier (≥1): scales the energy needed to break a
+   *  voxel of this hull, so cannon/ram damage carves fewer cells. 1 = stock oak.
+   *  Set from the "Hull Reinforcement" upgrade; read by the carve/impact budget. */
+  hullToughness = 1;
   private mastFootInit: number[];
   private mastColliders: RAPIER.Collider[] = [];
 
@@ -92,6 +111,8 @@ export class Ship implements ContactTarget {
   private breachCells = new Map<number, [number, number, number][]>();
   /** Holes shot through bulkheads connecting compartments. */
   private openings: Opening[] = [];
+  /** Substep counter throttling the (expensive) per-cell flood-geometry recompute to ~20 Hz. */
+  private floodGeomTick = 0;
   /** Per-compartment flood geometry, recomputed each step for compartments that hold water or
    *  have a breach: the world-horizontal POOL surface height (for two-reservoir breach heads) and
    *  the WET-cell local centroid (where the floodwater weight bears → free-surface list/capsize).
@@ -112,6 +133,10 @@ export class Ship implements ContactTarget {
 
   private phys: Physics;
   private deckCollider: RAPIER.Collider | null = null;
+  /** Only the player ship needs the walkable-deck trimesh (the captain never walks enemy
+   *  hulls — boarding is gone). Enemies skip it: one fewer Rapier collider each AND no
+   *  ~40 ms whole-hull deck-collider rebuild on every carve during combat. */
+  private readonly walkable: boolean;
   /** SHIP-SHIP / debris contact shape: the real voxel hull, mutated on damage (Task 1). */
   readonly hull!: HullCollider;
 
@@ -122,11 +147,13 @@ export class Ship implements ContactTarget {
   /** Lazily-materialized packed [x,y,z,...] view of `surface`, rebuilt when the set changes. */
   private surfaceCache: Int32Array | null = null;
 
-  constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }) {
+  constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }, walkable = true) {
     this.phys = phys;
     this.build = build;
     this.visual = visual;
+    this.walkable = walkable;
     this.columns = makeVoxelColumns(build.grid, build.compartments);
+    this.totalCellVolume = this.sumColumnVolume();
     this.surface = computeSurface(build.grid);
 
     // keel anchor: lowest solid cell on the midship centerline
@@ -312,6 +339,7 @@ export class Ship implements ContactTarget {
    * holes). Rebuilt after damage so blast craters become terrain.
    */
   rebuildDeckCollider(): void {
+    if (!this.walkable) return; // enemies have no walkable deck — skip the trimesh entirely
     const { world, RAPIER: R } = this.phys;
     if (this.deckCollider) {
       world.removeCollider(this.deckCollider, false);
@@ -399,8 +427,18 @@ export class Ship implements ContactTarget {
    * later stage gated on lost reserve buoyancy — a single waterline nick just settles her.
    */
   updateFlooding(dt: number, waves: Wave[], t: number): void {
-    // pool surfaces + wet centroids for every compartment that holds water or is breached
-    this.updateFloodGeom();
+    // Fast path: an intact, dry, unpumped hull with no residual waterlog has nothing to flood, so
+    // skip the whole per-compartment orifice pass — most importantly the per-compartment hatch
+    // surfaceHeight (Gerstner) sample, which is the bulk of a healthy fleet's flooding cost. The
+    // raised hatch coaming exists precisely so a normal swell never floods an undamaged hold, so
+    // this is behaviour-preserving; the guard itself is a cheap O(compartments) scan.
+    if (!this.pumpOn && this.waterlog <= 0 && !this.hasFloodActivity()) return;
+
+    // Pool surfaces + wet centroids drift slowly, but this recompute runs an O(n·log n) per-cell
+    // world-Y sort over every WET compartment — the dominant CPU cost (~60 ms/frame with a fleet).
+    // Throttle it to ~20 Hz instead of every substep; the inflow calc below reuses the cached poolY
+    // between recomputes (imperceptible — the pool surface barely moves in 50 ms).
+    if (this.floodGeomTick++ % 3 === 0) this.updateFloodGeom();
 
     const breaches: BreachInput[] = [];
     const p = this.tmpV;
@@ -461,6 +499,16 @@ export class Ship implements ContactTarget {
       }
       if (worst) worst.waterVolume = Math.max(worst.waterVolume - Ship.PUMP_RATE * dt, 0);
     }
+  }
+
+  /** True if any compartment holds water or has a hull breach — i.e. there is flooding to simulate.
+   *  Cheap O(compartments) gate for the updateFlooding fast path. */
+  private hasFloodActivity(): boolean {
+    for (const c of this.build.compartments) {
+      if (c.waterVolume > 1e-6) return true;
+      if ((this.breachCells.get(c.id)?.length ?? 0) > 0) return true;
+    }
+    return false;
   }
 
   /** Recompute pool surfaces + wet centroids for compartments that hold water or are breached. The
@@ -529,7 +577,7 @@ export class Ship implements ContactTarget {
   }
 
   /** Apply buoyancy + water drag for one fixed step. Call before world.step(). */
-  applyForces(waves: Wave[], t: number): void {
+  applyForces(waves: Wave[], t: number, focusX?: number, focusZ?: number): void {
     const body = this.body;
     body.resetForces(true);
     body.resetTorques(true);
@@ -558,7 +606,6 @@ export class Ship implements ContactTarget {
     let torqueZ = 0;
     let waterplane = 0; // m² straddling the surface this step → live heave stiffness
     let submergedVolume = 0;
-    let totalVolume = 0;
     // centre of buoyancy (world point) — where the keel's lateral resistance acts, so
     // the leeway force there both RIGHTS her against sail heel and BANKS her in a turn.
     let cbWeight = 0; // Σ submergedFrac  (voxel volume cancels in the centroid ratio)
@@ -575,37 +622,66 @@ export class Ship implements ContactTarget {
     let sxz = 0; // Σ area·rx·rz
     let bowMaxX = -Infinity; // r18: frontmost wet column → voxel bow-spray origin
     this.waterlineN = 0;
+    // Buoyancy wave-sampling LOD: a ship far from the focus (the player) reuses a surfaceHeight sample
+    // until the column's world position moves past `waveCell` metres — invisible at range, ~5-10× fewer
+    // trig-heavy evals. Near/player ships (or no focus → tests/headless) keep waveCell 0 = EXACT per column.
+    let waveCell = 0;
+    if (focusX !== undefined && focusZ !== undefined) {
+      const fdx = tr.x - focusX,
+        fdz = tr.z - focusZ;
+      const fd2 = fdx * fdx + fdz * fdz;
+      if (fd2 > BUOY_LOD_FAR2) waveCell = BUOY_CELL_FAR;
+      else if (fd2 > BUOY_LOD_NEAR2) waveCell = BUOY_CELL_MID;
+    }
+    let cacheWx = Infinity,
+      cacheWz = Infinity,
+      cacheSurf = 0;
     for (const col of this.columns) {
       // column anchor (its lowest cell) → world; sample the surface once here
       const aw = this.tmpV.set(col.x, col.cellY[0], col.z).applyQuaternion(this.tmpQ);
       const wx = aw.x + tr.x;
       const wz = aw.z + tr.z;
       const anchorWY = aw.y + tr.y;
-      const surfaceY = surfaceHeight(waves, wx, wz, t);
+      // LOD: reuse the cached sample while still within waveCell metres of it (Manhattan); else resample.
+      let surfaceY: number;
+      if (waveCell > 0 && Math.abs(wx - cacheWx) + Math.abs(wz - cacheWz) < waveCell) {
+        surfaceY = cacheSurf;
+      } else {
+        surfaceY = surfaceHeight(waves, wx, wz, t);
+        cacheWx = wx;
+        cacheWz = wz;
+        cacheSurf = surfaceY;
+      }
       const rx = wx - com0.x; // horizontal lever arm of this column from the COM
       const rz = wz - com0.z;
       const y0 = col.cellY[0];
       let straddles = false;
       let colWet = false;
+      // cells are ordered bottom-up and the surface depends only on (x,z), so `frac` is monotonically
+      // non-increasing up the column while the hull is upright (upY>0): once a cell clears the water
+      // every higher cell does too → break, skipping the dry topside (≈80% of a floating hull, the
+      // bulk of this O(cells) #2-cost loop). Capsized (upY≤0) flips the order, so scan fully there.
+      // totalVolume is the cached this.totalCellVolume now, so the skipped dry cells still count.
       for (let k = 0; k < col.cellY.length; k++) {
-        totalVolume += VOXEL_VOLUME;
         // cell center world-Y, then its submerged fraction over the voxel height
         const cellWY = anchorWY + (col.cellY[k] - y0) * upY;
         const frac = Math.min(Math.max((surfaceY - cellWY) / VOXEL_SIZE + 0.5, 0), 1);
-        if (frac > 0) {
-          const f = liftPerCell * frac;
-          netLift += f;
-          // τ = r × F for a vertical F: τx = −rz·F, τz = +rx·F (ry irrelevant)
-          torqueX -= rz * f;
-          torqueZ += rx * f;
-          submergedVolume += VOXEL_VOLUME * frac;
-          cbWeight += frac;
-          cbXSum += frac * wx;
-          cbYSum += frac * cellWY;
-          cbZSum += frac * wz;
-          colWet = true;
-          if (frac < 1) straddles = true;
+        if (frac <= 0) {
+          if (upY > 0) break; // every higher cell is drier still
+          continue; // capsized: keep scanning, the submerged cells are higher up
         }
+        const f = liftPerCell * frac;
+        netLift += f;
+        // τ = r × F for a vertical F: τx = −rz·F, τz = +rx·F (ry irrelevant)
+        torqueX -= rz * f;
+        torqueZ += rx * f;
+        submergedVolume += VOXEL_VOLUME * frac;
+        cbWeight += frac;
+        cbXSum += frac * wx;
+        cbYSum += frac * cellWY;
+        cbZSum += frac * wz;
+        colWet = true;
+        if (frac < 1) straddles = true;
       }
       if (straddles) waterplane += col.area;
       if (colWet) {
@@ -642,7 +718,7 @@ export class Ship implements ContactTarget {
     // AND adding weight would double-count; weight-only handles partial submersion.
     body.addForce({ x: 0, y: netLift, z: 0 }, true);
     body.addTorque({ x: torqueX, y: 0, z: torqueZ }, true);
-    this.submergedFrac = totalVolume > 0 ? submergedVolume / totalVolume : 0;
+    this.submergedFrac = this.totalCellVolume > 0 ? submergedVolume / this.totalCellVolume : 0;
     this.bowSpray.wet = bowMaxX > -Infinity; // r18: anything in the water this step?
     // live hydrostatic heave stiffness for the critical-damping term in the drag block
     this.heaveStiffness = WATER_DENSITY * G * waterplane * TUN.phys.buoyancy;
@@ -811,7 +887,9 @@ export class Ship implements ContactTarget {
     const solid = cells.filter(([x, y, z]) => grid.isSolid(x, y, z));
     const { removed, leftover } = planCrush(
       solid,
-      ([x, y, z]) => breakEnergy(grid.get(x, y, z)),
+      // hullToughness (the "Hull Reinforcement" upgrade, ≥1) raises the joules each
+      // cell costs, so the same impact energy carves fewer voxels out of a tough hull.
+      ([x, y, z]) => breakEnergy(grid.get(x, y, z)) * this.hullToughness,
       energy,
     );
     const n = this.carveCells(removed);
@@ -956,6 +1034,15 @@ export class Ship implements ContactTarget {
       true,
     );
     this.columns = makeVoxelColumns(grid, this.build.compartments);
+    this.totalCellVolume = this.sumColumnVolume();
+  }
+
+  /** Total displacing volume across all columns. Cheap O(columns) sum; called only when columns
+   *  change (build + after a carve), never per step. */
+  private sumColumnVolume(): number {
+    let cells = 0;
+    for (const col of this.columns) cells += col.cellY.length;
+    return cells * VOXEL_VOLUME;
   }
 
   /** World-space position of the ship-local point (meters). Alias-safe:

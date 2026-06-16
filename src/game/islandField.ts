@@ -235,6 +235,85 @@ export class IslandField {
     this.contactTargets.push(new IslandTarget(grid, worldPos, M_PER_VOX));
   }
 
+  /**
+   * Bake a top-down LAND-HEIGHT field of the whole archipelago for the ocean to shoal
+   * against (render/ocean.ts setLandField): R = terrain-top world-Y, encoded to a byte as
+   * (y+100)/160. Open sea reads 0 → −100 m. Built from the islands' actual collider vertices
+   * (the true irregular coastline), then bled outward with a gentle downward ramp so the wave
+   * displacement tapers smoothly to flat over ~25 m of approach instead of snapping at the
+   * grid edge. One-time at startup; the ocean samples it per vertex/fragment. Returns null for
+   * an island-free world.
+   */
+  buildLandField(): { tex: THREE.DataTexture; minX: number; minZ: number; sizeX: number; sizeZ: number } | null {
+    if (this.islands.length === 0) return null;
+    let minX = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxZ = -Infinity;
+    for (const i of this.islands) {
+      const p = i.placement;
+      minX = Math.min(minX, p.x - p.radiusM - 60);
+      maxX = Math.max(maxX, p.x + p.radiusM + 60);
+      minZ = Math.min(minZ, p.z - p.radiusM - 60);
+      maxZ = Math.max(maxZ, p.z + p.radiusM + 60);
+    }
+    const sizeX = maxX - minX;
+    const sizeZ = maxZ - minZ;
+    const N = 512;
+    const DEEP = -100;
+    let cur = new Float32Array(N * N).fill(DEEP);
+    // splat each island's collider verts: keep the MAX world-Y per texel = the terrain top.
+    for (const inst of this.islands) {
+      const p = inst.placement;
+      const worldY = -inst.model.meta.waterlineY * M_PER_VOX;
+      const v = inst.visual.colliderVerts; // local metres (already × scale)
+      for (let k = 0; k + 2 < v.length; k += 3) {
+        const wx = v[k] + p.x;
+        const wy = v[k + 1] + worldY;
+        const wz = v[k + 2] + p.z;
+        const tx = Math.floor(((wx - minX) / sizeX) * N);
+        const tz = Math.floor(((wz - minZ) / sizeZ) * N);
+        if (tx < 0 || tx >= N || tz < 0 || tz >= N) continue;
+        const idx = tx + tz * N;
+        if (wy > cur[idx]) cur[idx] = wy;
+      }
+    }
+    // bleed land outward with a ~1.2 m/ring downward ramp → a smooth ~25 m shoaling apron so
+    // the calm band eases into open water instead of a hard line at the island's grid edge.
+    const decay = 1.2;
+    for (let pass = 0; pass < 12; pass++) {
+      const next = cur.slice();
+      for (let z = 0; z < N; z++) {
+        for (let x = 0; x < N; x++) {
+          let best = cur[x + z * N];
+          for (let dz = -1; dz <= 1; dz++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const nx = x + dx;
+              const nz = z + dz;
+              if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue;
+              const nb = cur[nx + nz * N] - decay;
+              if (nb > best) best = nb;
+            }
+          }
+          next[x + z * N] = best;
+        }
+      }
+      cur = next;
+    }
+    // encode to a single-byte R texture: byte = (y + 100) / 160 → decoded as r*160 − 100 in GLSL.
+    const bytes = new Uint8Array(N * N);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.max(0, Math.min(255, Math.round(((cur[i] + 100) / 160) * 255)));
+    }
+    const tex = new THREE.DataTexture(bytes, N, N, THREE.RedFormat, THREE.UnsignedByteType);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+    return { tex, minX, minZ, sizeX, sizeZ };
+  }
+
   /** Nearest harbor dock anchor to a world point (future docking interaction). */
   nearestDock(x: number, z: number): THREE.Vector3 | null {
     let best: THREE.Vector3 | null = null;

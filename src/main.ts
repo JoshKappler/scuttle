@@ -3,11 +3,16 @@ import { Rng } from "./core/rng";
 import { makeWaves, surfaceHeight } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
 import { SeamMask } from "./render/seamMask";
+import { Post } from "./render/post";
 import { createOceanField } from "./render/oceanField";
 import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
-import { createSky } from "./render/sky";
-import { buildBrig, buildSloop, buildManOfWar } from "./sim/shipwright";
+import { createSky, HORIZON_COLOR } from "./render/sky";
+import { CloudDome } from "./render/clouds";
+import { islandGritUniforms } from "./render/islandVisual";
+import { buildCutter, buildSloop, type ShipBuild } from "./sim/shipwright";
+import { tierById, SHIP_TIERS } from "./game/shipyard";
+import { pickEnemyTier } from "./sim/fleetSpawn";
 import { ShipVisual } from "./render/shipVisual";
 import { initPhysics } from "./game/physics";
 import { Ship } from "./game/ship";
@@ -17,7 +22,17 @@ import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { FleetManager, type EnemyUnit } from "./game/fleet";
 import { MAXVIS } from "./core/constants";
-import { BoardingSystem } from "./game/boarding";
+import { GameState } from "./game/gameState";
+import { PlayerCharacter } from "./game/playerCharacter";
+import {
+  SaveManager,
+  defaultSave,
+  defaultSettings,
+  SAVE_VERSION,
+  type SaveState,
+  type Settings,
+  type ShipTierId,
+} from "./game/saveState";
 import { Cannons } from "./game/cannons";
 import { muzzleWorld } from "./game/gunnery";
 import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
@@ -31,6 +46,8 @@ import { createDevPanel } from "./render/devPanel";
 import { Economy } from "./sim/economy";
 import { createPortScreen } from "./render/portScreen";
 import { PortController } from "./game/port";
+import { createMenuScreen, type SandboxConfig } from "./render/menuScreen";
+import { PerfMonitor } from "./render/perf";
 
 async function main() {
   // THROWAWAY (plan Task 0): ?spike=1 runs the voxel-collider perf gate and bails.
@@ -40,20 +57,118 @@ async function main() {
     return;
   }
   const app = document.getElementById("app")!;
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  // powerPreference:"high-performance" is the SINGLE most important fix for the
+  // "5 fps one launch, smooth the next" swing: without it the browser may hand the
+  // tab the weak INTEGRATED GPU (laptops switch by power state) or, after a GPU-process
+  // hiccup, sit on SOFTWARE rendering. This strongly requests the discrete GPU; the
+  // caveat flag stops the browser from silently refusing a context on a marginal one.
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    powerPreference: "high-performance",
+    failIfMajorPerformanceCaveat: false,
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  // 1.0 + the stronger hemisphere fill: shade reads as shade, not a void
-  // (round 7: "anything that's not in direct sunlight is completely pitch black")
-  renderer.toneMappingExposure = 1.0;
+  // ACES exposure — live from TUN.gfx.tone.exposure (set again each frame in the
+  // render loop so the dev-panel slider is live). <1 calms an over-bright sky/sun
+  // without touching the individual effects; the hemisphere fill keeps shade out of the void.
+  renderer.toneMappingExposure = TUN.gfx.tone.exposure;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.localClippingEnabled = true;
   app.appendChild(renderer.domElement);
 
+  // perf watchdog: logs the real GPU, warns if we're on SOFTWARE rendering (the usual
+  // cause of the 5-fps launches), shows a small fps/ms HUD, and runs the adaptive-quality
+  // governor (TUN.gfx.auto) so the frame can't silently park at single digits.
+  const perf = new PerfMonitor(renderer);
+
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 5000);
+
+  // ---- game shell: built BEFORE the world so the menu shows on a clean screen ----
+  // The heavy world (sky / ocean FFT / physics / ship / islands / fleet) is built only
+  // AFTER the player picks a mode: main() awaits the choice below, so nothing loads or
+  // renders behind the menu. (Old behaviour: the whole world was built up front and the
+  // menu floated as a translucent overlay over a frozen game.)
+  const gs = new GameState();
+  const saves = new SaveManager(localStorage);
+  // menu-facing state, hoisted here so the sandbox-config defaults can read currentTier
+  // at click time; the world build + save/restore below read & write these same bindings.
+  let currentTier: ShipTierId = "cutter";
+  let unlockedClasses: ShipTierId[] = ["cutter"];
+  let settings: Settings = defaultSettings();
+  let forcedEnemyTier: ShipTierId | null = null;
+
+  type StartChoice =
+    | { kind: "career"; fresh: boolean }
+    | { kind: "sandbox"; cfg: SandboxConfig };
+  let resolveChoice!: (c: StartChoice) => void;
+  const choicePromise = new Promise<StartChoice>((res) => {
+    resolveChoice = res;
+  });
+  // false until the world is built. The FIRST Start resolves the await-gate (triggering the
+  // build); later Starts (after Quit-to-Menu — world already built) re-apply directly.
+  let worldReady = false;
+  const start = (c: StartChoice) => {
+    if (worldReady) applyChoice(c);
+    else resolveChoice(c);
+  };
+
+  // Start buttons dispatch through start(); Resume/Quit fire only in-game, so they may close
+  // over saveCurrent/applyChoice defined further down.
+  const menu = createMenuScreen({
+    onNewCareer: () => start({ kind: "career", fresh: true }),
+    onContinue: () => start({ kind: "career", fresh: false }),
+    onSandbox: () =>
+      menu.showSandboxConfig({
+        tiers: SHIP_TIERS.map((t) => ({ id: t.id, name: t.name })),
+        maxEnemies: MAXVIS,
+        defaults: { shipTier: currentTier, enemyCount: Math.round(TUN.fleet.enemyCount), enemyTier: "mixed" },
+        onBack: () => menu.showStart(saves.hasSave("career")),
+        onStart: (cfg: SandboxConfig) => start({ kind: "sandbox", cfg }),
+      }),
+    onResume: () => {
+      gs.resume();
+      menu.hide();
+    },
+    onQuitToMenu: () => {
+      saveCurrent();
+      gs.quitToMenu();
+      document.body.classList.add("menu-active"); // hide the game HUD behind the menu
+      menu.showStart(saves.hasSave("career"));
+    },
+  });
+
+  // a clean dark screen behind the DOM menu while we wait for the player to choose
+  renderer.setClearColor(0x05080a, 1);
+  renderer.setAnimationLoop(() => {
+    renderer.setRenderTarget(null);
+    renderer.clear();
+  });
+  menu.showStart(saves.hasSave("career"));
+
+  // BLOCK here until the player picks a mode — only then does the world build below run.
+  const startChoice = await choicePromise;
+  menu.hide();
+  // a brief loading screen while the (main-thread-blocking) world build runs; paint it first.
+  const loadingEl = document.createElement("div");
+  loadingEl.textContent = "Setting sail…";
+  Object.assign(loadingEl.style, {
+    position: "fixed",
+    inset: "0",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#05080a",
+    color: "#d8c9a3",
+    font: "italic 600 22px Georgia, serif",
+    letterSpacing: "0.08em",
+    zIndex: "10005",
+  } as Partial<CSSStyleDeclaration>);
+  document.body.appendChild(loadingEl);
+  await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
   const seed = new URLSearchParams(location.search).get("seed") ?? "scuttle-dev";
   const rng = new Rng(seed);
@@ -61,11 +176,31 @@ async function main() {
   // series of waves repeating over and over"); physics rides the swell subset
   const waves = makeWaves(rng, 16);
 
+  // Background scene: the sky dome + cloud dome render FIRST as a flat backdrop
+  // (render/post.ts), then depth is cleared and the main scene draws over them, so
+  // the ship/ocean/islands occlude the clouds without a depth fight against the sky.
+  const bgScene = new THREE.Scene();
+
   const skySetup = createSky();
-  skySetup.addTo(scene);
+  skySetup.addTo(scene, bgScene); // lights → main scene, sky → bg scene
   // image-based skylight: PBR materials get ambient from the actual sky dome
   // (round 8: shade must read as shade, not a void)
-  skySetup.bakeEnvironment(renderer, scene);
+  skySetup.bakeEnvironment(renderer, scene, bgScene);
+
+  // procedural drifting clouds over the atmospheric sky; also rendered into the
+  // sky env cube (skySetup.updateEnv) so the sea reflects them. Follows the camera.
+  const clouds = new CloudDome(skySetup.sunDir, skySetup.sunColor, HORIZON_COLOR);
+  bgScene.add(clouds.mesh);
+  // throttled re-bake of the sky+cloud reflection cube (clouds drift slowly)
+  let lastEnvBake = -1;
+  // throttle the two heaviest steady GPU items after post: the FFT-ocean spectral evolution to
+  // ~30 Hz (it advances from absolute simTime, so a larger step never drifts) and the shadow-map
+  // depth pass to ~15 Hz. The displacement RTs + the shadow map persist between updates, and the
+  // live analytic swell (ocean.update, every frame) keeps the big waves perfectly smooth.
+  let lastOceanFftUpdate = -1;
+  let shadowAccum = 0;
+  skySetup.follow(camera.position); // centre the dome on the camera before the first bake
+  skySetup.updateEnv(renderer, bgScene, camera.position); // initial bake
 
   // Round 14: a MULTI-CASCADE Tessendorf ocean surface (the AC4 / Sea of Thieves
   // recipe) replaces the single band-limited chop tile that could only shimmer and
@@ -100,6 +235,8 @@ async function main() {
     ],
   });
   const ocean = createOcean(waves, skySetup.sunDir, oceanField);
+  ocean.setSkyEnv(skySetup.envCube.texture); // mirror the live sky+cloud cube
+  ocean.setFogColor(HORIZON_COLOR); // far sea fades to the sky's horizon band → one seamless horizon
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
@@ -128,13 +265,16 @@ async function main() {
   // the player's brig splashes down and settles (round 6: "a realistically
   // sized sixteen-hundreds-era fighting vessel"); `sloop` names the player
   // ship throughout for history's sake
-  // ?ship=manowar sails the first-rate flagship; default is the brig (shipped). `sloop`
-  // names the player ship throughout for history's sake regardless of class.
-  const sloopBuild =
-    new URLSearchParams(location.search).get("ship") === "manowar" ? buildManOfWar() : buildBrig();
-  const sloopVisual = new ShipVisual(sloopBuild);
-  const sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
+  // the player starts in the CUTTER — the cheap starter; bigger tiers are bought at
+  // the shipyard. `sloop`/`sloopVisual` stay mutable so a hull swap can reassign them.
+  const sloopBuild = buildCutter();
+  let sloopVisual = new ShipVisual(sloopBuild);
+  let sloop = new Ship(physics, sloopBuild, sloopVisual, { x: -9, y: 0.4, z: -3 });
   world.addShip(sloop);
+  world.focus = sloop; // buoyancy LOD centres on the player ship
+  // the on-foot captain (deck-walk / kick / first-third person). He spends most of
+  // his time at the wheel; the old boarding system (grapple/crew/chest) is gone.
+  const character = new PlayerCharacter(physics, scene, sloop);
   // the cutaway hole in the sea matches the player hull's footprint
   ocean.setFootprint(sloopBuild.lengthM / 2 + 1.2, sloopBuild.beamM / 2 + 1.0);
 
@@ -145,6 +285,13 @@ async function main() {
   const { IslandField } = await import("./game/islandField");
   const islands = new IslandField(seed, physics, scene);
   world.terrain = islands.contactTargets; // ship↔terrain deformable destruction (game/voxelContact.ts)
+  // feed the archipelago's land-height field to the ocean so the sea SHOALS at each coast —
+  // waves taper to flat where the seabed rises to the beach, instead of clipping through the
+  // island, plus a surf-foam line at the waterline. Baked once; visual only (physics unaffected).
+  {
+    const lf = islands.buildLandField();
+    if (lf) ocean.setLandField(lf.tex, lf.minX, lf.minZ, lf.sizeX, lf.sizeZ);
+  }
 
   // dev/playtest convenience: ?at=harbor drops you in clear water just seaward of
   // the town dock, so you can look the island over without the opening sail out to
@@ -180,12 +327,17 @@ async function main() {
     tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.flipY = false; // texel (x,z) ↔ data idx z*nx+x
     tex.needsUpdate = true;
-    return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ };
+    return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ, data: prof.data, nx: prof.nx, nz: prof.nz };
   };
-  const sloopProfile = makeProfileTex(sloop.build.grid);
-  ocean.setHullProfile(0, sloopProfile.tex, sloopProfile.sizeX, sloopProfile.sizeZ);
+  let sloopProfile = makeProfileTex(sloop.build.grid);
+  ocean.setHullProfile(0, sloopProfile.data, sloopProfile.nx, sloopProfile.nz, sloopProfile.sizeX, sloopProfile.sizeZ);
+  // Per-ship voxel sea-cut bookkeeping: which ship currently occupies each ocean slot (so a slot's
+  // atlas band is re-stamped only when its ship changes) + a per-hull cache of the built profile.
+  const slotShip: (Ship | null)[] = new Array(MAXVIS).fill(null);
+  slotShip[0] = sloop;
+  const profileCache = new WeakMap<Ship, ReturnType<typeof buildHullProfile>>();
 
-  // the hostile fleet is set up below (it needs effects/cannons/debris/boarding);
+  // the hostile fleet is set up below (it needs effects/cannons/debris);
   // ocean slot 1's shared enemy profile is bound there too.
 
   // P5: the dynamic-wave INTERACTION field (Crest/Atlas FDTD ping-pong, GPU
@@ -214,6 +366,14 @@ async function main() {
   const islandHulls = islands.islands.map((i) => i.visual.group);
   const seam = new SeamMask([sloop.visual.group, ...islandHulls]); // hull+island list refreshed each frame from the fleet
 
+  // post-processing spine (bloom now; god rays + grade added in later tasks). It
+  // owns the stencil seam-mask dance internally (see render/post.ts ScenePass), so
+  // the ocean still never lands on the deck. Gated by TUN.gfx.post.enabled.
+  const post = new Post(renderer, bgScene, scene, camera, seam);
+  // reused each frame to project the sun to screen space for the god-ray pass
+  const _sunWorld = new THREE.Vector3();
+  const _sunView = new THREE.Vector3();
+
   // wind blows with the dominant swell
   const wind: Wind = { dirX: waves[0].dirX, dirZ: waves[0].dirZ, speed: 7 };
   const sailing = new SailingController();
@@ -232,17 +392,18 @@ async function main() {
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
 
   // ---- the hostile fleet (game/fleet.ts) ----
-  // every enemy is a buildSloop hull → they SHARE one profile texture for the premium
-  // voxel sea-cut; bind it to ocean slot 1 once. Only the live pose changes as the
-  // nearest (premium) enemy swaps.
+  // Each enemy now gets its OWN voxel sea-cut profile, stamped into its ocean slot's atlas band when
+  // it is assigned (see feedProfiled) — no more shared-sloop approximation. This sloop profile is
+  // kept only for the dynamic-wave field's enemy slot below.
   const enemyProfile = makeProfileTex(buildSloop().grid);
-  ocean.setHullProfile(1, enemyProfile.tex, enemyProfile.sizeX, enemyProfile.sizeZ);
+  // which tier each live enemy is (for unlock-on-defeat). WeakMap so culled ships GC.
+  const enemyTier = new WeakMap<Ship, ShipTierId>();
 
-  // boarding is forward-declared: the spawn factory's damage callbacks capture it,
-  // but they only fire on later hits, by which time it's assigned (just below).
-  let boarding: BoardingSystem;
   const spawnEnemy = (): EnemyUnit => {
-    const build = buildSloop();
+    // notoriety- and player-tier-scaled tier pick: small prey early, bigger hulls later.
+    // Sandbox can FORCE a specific enemy tier (forcedEnemyTier); null = the scaled spread.
+    const tierId = forcedEnemyTier ?? pickEnemyTier(economy.state.notoriety, currentTier, Math.random);
+    const build = tierById(tierId).build();
     const visual = new ShipVisual(build);
     // fan upwind around the player so multiple hulls don't stack (the old single
     // enemy spawned dead upwind at 85 m, bow turned toward you — generalized here).
@@ -253,16 +414,17 @@ async function main() {
     const ox = dx * Math.cos(ang) - dz * Math.sin(ang);
     const oz = dx * Math.sin(ang) + dz * Math.cos(ang);
     const pc = sloop.body.translation();
-    const ship = new Ship(physics, build, visual, { x: pc.x - ox * dist, y: 0.2, z: pc.z - oz * dist });
+    const ship = new Ship(physics, build, visual, { x: pc.x - ox * dist, y: 0.2, z: pc.z - oz * dist }, false); // enemy → no walkable deck collider
     const etr = ship.body.translation();
     const ea = -Math.atan2(pc.z - etr.z, pc.x - etr.x);
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
     ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
-    ship.onMastFelled = () => (boarding.message = "her mast goes by the board!");
+    ship.onMastFelled = () => gs.msg.post("her mast goes by the board!");
     ship.onRudderHit = (hp) => {
       visual.chipRudder(hp / 3);
-      boarding.message = hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!";
+      gs.msg.post(hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!");
     };
+    enemyTier.set(ship, tierId);
     const captain = new AICaptain(ship, scene, effects);
     return { ship, captain };
   };
@@ -271,13 +433,10 @@ async function main() {
   let premiumSlot1: Ship | null = null; // which enemy holds premium ocean slot 1 (trail reset on swap)
   const salvaged = new WeakSet<Ship>(); // enemies that have paid salvage once
   let primaryEnemy: Ship | null = null; // nearest living enemy, for the HUD marker
-
-  // seed one enemy so boarding always starts with a valid target (default count 1).
-  fleet.reconcile();
-  boarding = new BoardingSystem(physics, scene, effects, sloop, fleet.enemies[0] ?? sloop);
+  // (the fleet is seeded AFTER the economy + currentTier exist — the spawner reads them.)
 
   // ---- plunder economy (framework): wallet/cargo/upgrades + dock-triggered port + save ----
-  // Wraps the existing boarding.gold (the HUD wallet); the port screen is a JS overlay.
+  // The wallet of record is gs.wallet (the HUD reads it); the port screen is a JS overlay.
   // The dock is the islands' real harbor: IslandField satisfies DockProvider, so "make port"
   // (press E within DOCK_RANGE) triggers at the town pier — not the DevDockProvider origin.
   const economy = new Economy();
@@ -285,27 +444,123 @@ async function main() {
     onSell: () => port.sell(),
     onRepair: () => port.repair(),
     onBuy: (id) => port.buy(id),
+    onBuyShip: (id) => port.buyShip(id),
     onClose: () => port.closePort(),
   });
   const port = new PortController({
     economy,
     ship: sloop,
-    boarding,
+    cannons,
+    sailing,
+    wallet: gs.wallet,
+    msg: gs.msg,
     ui: portScreen,
     getPlayerPos: () => {
       const t = sloop.body.translation();
       return { x: t.x, z: t.z };
     },
     dock: islands, // IslandField.nearestDock → port triggers at the real harbor pier
+    onEnter: () => {
+      gs.enterPort(); // freeze the world while the port screen is up
+      saveCurrent(); // making port banks your progress
+    },
+    onLeave: () => gs.leavePort(),
+    // sandbox unlocks everything so the whole ladder is buyable for free play
+    getShipState: () => ({
+      unlocked: gs.isSandbox() ? (["cutter", "sloop", "brig", "frigate"] as ShipTierId[]) : unlockedClasses,
+      current: currentTier,
+    }),
+    onSwapShip: (id) => swapPlayerShip(id),
   });
-  port.load(); // restore the saved empire (doubloons/cargo/upgrades) and mirror to boarding.gold
+
+  // ---- game-shell save/restore (tier/unlocks/settings are hoisted to the top of main) ----
+  const applySave = (s: SaveState) => {
+    economy.state = s.economy;
+    unlockedClasses = s.unlockedClasses.slice();
+    settings = { ...s.settings };
+    if (s.shipTier !== currentTier) {
+      swapPlayerShip(s.shipTier); // rebuild the saved hull (also sets currentTier + re-applies upgrades)
+    } else {
+      port.syncAfterLoad(); // same hull → just re-apply owned upgrades + mirror gold
+    }
+  };
+  const saveCurrent = () => {
+    saves.save(gs.mode, {
+      version: SAVE_VERSION,
+      mode: gs.mode,
+      economy: economy.state,
+      shipTier: currentTier,
+      unlockedClasses,
+      settings,
+    });
+  };
+
+  // (the start/pause menu is created at the top of main(); the player's choice was
+  // awaited there and is applied just below, once the world is fully built.)
+
+  // ---- hull swap (shipyard purchase / save restore / respawn) ----
+  // Rebuild the player ship as a fresh hull, keeping world position/heading, and
+  // re-point every system that holds a player-ship reference. (function decls so the
+  // port/menu closures above can call them; only ever invoked at runtime.)
+  function swapPlayerShip(tierId: ShipTierId): void {
+    currentTier = tierId;
+    rebuildPlayerShip(tierById(tierId).build());
+    port.syncAfterLoad(); // account-wide upgrades land on the new hull
+  }
+  function rebuildPlayerShip(build: ShipBuild): void {
+    const at = sloop.body.translation();
+    const rot = sloop.body.rotation();
+    world.removeShip(sloop); // scene + geometry + rigid-body cleanup
+    const visual = new ShipVisual(build);
+    const fresh = new Ship(physics, build, visual, { x: at.x, y: Math.max(at.y, 0.5), z: at.z });
+    fresh.body.setRotation(rot, true);
+    fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
+    fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
+    fresh.onRudderHit = (hp) => {
+      visual.chipRudder(hp / 3);
+      gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
+    };
+    world.addShip(fresh);
+    sloop = fresh;
+    world.focus = fresh; // keep the buoyancy LOD focus on the live player hull
+    sloopVisual = visual;
+    port.setShip(fresh);
+    fleet.setTarget(fresh);
+    character.setShip(fresh);
+    rebindPlayerRenderHooks();
+  }
+  function rebindPlayerRenderHooks(): void {
+    sloopProfile = makeProfileTex(sloop.build.grid);
+    ocean.setHullProfile(0, sloopProfile.data, sloopProfile.nx, sloopProfile.nz, sloopProfile.sizeX, sloopProfile.sizeZ);
+    ocean.setFootprint(sloop.build.lengthM / 2 + 1.2, sloop.build.beamM / 2 + 1.0);
+    slotShip[0] = sloop; // the swapped-in hull now occupies slot 0 (profile re-stamped just above)
+    _dynShips[0].profileTex = sloopProfile.tex;
+    _dynShips[0].sizeX = sloopProfile.sizeX;
+    _dynShips[0].sizeZ = sloopProfile.sizeZ;
+  }
+  // Respawn a fresh hull of the current tier in clear water just seaward of the home
+  // dock, and re-seat the captain at the wheel. (Used by the sink penalty.)
+  function respawnPlayerAtPort(): void {
+    rebuildPlayerShip(tierById(currentTier).build());
+    const tr = sloop.body.translation();
+    const dock = islands.nearestDock(tr.x, tr.z);
+    if (dock) {
+      sloop.body.setTranslation({ x: dock.x + 54, y: 0.6, z: dock.z }, true);
+      sloop.body.setRotation({ x: 0, y: 1, z: 0, w: 0 }, true); // bow toward the town
+    }
+    sloop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    sloop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    port.syncAfterLoad();
+    character.reseat();
+    atWheel = true; // back at the helm
+  }
 
   // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
   // equivalents are wired per-spawn in the fleet factory above.
-  sloop.onMastFelled = () => (boarding.message = "YOUR MAST GOES BY THE BOARD!");
+  sloop.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
   sloop.onRudderHit = (hp) => {
     sloopVisual.chipRudder(hp / 3);
-    boarding.message = hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!";
+    gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
   };
 
   // hull-on-hull: meeting with way on carves voxels out of BOTH ships at the
@@ -333,6 +588,7 @@ async function main() {
   // — yours or the prize — no longer freezes the game or demands a reload; the voyage
   // just continues. Only the non-terminal man-overboard + enemy-salvage states remain.
   let manOverboard = false;
+  let respawning = false; // guards the one-shot sink → respawn handoff
   let plugChannel = 0; // seconds remaining on the current plank repair
 
   const isSunk = (s: Ship) =>
@@ -341,23 +597,20 @@ async function main() {
 
   world.onFixedStep = (t, dt) => {
     controls.modePressed = false; // legacy T — the wheel gates the helm now
+    controls.grapplePressed = false; // legacy G — boarding removed; consume so it can't queue
     port.update(dt); // dock proximity → canDock + "press E — make port" hint
-    if (controls.grapplePressed) {
-      controls.grapplePressed = false;
-      boarding.toggleGrapple();
-    }
 
     // wheel + ladder positions in world (for E proximity)
     sloop.localToWorld(sloopVisual.wheelLocal, wheelWorld);
     sloop.localToWorld(sloopVisual.ladderLocal, ladderWorld);
 
     // swimming near the stern ladder? surface the hint
-    if (boarding.player && boarding.player.swimming) {
-      const pp = boarding.player.body.translation();
+    if (character.player && character.player.swimming) {
+      const pp = character.player.body.translation();
       const nearLadder =
         Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4;
       if (nearLadder && !ladderHinted) {
-        boarding.message = "press E — stern ladder";
+        gs.msg.post("press E — stern ladder");
         ladderHinted = true;
       } else if (!nearLadder) {
         ladderHinted = false;
@@ -365,36 +618,33 @@ async function main() {
     }
 
     // E: take/leave the wheel when close to it; climb the stern ladder when
-    // swimming beside it; otherwise it's the interact key (chest)
-    let interact = false;
+    // swimming beside it; otherwise make port if at a dock.
     if (controls.interactPressed) {
       controls.interactPressed = false;
       if (atWheel) {
         atWheel = false;
         // sails and rudder HOLD as set — leaving the helm changes nothing
         // (playtest round 5); the ship-frame carry keeps deck walking safe
-        boarding.message = "you leave the wheel — she holds her course";
-      } else if (boarding.player) {
-        const pp = boarding.player.body.translation();
+        gs.msg.post("you leave the wheel — she holds her course");
+      } else if (character.player) {
+        const pp = character.player.body.translation();
         if (Math.hypot(pp.x - wheelWorld.x, pp.y - wheelWorld.y, pp.z - wheelWorld.z) < 2.4) {
           atWheel = true;
-          boarding.message = "you take the wheel";
+          gs.msg.post("you take the wheel");
         } else if (
-          boarding.player.swimming &&
+          character.player.swimming &&
           Math.hypot(pp.x - ladderWorld.x, pp.y - ladderWorld.y, pp.z - ladderWorld.z) < 3.4
         ) {
-          boarding.player.ship = sloop;
-          boarding.player.teleport(
+          character.player.ship = sloop;
+          character.player.teleport(
             sloop.localToWorld(
               [2.6, (sloop.build.deckYAt(10) + 1) * 0.25 + 1.05, sloop.build.footprint.zC],
               climbTarget,
             ),
           );
-          boarding.message = "you haul yourself up the stern ladder";
+          gs.msg.post("you haul yourself up the stern ladder");
         } else if (port.canDock) {
           port.tryDock(); // make port — opens the economy screen, banks progress
-        } else {
-          interact = true;
         }
       }
     }
@@ -405,11 +655,11 @@ async function main() {
     // so she loses way and waits while you swim for the stern ladder. (r18: the
     // old gradual sail-back read as a "lost at sea" mechanic; the player wants a
     // hard cut to 0 throttle the instant you go over the side.)
-    if (boarding.player && boarding.player.swimming) {
+    if (character.player && character.player.swimming) {
       sailing.sailSet = 0;
       if (!manOverboard) {
         manOverboard = true;
-        boarding.message = "MAN OVERBOARD — sails dropped, she loses way!";
+        gs.msg.post("MAN OVERBOARD — sails dropped, she loses way!");
       }
     } else {
       manOverboard = false;
@@ -417,16 +667,6 @@ async function main() {
     sailing.apply(sloop, wind);
     fleet.updateAI(dt, t, waves, wind);
     fleet.reconcile();
-    // keep boarding pointed at a live enemy; release the grapple if its target was culled.
-    const liveEnemies = fleet.enemies;
-    boarding.hasTarget = liveEnemies.length > 0;
-    if (boarding.hasTarget && !liveEnemies.includes(boarding.currentEnemy())) {
-      boarding.grappled = false;
-      boarding.setEnemy(fleet.premiumEnemy ?? liveEnemies[0], true);
-    } else if (boarding.hasTarget && !boarding.grappled && !boarding.chestCarried && fleet.premiumEnemy) {
-      boarding.setEnemy(fleet.premiumEnemy);
-    }
-    fleet.boardingTarget = boarding.grappled ? boarding.currentEnemy() : null;
 
     // one action button (round 6): LMB fires the broadside while RMB-aiming
     // — from the wheel, the deck, first or third person, all identically —
@@ -440,7 +680,7 @@ async function main() {
           cannons.fireBroadside(sloop, aimBearing(), t, controls.elevationDeg, controls.traverseDeg);
         }
       } else if (onFoot) {
-        slash = boarding.canFight();
+        slash = true; // a cutlass flourish on deck — nothing to fight anymore
       }
     }
     let kick = false;
@@ -448,16 +688,16 @@ async function main() {
       controls.kickPressed = false;
       kick = onFoot;
     }
-    boarding.update(
+    character.update(
       dt,
       t,
       waves,
-      { moveX: mv.x, moveZ: mv.z, jump: mv.jump, sprint: mv.sprint, slash, kick, interact },
+      { moveX: mv.x, moveZ: mv.z, jump: mv.jump, sprint: mv.sprint, slash, kick },
       onFoot,
     );
 
     // pin the captain to the wheel while steering
-    if (atWheel && boarding.player) {
+    if (atWheel && character.player) {
       const rot2 = sloop.body.rotation();
       const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(
         new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w),
@@ -466,7 +706,7 @@ async function main() {
       stand.x -= fwd.x * 0.45; // close enough to put both hands on the rim
       stand.z -= fwd.z * 0.45;
       stand.y -= 0.2; // feet on the deck, not levitating at hub height
-      boarding.player.pin(stand, Math.atan2(fwd.z, fwd.x), sailing.rudder);
+      character.player.pin(stand, Math.atan2(fwd.z, fwd.x), sailing.rudder);
     }
 
     // plank repair channel: 4s, blocks firing
@@ -486,27 +726,47 @@ async function main() {
     cannons.update(dt, t, waves, fleet.enemies);
     // ship-vs-ship destruction now runs inside world.step (world.contact.stepAll), not here.
     debris.update(dt, t, waves);
-    character?.update(dt, controls.cameraYaw());
+    charSpike?.update(dt, controls.cameraYaw());
 
-    // r17: NO end-game. The prize sinking just yields salvage and the run continues; your
-    // own ship sinking is survivable too (swim clear, board the enemy, or respawn) — it is
-    // never a banner or a freeze. The game only ends when the player reloads.
+    // enemy sunk → plunder + unlock that class for the shipyard (proving your guns
+    // against a tier is what lets you buy one).
     for (const e of fleet.enemies) {
       if (isSunk(e) && !salvaged.has(e)) {
         salvaged.add(e);
-        port.plunder(e); // loot → economy → mirrors boarding.gold + toast (replaces the flat +150)
+        port.plunder(e); // loot → economy → mirrors gs.wallet + toast
+        const tid = enemyTier.get(e);
+        if (tid && !unlockedClasses.includes(tid)) {
+          unlockedClasses.push(tid);
+          gs.msg.post(`You've bested a ${tierById(tid).name} — the shipyard will sell you one now.`);
+        }
       }
+    }
+
+    // player sunk → respawn. Career: lose the cargo + a quarter of the gold; the ship
+    // tier, upgrades, unlocks and banked notoriety survive. Sandbox: a free fresh hull.
+    if (isSunk(sloop) && !respawning) {
+      respawning = true;
+      if (gs.mode === "career") {
+        economy.state.cargo = {};
+        economy.state.doubloons = Math.floor(economy.state.doubloons * 0.75);
+        gs.msg.post("YOUR SHIP IS LOST — you wash ashore at port; the hold and a quarter of your gold are gone.");
+      } else {
+        gs.msg.post("scuttled — a fresh hull awaits.");
+      }
+      respawnPlayerAtPort();
+      saveCurrent();
+      respawning = false;
     }
   };
 
   // character-on-deck spike (plan Task 13): ?spike=char, IJKL walk, U jump.
   // Spawns once the ship has settled from its splash-down.
-  let character: CharacterSpike | null = null;
+  let charSpike: CharacterSpike | null = null;
   if (new URLSearchParams(location.search).get("spike") === "char") {
     const trySpawn = setInterval(() => {
       if (world.simTime > 6) {
-        character = new CharacterSpike(physics, scene, sloop);
-        character.respawn();
+        charSpike = new CharacterSpike(physics, scene, sloop);
+        charSpike.respawn();
         clearInterval(trySpawn);
       }
     }, 500);
@@ -521,6 +781,7 @@ async function main() {
     camera.updateProjectionMatrix();
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
+    post.setSize(w, h); // keep the composer's targets in lockstep with the canvas
   };
   window.addEventListener("resize", fitViewport);
   document.addEventListener("fullscreenchange", fitViewport);
@@ -578,7 +839,7 @@ async function main() {
     };
     const reqFn = el.requestFullscreen || el.webkitRequestFullscreen;
     if (!reqFn) {
-      boarding.message = "fullscreen not supported by this browser";
+      gs.msg.post("fullscreen not supported by this browser");
       return;
     }
     // r18.1: do NOT exit pointer lock first. Chrome holds pointer-lock AND fullscreen at once
@@ -589,12 +850,12 @@ async function main() {
       const p = reqFn.call(el); // NO options arg — maximal compatibility
       if (p && typeof (p as Promise<void>).then === "function") {
         (p as Promise<void>).catch((err: Error) => {
-          boarding.message = `fullscreen refused: ${err.message} (already in F11?)`;
+          gs.msg.post(`fullscreen refused: ${err.message} (already in F11?)`);
           console.warn("[fullscreen]", err);
         });
       }
     } catch (err) {
-      boarding.message = `fullscreen error: ${(err as Error).message}`;
+      gs.msg.post(`fullscreen error: ${(err as Error).message}`);
       console.warn("[fullscreen]", err);
     }
   };
@@ -602,10 +863,21 @@ async function main() {
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
-    if (e.code === "KeyV" && boarding.player) {
+    if (e.code === "Escape") {
+      // Esc pauses mid-voyage and resumes from the pause screen. Ignored at the
+      // title screen and while the port is open (close the port with its own button).
+      if (gs.phase === "playing") {
+        gs.pause();
+        menu.showPause();
+      } else if (gs.phase === "paused") {
+        gs.resume();
+        menu.hide();
+      }
+    }
+    if (e.code === "KeyV" && character.player) {
       camMode = ((camMode + 1) % 3) as 0 | 1 | 2;
       firstPerson = camMode === 1;
-      boarding.player.setFirstPerson(firstPerson);
+      character.player.setFirstPerson(firstPerson);
       controls.syncFirstPerson(firstPerson);
       controls.charFollow = camMode === 0; // wheel zoom works the follow-cam in char 3rd-person
     }
@@ -620,25 +892,36 @@ async function main() {
 
   // dev console handle (also used by Playwright-driven verification)
   (window as unknown as Record<string, unknown>).DEBUG = {
-    sloop,
+    // getter: the player ship is reassigned on a hull swap, so expose it live
+    get sloop() {
+      return sloop;
+    },
+    get currentTier() {
+      return currentTier;
+    },
     fleet,
     world,
     cannons,
-    boarding,
+    character, // the on-foot captain (PlayerCharacter)
+    gs, // game-shell state (mode/phase, wallet, msg)
+    saves, // SaveManager (career/sandbox slots)
     controls,
     camera,
     sailing,
     contact: world.contact,
     debris,
+    ocean, // ocean surface (setFogColor / setWaterDepth / setReflStrength) — live shader tuning
+    sky: skySetup, // gradient dome (sky.material.uniforms uZenith/uHorizon/uSunColor) — live sky tuning
     oceanField,
     dynWaves,
     spray,
     islands,
     economy,
     port,
+    perf, // PerfMonitor — DEBUG.perf.gpuInfo tells you GPU name + software flag
     TUN, // live tunables (also lets Playwright tune crush/flood knobs during verification)
-    get character() {
-      return character;
+    get spike() {
+      return charSpike;
     },
   };
 
@@ -738,6 +1021,8 @@ async function main() {
     gunBar: $("gun-bar"),
     gunSub: $("gun-sub"),
     gold: $("gold"),
+    infamy: $("infamy"),
+    tier: $("tier"),
     rose: $("rose"),
     hdg: $("hdg"),
     rudderInd: $("rudder-ind"),
@@ -753,6 +1038,12 @@ async function main() {
   const hdgV = new THREE.Vector3();
   let wasUnder = false;
   const underFog = new THREE.FogExp2(0x0c3a44, 0.055);
+  // ABOVE water: a FAR-biased linear haze that fades only DISTANT islands/ships into the same
+  // HORIZON_COLOR the sky dome + ocean far-fog converge on — so far land melts into the horizon
+  // instead of sitting crisp over a hazy sea, while near gameplay (within ~900 m) stays sharp.
+  // (The ocean keeps its own clear-zoned shader fog; both target HORIZON_COLOR pre-tonemap.)
+  const aboveFog = new THREE.Fog(HORIZON_COLOR.clone(), 900, 2600);
+  scene.fog = aboveFog; // above-water is the default; the toggle below only swaps to underFog under the surface
 
   function updateHud(dt: number, tr: { x: number; y: number; z: number }): void {
     // smooth elements every frame
@@ -779,9 +1070,9 @@ async function main() {
     hudEls.rudderInd.style.left = `${50 - sailing.rudder * 42}%`;
 
     // toast lifecycle
-    if (boarding.message && boarding.message !== lastToast) {
-      lastToast = boarding.message;
-      hudEls.toast.textContent = boarding.message;
+    if (gs.msg.current && gs.msg.current !== lastToast) {
+      lastToast = gs.msg.current;
+      hudEls.toast.textContent = gs.msg.current;
       hudEls.toast.style.opacity = "1";
       toastTimer = 3.2;
     }
@@ -789,7 +1080,7 @@ async function main() {
       toastTimer -= dt;
       if (toastTimer <= 0) {
         hudEls.toast.style.opacity = "0";
-        boarding.message = "";
+        gs.msg.clear();
         lastToast = "";
       }
     }
@@ -805,7 +1096,6 @@ async function main() {
     });
     hudEls.crewLine.textContent =
       `planks ${sloop.planks} · pump ${sloop.pumpOn ? "ON" : "off"}` +
-      `${boarding.grappled ? " · GRAPPLED" : ""}` +
       `${plugChannel > 0 ? ` · plugging ${plugChannel.toFixed(1)}s` : ""}`;
 
     const ready2 = cannons.sideReadiness(sloop, aimBearing(), world.simTime);
@@ -823,17 +1113,20 @@ async function main() {
     hudEls.gunSub.textContent =
       `elev ${controls.elevationDeg.toFixed(1)}° · trav ${controls.traverseDeg >= 0 ? "+" : ""}${controls.traverseDeg.toFixed(0)}°` +
       `${controls.aiming ? " — AIMING" : ""}`;
-    hudEls.gold.textContent = String(boarding.gold);
+    hudEls.gold.textContent = String(gs.wallet.gold);
+    hudEls.infamy.textContent = String(economy.state.notoriety);
+    hudEls.tier.textContent = currentTier.charAt(0).toUpperCase() + currentTier.slice(1);
 
     hudEls.hpRow.style.display = onFoot ? "flex" : "none";
-    if (onFoot) hudEls.hpBar.style.width = `${(boarding.playerHp / 5) * 100}%`;
+    if (onFoot) hudEls.hpBar.style.width = `${(character.playerHp / 5) * 100}%`;
     hudEls.stamRow.style.display = onFoot ? "flex" : "none";
-    if (onFoot && boarding.player) hudEls.stamBar.style.width = `${boarding.player.stamina * 100}%`;
+    if (onFoot && character.player) hudEls.stamBar.style.width = `${character.player.stamina * 100}%`;
 
     const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
+    const sandboxHint = gs.isSandbox() ? " · SANDBOX (` panel for enemies/sea)" : "";
     hudEls.hints.textContent = onFoot
-      ? `${lockHint}WASD move · Shift sprint · Space jump · LMB slash · hold RMB aim + LMB fire · C kick · E wheel/grab · V view · F fullscreen${boarding.chestCarried ? "  — CARRYING CHEST" : ""}  foes ${boarding.enemiesLeft()}`
-      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass (wheel zooms) · R plank · P pump · G grapple · F fullscreen · foes ${fleet.enemies.length}`;
+      ? `${lockHint}WASD move · Shift sprint · Space jump · C kick · hold RMB aim + LMB fire · E take wheel · V view · Esc menu${sandboxHint}`
+      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plank · P pump · Esc menu · foes ${fleet.enemies.length}${sandboxHint}`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
@@ -875,10 +1168,12 @@ async function main() {
   // identically first-person or orbit). Looking more along the keel than across it lays
   // the bow/stern CHASERS; looking across it lays the broadside you're facing.
   const lookV = new THREE.Vector3();
+  const _aimInv = new THREE.Quaternion(); // reused — aimBearing() runs several times/frame
+  const _camFollow = new THREE.Vector3(); // reused — char third-person follow target each frame
   type Bearing = 1 | -1 | "fore" | "aft";
   function aimBearing(): Bearing {
     const rot2 = sloop.body.rotation();
-    const inv = new THREE.Quaternion(rot2.x, rot2.y, rot2.z, rot2.w).invert();
+    const inv = _aimInv.set(rot2.x, rot2.y, rot2.z, rot2.w).invert();
     camera.getWorldDirection(lookV).applyQuaternion(inv);
     if (Math.abs(lookV.x) > Math.abs(lookV.z)) return lookV.x >= 0 ? "fore" : "aft";
     return lookV.z >= 0 ? 1 : -1;
@@ -968,7 +1263,6 @@ async function main() {
     while (lo < ny && !g.isSolid(cx, lo, cz)) lo++;
     return { keel: lo * VOXEL_SIZE, deck: (ship.build.deckY + 1) * VOXEL_SIZE };
   };
-  const spans = [hullSpan(sloop), hullSpan(fleet.enemies[0] ?? sloop)]; // [player, any-enemy] (all enemies are buildSloop)
   // P4 pose temporaries (avoid per-frame allocation)
   const _poseQuat = new THREE.Quaternion();
   const _poseM4 = new THREE.Matrix4();
@@ -978,13 +1272,14 @@ async function main() {
     const v = ship.body.linvel();
     const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
     const rot = ship.body.rotation();
-    wakeF.set(1, 0, 0).applyQuaternion(new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w));
+    _poseQuat.set(rot.x, rot.y, rot.z, rot.w); // reused below for the pose matrix too
+    wakeF.set(1, 0, 0).applyQuaternion(_poseQuat);
     wakeF.y = 0;
     wakeF.normalize();
     const fp = ship.build.footprint;
     ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
     const tr = ship.body.translation();
-    const span = spans[slot];
+    const span = hullSpan(ship); // each ship's own keel/deck (was a shared 2-entry table)
     ocean.updateShipWake(
       slot,
       wakeV.x,
@@ -1000,39 +1295,28 @@ async function main() {
     );
     // P4: feed BOTH hulls' live world→local pose so each ship's voxel-accurate cut
     // tracks its own heave/pitch/roll (the shader skips that slot's analytic ellipse).
-    _poseQuat.set(rot.x, rot.y, rot.z, rot.w);
+    // (_poseQuat already set from rot at the top of feedWake)
     _poseM4.makeRotationFromQuaternion(_poseQuat);
     _poseInvRot.setFromMatrix4(_poseM4).transpose(); // R⁻¹ = Rᵀ for a rotation
     _poseTrans.set(tr.x, tr.y, tr.z);
     ocean.updateHullPose(slot, _poseInvRot, _poseTrans);
   };
 
-  // cheap-tier feed: collar/bow/flank-wash + analytic-ellipse cut (via uShipC), no
-  // voxel pose, no stern ribbon (ocean.updateShipWake guards the trail to slots < 2).
-  const feedCheap = (slot: number, ship: Ship) => {
-    const v = ship.body.linvel();
-    const speed = ship.submergedFrac < 0.05 ? 0 : Math.hypot(v.x, v.z);
-    const rot = ship.body.rotation();
-    wakeF.set(1, 0, 0).applyQuaternion(new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w));
-    wakeF.y = 0;
-    wakeF.normalize();
-    const fp = ship.build.footprint;
-    ship.localToWorld([(fp.minX + fp.maxX) / 2, 2.5, fp.zC], wakeV);
-    const tr = ship.body.translation();
-    const span = spans[1]; // every enemy is a buildSloop
-    ocean.updateShipWake(
-      slot,
-      wakeV.x,
-      wakeV.z,
-      wakeF.x,
-      wakeF.z,
-      speed,
-      ship.build.lengthM / 2,
-      ship.build.beamM / 2,
-      world.simTime,
-      tr.y + span.keel,
-      tr.y + span.deck,
-    );
+  // Every visible enemy now gets the SAME voxel-accurate cut as the player (same class of object):
+  // stamp its own hull profile into its atlas band on assignment, then feed pose + wake. The profile
+  // build is O(cells), so it's cached per ship and re-stamped only when a slot's occupant changes.
+  const shipProfile = (ship: Ship) => {
+    let p = profileCache.get(ship);
+    if (!p) { p = buildHullProfile(ship.build.grid); profileCache.set(ship, p); }
+    return p;
+  };
+  const feedProfiled = (slot: number, ship: Ship) => {
+    if (slotShip[slot] !== ship) {
+      const p = shipProfile(ship);
+      ocean.setHullProfile(slot, p.data, p.nx, p.nz, p.sizeX, p.sizeZ);
+      slotShip[slot] = ship;
+    }
+    feedWake(slot, ship); // wake ribbon (slots <2) + live voxel pose (updateHullPose)
   };
 
   // P5: assemble both ships' pose + plan for the dynamic-wave INJECTION pass. Each
@@ -1162,7 +1446,7 @@ async function main() {
     };
     const enemy = fleet.enemies[0];
     if (!enemy) {
-      boarding.message = "no enemy to ram";
+      gs.msg.post("no enemy to ram");
       return;
     }
     const p = sloop.body.translation();
@@ -1218,13 +1502,6 @@ async function main() {
 
   const devPanel = createDevPanel([
     {
-      title: "Ship (reloads)",
-      controls: [
-        { type: "button", label: "Brig", onClick: () => { location.href = location.pathname; } },
-        { type: "button", label: "Man-o'-War", onClick: () => { location.href = location.pathname + "?ship=manowar"; } },
-      ],
-    },
-    {
       // r17: pitch/roll/trim/keel-depth/heel-cap/turn-bank are GONE — attitude is now
       // emergent from the voxels. What's left are the four real physical coefficients.
       title: "Hull physics",
@@ -1273,6 +1550,37 @@ async function main() {
       controls: [
         { type: "toggle", label: "enabled", obj: TUN.spray, key: "enabled" },
         { type: "slider", label: "bow", obj: TUN.spray, key: "bow", min: 0, max: 2, step: 0.05 },
+      ],
+    },
+    {
+      title: "✨ Graphics (visual pass)",
+      controls: [
+        { type: "toggle", label: "post FX", obj: TUN.gfx.post, key: "enabled" },
+        { type: "slider", label: "post res", obj: TUN.gfx.post, key: "scale", min: 0.4, max: 1.5, step: 0.05 },
+        { type: "slider", label: "post maxDPR", obj: TUN.gfx.post, key: "maxPixelRatio", min: 0.5, max: 2, step: 0.25 },
+        { type: "toggle", label: "auto quality", obj: TUN.gfx.auto, key: "enabled" },
+        { type: "slider", label: "fps target", obj: TUN.gfx.auto, key: "targetFps", min: 30, max: 60, step: 5 },
+        { type: "toggle", label: "fps HUD", obj: TUN.gfx.auto, key: "hud" },
+        { type: "slider", label: "exposure", obj: TUN.gfx.tone, key: "exposure", min: 0.5, max: 1.3, step: 0.02 },
+        { type: "toggle", label: "bloom", obj: TUN.gfx.bloom, key: "enabled" },
+        { type: "slider", label: "bloom str", obj: TUN.gfx.bloom, key: "strength", min: 0, max: 1, step: 0.02 },
+        { type: "slider", label: "bloom thr", obj: TUN.gfx.bloom, key: "threshold", min: 0, max: 4, step: 0.1 },
+        { type: "slider", label: "bloom clamp", obj: TUN.gfx.bloom, key: "clamp", min: 2, max: 30, step: 1 },
+        { type: "toggle", label: "god rays", obj: TUN.gfx.godrays, key: "enabled" },
+        { type: "slider", label: "rays str", obj: TUN.gfx.godrays, key: "strength", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "rays thr", obj: TUN.gfx.godrays, key: "threshold", min: 0, max: 16, step: 0.5 },
+        { type: "slider", label: "reflect", obj: TUN.gfx.reflection, key: "strength", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "refl clamp", obj: TUN.gfx.reflection, key: "clamp", min: 0.5, max: 6, step: 0.1 },
+        { type: "slider", label: "see-depth", obj: TUN.gfx.water, key: "visibility", min: 0, max: 8, step: 0.25 },
+        { type: "slider", label: "water clarity", obj: TUN.gfx.water, key: "clarity", min: 0, max: 1, step: 0.05 },
+        { type: "slider", label: "cloud cov", obj: TUN.gfx.clouds, key: "coverage", min: 0, max: 1, step: 0.02 },
+        { type: "slider", label: "cloud dens", obj: TUN.gfx.clouds, key: "density", min: 0, max: 1, step: 0.02 },
+        { type: "slider", label: "cloud spd", obj: TUN.gfx.clouds, key: "speed", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "isle grit", obj: TUN.gfx.islandGrit, key: "strength", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "sail glow", obj: TUN.gfx.sail, key: "glow", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "contrast", obj: TUN.gfx.grade, key: "contrast", min: 0.8, max: 1.4, step: 0.01 },
+        { type: "slider", label: "saturate", obj: TUN.gfx.grade, key: "saturation", min: 0.5, max: 1.6, step: 0.02 },
+        { type: "slider", label: "vignette", obj: TUN.gfx.grade, key: "vignette", min: 0, max: 0.6, step: 0.02 },
       ],
     },
     {
@@ -1349,9 +1657,80 @@ async function main() {
     );
   };
 
+  // ---- per-system CPU timing HUD (top-left, beneath the fps line) ----------------------------
+  // Replaces guessing about WHERE the frame goes with hard numbers on the real machine: total sim
+  // time + render time + the substep count, then the per-system split. Pure diagnostics; toggles
+  // with the fps HUD (TUN.gfx.auto.hud). DEBUG.world.timing carries the same numbers for the console.
+  const timingHud = document.createElement("div");
+  Object.assign(timingHud.style, {
+    position: "fixed", top: "46px", left: "8px", zIndex: "10005",
+    font: '11px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace',
+    color: "#bcd6e8", background: "rgba(6,10,14,0.5)", padding: "3px 7px",
+    borderRadius: "4px", border: "1px solid rgba(150,180,200,0.18)",
+    pointerEvents: "none", whiteSpace: "pre", textShadow: "0 1px 2px #000", display: "none",
+  } as Partial<CSSStyleDeclaration>);
+  document.body.appendChild(timingHud);
+  let renderMs = 0;
+  const updateTimingHud = (): void => {
+    if (!TUN.gfx.auto.hud) {
+      if (timingHud.style.display !== "none") timingHud.style.display = "none";
+      return;
+    }
+    if (timingHud.style.display === "none") timingHud.style.display = "block";
+    const t = world.timing;
+    timingHud.textContent =
+      `sim ${t.total.toFixed(1)}ms · render ${renderMs.toFixed(1)}ms · ×${t.substeps} substeps\n` +
+      `buoy ${t.buoy.toFixed(1)} · rapier ${t.rapier.toFixed(1)} · mesh ${t.visual.toFixed(1)}\n` +
+      `flood ${t.flood.toFixed(1)} · contact ${t.contact.toFixed(1)} · ai/sail ${t.fixed.toFixed(1)} · flush ${t.flush.toFixed(1)}`;
+  };
+
+  // Applies a menu choice to the (built) world and starts the sim. Runs once after the
+  // initial build and again for every later Start after a Quit-to-Menu (world is reused).
+  function applyChoice(choice: StartChoice): void {
+    if (choice.kind === "career") {
+      forcedEnemyTier = null; // Career always uses the notoriety-scaled spawn spread
+      if (choice.fresh) {
+        saves.wipe("career");
+        applySave(defaultSave("career"));
+      } else {
+        applySave(saves.load("career"));
+      }
+      gs.startGame("career");
+    } else {
+      applySave(saves.load("sandbox"));
+      // free play: top up to a deep purse so every hull + upgrade is buyable
+      if (economy.state.doubloons < 50000) {
+        economy.state.doubloons = 50000;
+        gs.wallet.set(50000);
+      }
+      const cfg = choice.cfg;
+      forcedEnemyTier = cfg.enemyTier === "mixed" ? null : (cfg.enemyTier as ShipTierId);
+      TUN.fleet.enemyCount = Math.max(0, Math.min(MAXVIS, Math.round(cfg.enemyCount)));
+      if (cfg.shipTier !== currentTier) swapPlayerShip(cfg.shipTier as ShipTierId);
+      gs.startGame("sandbox");
+    }
+    menu.hide();
+    document.body.classList.remove("menu-active"); // reveal the game HUD now that we're sailing
+  }
+
+  worldReady = true; // later Starts now re-apply directly instead of resolving the gate
+  applyChoice(startChoice); // apply the choice that opened the gate
+  loadingEl.remove();
+
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
-    world.step(dt);
+    perf.tick(dt); // measure real frame time → HUD + adaptive-quality governor
+    // Quit-to-Menu returns here with the world still built — show a clean screen instead
+    // of drawing the frozen world behind the menu. (Pause/port still render the freeze.)
+    if (gs.phase === "menu") {
+      renderer.setRenderTarget(null);
+      renderer.setClearColor(0x05080a, 1);
+      renderer.clear();
+      return;
+    }
+    // the sim only advances while PLAYING — pause and port screens freeze the world
+    // (the render loop still draws, so overlays composite over a still frame).
+    if (gs.isSimRunning()) world.step(dt);
     // ---- per-frame fleet LOD ----
     fleet.rankLOD(camera.position);
     const premium = fleet.premiumEnemy;
@@ -1360,27 +1739,28 @@ async function main() {
       ocean.resetTrail(1); // premium enemy swapped — don't lace the ribbon across the jump
       premiumSlot1 = premium;
     }
-    feedWake(0, sloop); // slot 0: player (voxel cut + ribbon + pose)
+    feedProfiled(0, sloop); // slot 0: player (voxel cut + ribbon + pose)
     checkBowSpray(0, sloop, dt);
     if (premium) {
-      feedWake(1, premium); // slot 1: nearest enemy (premium)
+      feedProfiled(1, premium); // slot 1: nearest enemy (premium — voxel cut + stern ribbon)
       checkBowSpray(1, premium, dt);
     } else {
       ocean.clearSlot(1);
+      slotShip[1] = null;
     }
-    // cheap slots 2..: the remaining visible enemies (collar/bow/wash/ellipse cut)
+    // slots 2..: the remaining visible enemies — now the SAME per-ship voxel cut, not the ellipse.
     let cheapSlot = 2;
     for (const e of fleet.enemies) {
       if (e === premium) continue;
       if (cheapSlot >= MAXVIS) break;
-      feedCheap(cheapSlot, e);
+      feedProfiled(cheapSlot, e);
       cheapSlot++;
     }
-    for (; cheapSlot < MAXVIS; cheapSlot++) ocean.clearSlot(cheapSlot);
+    for (; cheapSlot < MAXVIS; cheapSlot++) { ocean.clearSlot(cheapSlot); slotShip[cheapSlot] = null; }
     effects.update(dt, world.simTime);
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")
-    boarding.player?.postPose();
+    character.player?.postPose();
     const bearNow = aimBearing();
     // r18: traverse must be SCREEN-RELATIVE for EVERY battery (mouse-right swings the muzzle
     // to screen-right), not just the broadside. With aimBearing's look dirs, screenRight =
@@ -1405,23 +1785,23 @@ async function main() {
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
-    if (firstPerson && boarding.player) {
+    if (firstPerson && character.player) {
       // eye-level camera — at the model's eye line, not its collar
       // (playtest round 5: "really only shows the inside of the uniform")
-      const pt = boarding.player.body.translation();
+      const pt = character.player.body.translation();
       // r18.1: seat the eye at the true eye line (the old 0.95 sat at the crown, which pushed the
       // body-attached arm + cutlass off the bottom of the frame). Lower brings the weapon into the
       // forward view; the head bone is collapsed in FP so the camera isn't inside any mesh.
       // the eye sits higher on the taller Universal base mesh than on the stocky
       // Quaternius captain — otherwise FP frames his collarbone.
       const eyeY =
-        pt.y + (boarding.player.rig ? (boarding.player.rig.kind === "universal" ? 1.05 : 0.74) : 0.95);
+        pt.y + (character.player.rig ? (character.player.rig.kind === "universal" ? 1.05 : 0.74) : 0.95);
       const yaw = controls.cameraYaw();
       const pitch = controls.lookPitch();
-      boarding.player.fpLookPitch = pitch; // carry pose lifts with the view (stays in frame)
+      character.player.fpLookPitch = pitch; // carry pose lifts with the view (stays in frame)
       // r18.1: feed the look yaw — crew.syncMesh faces the body to THIS (not the run direction) in
       // FP, so the arm/cutlass hold their screen spot when you strafe instead of clipping in.
-      boarding.player.fpLookYaw = yaw;
+      character.player.fpLookYaw = yaw;
       const lookX = Math.cos(yaw) * Math.cos(pitch);
       const lookZ = Math.sin(yaw) * Math.cos(pitch);
       // r18.1: with the REAL arm shown, seat the eye slightly BEHIND the shoulder so the right
@@ -1430,13 +1810,13 @@ async function main() {
       // collapsed in FP so there's no mesh to clip into back here.
       // pull back behind the shoulder ONLY when there's a real FP arm to frame
       // (Quaternius). The Universal mesh has no FP arm yet, so sit right at the eye.
-      const back = boarding.player.rig && boarding.player.rig.kind !== "universal" ? 0.42 : 0;
+      const back = character.player.rig && character.player.rig.kind !== "universal" ? 0.42 : 0;
       camera.position.set(pt.x - lookX * back, eyeY, pt.z - lookZ * back);
       camera.lookAt(camera.position.x + lookX, eyeY + Math.sin(pitch), camera.position.z + lookZ);
       // viewmodel: the procedural stand-in arm shows ONLY when there's no rigged model — the
       // rigged pirate now carries its REAL right arm + cutlass in first person (r18.1).
-      viewModel.visible = !boarding.player.rig;
-      const swingT = boarding.player.attackTimer ?? 0;
+      viewModel.visible = !character.player.rig;
+      const swingT = character.player.attackTimer ?? 0;
       const swingP = swingT > 0 ? Math.sin((1 - swingT / 0.7) * Math.PI) : 0;
       vmBob += dt * 3.2;
       const bob = Math.sin(vmBob) * 0.01;
@@ -1446,12 +1826,12 @@ async function main() {
       // a diagonal cutlass slash: the blade sweeps down-and-across the view (more roll +
       // yaw than the old straight chop) with a little follow-through, then recovers.
       vmArm.rotation.set(-0.12 - swingP * 1.7, 0.28 + swingP * 0.55, 0.78 - swingP * 0.95);
-    } else if (camMode === 0 && boarding.player) {
+    } else if (camMode === 0 && character.player) {
       // character third-person: a short follow-cam orbiting the player himself
       // (V's default view) instead of the whole ship.
       viewModel.visible = false;
-      const pp = boarding.player.body.translation();
-      controls.updateFollowCamera(camera, new THREE.Vector3(pp.x, pp.y, pp.z));
+      const pp = character.player.body.translation();
+      controls.updateFollowCamera(camera, _camFollow.set(pp.x, pp.y, pp.z));
     } else {
       viewModel.visible = false;
       // bird's-eye orbit on the ship's CENTER (the body origin is the grid
@@ -1478,7 +1858,7 @@ async function main() {
     if (camUnder !== wasUnder) {
       wasUnder = camUnder;
       hudEls.underwater.style.opacity = camUnder ? "1" : "0";
-      scene.fog = camUnder ? underFog : null;
+      scene.fog = camUnder ? underFog : aboveFog;
     }
 
     if (cutaway) {
@@ -1493,8 +1873,20 @@ async function main() {
     }
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
+    // refresh the (autoUpdate-off) shadow map at ~15 Hz instead of every frame — see sky.ts.
+    shadowAccum += dt;
+    if (shadowAccum >= 1 / 15) {
+      skySetup.sunLight.shadow.needsUpdate = true;
+      shadowAccum = 0;
+    }
 
-    oceanField.update(world.simTime);
+    // advance the FFT-ocean spectral sim at ~30 Hz (every ~2nd frame). The surface samples the
+    // persisted displacement/normal RTs continuously, so the chop detail evolving at 30 Hz is
+    // imperceptible while halving the ~45 full-screen DFT passes this call costs.
+    if (lastOceanFftUpdate < 0 || world.simTime - lastOceanFftUpdate >= 1 / 30) {
+      oceanField.update(world.simTime);
+      lastOceanFftUpdate = world.simTime;
+    }
     // P5/r15: advance the dynamic-wave interaction field (off-screen GPU passes),
     // now under the dev knobs, and bind its texture + snapped window/origin to the
     // ocean BEFORE the main render. Always drain spray landings (so the queue can't
@@ -1518,17 +1910,54 @@ async function main() {
       TUN.dyn.heightScale,
     );
     ocean.setChop(TUN.chop.strength, TUN.chop.choppiness);
+    ocean.setReflStrength(TUN.gfx.reflection.strength, TUN.gfx.reflection.clamp);
+    ocean.setWaterDepth(TUN.gfx.water.visibility, TUN.gfx.water.clarity);
+    renderer.toneMappingExposure = TUN.gfx.tone.exposure; // live exposure knob
+    islandGritUniforms.uGritStrength.value = TUN.gfx.islandGrit.strength;
     ocean.update(world.simTime, camera.position);
-    renderer.autoClear = true;
-    renderer.clear(); // clears color + depth + stencil
-    renderer.autoClear = false;
+
+    // the sky dome + drifting clouds follow the camera (camera always at the dome centre);
+    // then re-bake the sky+cloud reflection cube at TUN.gfx.reflection.rebakeHz.
+    skySetup.follow(camera.position);
+    clouds.update(world.simTime, camera.position);
+    const bakeInterval = 1 / Math.max(0.1, TUN.gfx.reflection.rebakeHz);
+    if (lastEnvBake < 0 || world.simTime - lastEnvBake >= bakeInterval) {
+      skySetup.updateEnv(renderer, bgScene, camera.position);
+      lastEnvBake = world.simTime;
+    }
+
+    // project the sun to screen space for the god-ray pass; gate on it being in
+    // front of the camera AND above the horizon (no shafts from a sun behind us).
+    _sunWorld.copy(camera.position).addScaledVector(skySetup.sunDir, 1000);
+    _sunView.copy(_sunWorld).applyMatrix4(camera.matrixWorldInverse);
+    const sunOnScreen = _sunView.z < 0 && skySetup.sunDir.y > 0;
+    _sunWorld.project(camera); // → NDC in place
+    post.setSun(_sunWorld.x * 0.5 + 0.5, _sunWorld.y * 0.5 + 0.5, sunOnScreen);
+
     seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group), ...islandHulls]);
-    seam.write(renderer, scene, camera); // hull+island → stencil (no color/depth)
-    renderer.render(scene, camera);      // full scene incl. ocean, stencil-tested
-    renderer.autoClear = true;
+    const _r0 = performance.now();
+    if (TUN.gfx.post.enabled) {
+      // the composer's ScenePass runs the same clear → seam-write → scene-render
+      // stencil dance, then bloom (+ god rays/grade in later tasks), then tonemaps
+      // to the screen via OutputPass.
+      post.render();
+    } else {
+      // legacy direct path — perf floor / safety valve. Same bg→clearDepth→main
+      // sequence as the composer's ScenePass, just straight to the screen.
+      renderer.setRenderTarget(null);
+      renderer.autoClear = false;
+      renderer.clear(true, true, true);
+      renderer.render(bgScene, camera); // sky + clouds backdrop
+      renderer.clearDepth();
+      seam.write(renderer, scene, camera); // hull+island → stencil (no color/depth)
+      renderer.render(scene, camera); // full scene incl. ocean, stencil-tested
+      renderer.autoClear = true;
+    }
+    renderMs = performance.now() - _r0;
 
     updateHud(dt, tr);
     updateDevReadout();
+    updateTimingHud();
   });
 }
 

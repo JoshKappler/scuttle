@@ -22,15 +22,16 @@ import type { ClipKey, PirateRig } from "./pirateModel";
 export type KayKitName = "Rogue_Hooded" | "Rogue" | "Knight" | "Barbarian" | "Mage";
 
 const MODEL_URLS: Record<KayKitName, string> = {
-  Rogue_Hooded: "/assets/characters/kaykit/Rogue_Hooded.glb",
-  Rogue: "/assets/characters/kaykit/Rogue.glb",
-  Knight: "/assets/characters/kaykit/Knight.glb",
-  Barbarian: "/assets/characters/kaykit/Barbarian.glb",
-  Mage: "/assets/characters/kaykit/Mage.glb",
+  // relative paths so they load under file:// in the packaged EXE — see universalModel.ts
+  Rogue_Hooded: "assets/characters/kaykit/Rogue_Hooded.glb",
+  Rogue: "assets/characters/kaykit/Rogue.glb",
+  Knight: "assets/characters/kaykit/Knight.glb",
+  Barbarian: "assets/characters/kaykit/Barbarian.glb",
+  Mage: "assets/characters/kaykit/Mage.glb",
 };
 
 /** A 1-handed sword stands in for a cutlass, parented to the right hand slot. */
-const SWORD_URL = "/assets/characters/kaykit/weapons/sword_1handed.gltf";
+const SWORD_URL = "assets/characters/kaykit/weapons/sword_1handed.gltf";
 
 /** ClipKey → exact KayKit clip name. */
 const CLIP_NAMES: Record<ClipKey, string> = {

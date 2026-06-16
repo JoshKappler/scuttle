@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { PortController, DevDockProvider } from "../src/game/port";
 import { Economy } from "../src/sim/economy";
+import { Wallet } from "../src/game/wallet";
+import { MessageBus } from "../src/game/messageBus";
 import type { Ship } from "../src/game/ship";
-import type { BoardingSystem } from "../src/game/boarding";
+import type { Cannons } from "../src/game/cannons";
+import type { SailingController } from "../src/game/sailing";
 import type { PortScreen, PortView } from "../src/render/portScreen";
 
 // --- node localStorage shim (the controller's save/load uses the global) ---
@@ -50,9 +53,6 @@ function fakeShip(over: Partial<Record<string, unknown>> = {}) {
   };
   return ship as unknown as Ship & { _breaches: number };
 }
-function fakeBoarding() {
-  return { gold: 0, message: "" } as unknown as BoardingSystem;
-}
 function fakeUi() {
   const ui = {
     isOpen: false,
@@ -75,50 +75,68 @@ function fakeUi() {
 
 function make(econInit?: ConstructorParameters<typeof Economy>[0]) {
   const economy = new Economy(econInit);
-  const ship = fakeShip();
-  const boarding = fakeBoarding();
+  const ship = fakeShip({ hullToughness: 1, rudderPower: 1 });
+  const wallet = new Wallet(0);
+  const msg = new MessageBus();
+  const cannons = { reloadMul: 1 } as unknown as Cannons;
+  const sailing = { boost: 1 } as unknown as SailingController;
   const ui = fakeUi() as PortScreen & { last: PortView | null; refreshes: number };
   let pos = { x: 0, z: 0 };
   const port = new PortController({
     economy,
     ship,
-    boarding,
+    cannons,
+    sailing,
+    wallet,
+    msg,
     ui,
     getPlayerPos: () => pos,
     rand: () => 0.5, // fixed draw → deterministic loot
   });
-  return { economy, ship, boarding, ui, port, setPos: (p: { x: number; z: number }) => (pos = p) };
+  return { economy, ship, wallet, msg, cannons, sailing, ui, port, setPos: (p: { x: number; z: number }) => (pos = p) };
 }
 
 describe("PortController — plunder", () => {
-  it("turns a kill into doubloons and mirrors them to boarding.gold", () => {
-    const { economy, ship, boarding, port } = make();
+  it("turns a kill into doubloons and mirrors them to the wallet", () => {
+    const { economy, ship, wallet, msg, port } = make();
     port.plunder(ship);
     expect(economy.state.doubloons).toBeGreaterThan(0);
-    expect((boarding as unknown as { gold: number }).gold).toBe(economy.state.doubloons);
-    expect((boarding as unknown as { message: string }).message).toContain("PLUNDER");
+    expect(wallet.gold).toBe(economy.state.doubloons);
+    expect(msg.current).toContain("PLUNDER");
   });
 });
 
 describe("PortController — transactions mirror gold and refresh the UI", () => {
   it("sell converts the hold and refreshes", () => {
-    const { economy, boarding, ui, port } = make();
+    const { economy, wallet, ui, port } = make();
     economy.addLoot({ doubloons: 0, cargo: { rum: 3 }, notoriety: 0 });
     port.sell();
     expect(economy.state.doubloons).toBeGreaterThan(0);
     expect(economy.cargoUsed()).toBe(0);
-    expect((boarding as unknown as { gold: number }).gold).toBe(economy.state.doubloons);
+    expect(wallet.gold).toBe(economy.state.doubloons);
     expect((ui as unknown as { refreshes: number }).refreshes).toBeGreaterThan(0);
   });
 
   it("buying Larger Hold raises cargo capacity and spends gold", () => {
-    const { economy, boarding, port } = make({ doubloons: 500 });
+    const { economy, wallet, port } = make({ doubloons: 500 });
     const before = economy.state.cargoCapacity;
     port.buy("hold");
     expect(economy.upgradeLevel("hold")).toBe(1);
     expect(economy.state.cargoCapacity).toBe(before + 20);
     expect(economy.state.doubloons).toBe(300);
-    expect((boarding as unknown as { gold: number }).gold).toBe(300);
+    expect(wallet.gold).toBe(300);
+  });
+
+  it("combat/sailing upgrades land on the ship/cannons/sailing", () => {
+    const { ship, cannons, sailing, port } = make({ doubloons: 100000 });
+    port.buy("reload");
+    port.buy("hull");
+    port.buy("rudder");
+    port.buy("speed");
+    expect(cannons.reloadMul).toBeCloseTo(0.88, 5); // one level = −12%
+    expect(ship.hullToughness).toBeCloseTo(1.25, 5);
+    expect(ship.rudderPower).toBeCloseTo(1.15, 5);
+    expect(sailing.boost).toBeCloseTo(1.1, 5);
   });
 });
 
@@ -159,12 +177,12 @@ describe("PortController — persistence (save at the docks)", () => {
     a.port.buy("hold"); // level 1 → capacity 60, doubloons 300
     a.port.save();
 
-    const b = make(); // fresh economy/ship/boarding, same localStorage
+    const b = make(); // fresh economy/ship/wallet, same localStorage
     b.port.load();
     expect(b.economy.state.doubloons).toBe(300);
     expect(b.economy.upgradeLevel("hold")).toBe(1);
     expect(b.economy.state.cargoCapacity).toBe(60); // re-derived from the owned level
-    expect((b.boarding as unknown as { gold: number }).gold).toBe(300);
+    expect(b.wallet.gold).toBe(300);
   });
 
   it("load with no save falls back to a clean economy", () => {
@@ -176,11 +194,11 @@ describe("PortController — persistence (save at the docks)", () => {
 
 describe("PortController — docking", () => {
   it("flags canDock and surfaces a hint within range, clears it outside", () => {
-    const { boarding, port, setPos } = make();
+    const { msg, port, setPos } = make();
     setPos({ x: 5, z: 0 }); // 5 m from the origin dock (< range)
     port.update(0.016);
     expect(port.canDock).toBe(true);
-    expect((boarding as unknown as { message: string }).message).toContain("make port");
+    expect(msg.current).toContain("make port");
 
     setPos({ x: 100, z: 0 }); // far away
     port.update(0.016);

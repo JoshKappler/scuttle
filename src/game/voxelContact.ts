@@ -60,6 +60,9 @@ export interface ContactTarget {
   angvel(): { x: number; y: number; z: number };
   /** Effective mass (kg); terrain reports a huge value so it acts immovable. */
   mass(): number;
+  /** Per-hull break-cost multiplier (≥1) — the "Hull Reinforcement" upgrade. Terrain reports 1
+   *  (unused: it never carves). Multiplies the global crush.toughness when pricing a broken cell. */
+  readonly hullToughness: number;
   /** Joules to break the local cell (only called when canCarve). */
   cellBreakEnergy(x: number, y: number, z: number): number;
   /** Remove local cells; returns count removed (only called when canCarve). */
@@ -107,6 +110,12 @@ export class VoxelContact {
   private hvB: HullView = { surface: new Int32Array(0), isSolid: () => false, dims: [0, 0, 0], pos: [0, 0, 0], quat: [0, 0, 0, 1] };
   // contact scratch, grown to hold the smaller hull's surface (one contact per A surface cell max).
   private scratch: ContactScratch = { aCells: new Int32Array(0), bCells: new Int32Array(0), points: new Float32Array(0) };
+  // BREAK-regime scratch: the cells broken this step per hull, reused (cleared each pair) backed by
+  // a tuple pool, so a sustained ram allocates nothing classifying or carving contacts.
+  private brokenA: [number, number, number][] = [];
+  private brokenB: [number, number, number][] = [];
+  private poolA: [number, number, number][] = [];
+  private poolB: [number, number, number][] = [];
 
   /** Run the deformable contact for every ship↔ship and ship↔terrain pair this fixed step. */
   stepAll(ships: Ship[], terrain: ContactTarget[], dt: number): void {
@@ -195,9 +204,12 @@ export class VoxelContact {
     const tough = TUN.crush.toughness;
 
     // ---- classify each contact: BREAK (closing > vBreak) vs REST ----
-    let breakCount = 0, bSumX = 0, bSumY = 0, bSumZ = 0;
-    const brokenA: [number, number, number][] = [];
-    const brokenB: [number, number, number][] = [];
+    // brokenA/brokenB are reused member scratch (cleared here), backed by a tuple pool, so
+    // classifying contacts allocates nothing during a sustained ram.
+    let bSumX = 0, bSumY = 0, bSumZ = 0;
+    const brokenA = this.brokenA, brokenB = this.brokenB;
+    brokenA.length = 0;
+    brokenB.length = 0;
     if (moving) {
       for (let i = 0; i < count; i++) {
         const o = i * 3;
@@ -206,11 +218,15 @@ export class VoxelContact {
         this.velAt(this.comB, lvB, avB, px, py, pz, this.vB);
         const vci = (this.vA.x - this.vB.x) * dhx + (this.vA.z - this.vB.z) * dhz; // horizontal closing
         if (vci <= TUN.crush.vBreak) continue;
-        brokenA.push([sc.aCells[o], sc.aCells[o + 1], sc.aCells[o + 2]]);
-        if (b.canCarve) brokenB.push([sc.bCells[o], sc.bCells[o + 1], sc.bCells[o + 2]]);
-        bSumX += px; bSumY += py; bSumZ += pz; breakCount++;
+        // pooled push (no per-contact allocation in a sustained ram). Only flag B's cell when B can
+        // actually be carved — terrain (canCarve === false) is never eroded, so its broken layer is
+        // never collected and ALL the budget falls on the ship.
+        this.pushBroken(brokenA, this.poolA, sc.aCells[o], sc.aCells[o + 1], sc.aCells[o + 2]);
+        if (b.canCarve) this.pushBroken(brokenB, this.poolB, sc.bCells[o], sc.bCells[o + 1], sc.bCells[o + 2]);
+        bSumX += px; bSumY += py; bSumZ += pz;
       }
     }
+    const breakCount = brokenA.length;
 
     let removedA = 0, removedB = 0, energy = 0, force = 0, vClose = 0;
 
@@ -300,17 +316,51 @@ export class VoxelContact {
   private lastRemovedA = 0;
   private lastRemovedB = 0;
 
-  /** Spend the energy budget cheapest-first across both sides' broken candidates, carving only the
-   *  sides that CAN break (terrain's canCarve === false → all the energy erodes the ship). Returns
-   *  the energy actually spent; writes the two removal counts into lastRemovedA/lastRemovedB. */
+  /** Store cell (x,y,z) into `list` at its next slot, reusing a pooled tuple so the BREAK regime
+   *  never allocates a fresh array per broken contact. */
+  private pushBroken(list: [number, number, number][], pool: [number, number, number][], x: number, y: number, z: number): void {
+    const i = list.length;
+    let t = pool[i];
+    if (t) { t[0] = x; t[1] = y; t[2] = z; }
+    else { t = [x, y, z]; pool[i] = t; }
+    list.push(t);
+  }
+
+  /** Carve the broken cells against the closing-energy budget; returns the energy actually spent.
+   *  Carves only the sides that CAN break (terrain's canCarve === false → all the energy erodes the
+   *  ship and the immovable, indestructible wall takes none). Each hull's cells also pay its own
+   *  hullToughness (the "Hull Reinforcement" upgrade, ≥1). When the budget covers every broken cell
+   *  (a high-energy hit), carve them all directly — no per-candidate object and no sort, since
+   *  cheapest-first ordering is moot when all are affordable. Only when the energy can't pay for the
+   *  whole flagged layer (the energy-limited bite-and-lodge, or the maxStepEnergy anti-vaporize
+   *  clamp) does it fall back to spending cheapest-first. Writes the removal counts into
+   *  lastRemovedA/lastRemovedB. */
   private carveWithinBudget(
     a: ContactTarget, b: ContactTarget,
     brokenA: [number, number, number][], brokenB: [number, number, number][],
     tough: number, budget: number,
   ): number {
+    // each hull's cells also pay its own hullToughness (the "Hull Reinforcement" upgrade, ≥1),
+    // so a reinforced hull loses fewer voxels in a ram while still grinding the other ship. A side
+    // that CAN'T carve (terrain, canCarve === false) is skipped entirely — its broken layer is never
+    // collected, so all the energy erodes the ship.
+    const canA = a.canCarve, canB = b.canCarve;
+    const toughA = tough * a.hullToughness;
+    const toughB = tough * b.hullToughness;
+    let total = 0;
+    if (canA) for (const c of brokenA) total += a.cellBreakEnergy(c[0], c[1], c[2]) * toughA;
+    if (canB) for (const c of brokenB) total += b.cellBreakEnergy(c[0], c[1], c[2]) * toughB;
+    if (total <= budget) {
+      // everything is affordable → carve the whole broken layer, no sort/allocation
+      this.lastRemovedA = canA && brokenA.length ? a.carveCells(brokenA) : 0;
+      this.lastRemovedB = canB && brokenB.length ? b.carveCells(brokenB) : 0;
+      return total;
+    }
+    // energy-limited: can't break the whole flagged layer this step — spend cheapest-first so the
+    // ram bites a hole and lodges once its energy is gone (and we never vaporize a deep slab).
     const cand: { isA: boolean; c: [number, number, number]; e: number }[] = [];
-    if (a.canCarve) for (const c of brokenA) cand.push({ isA: true, c, e: a.cellBreakEnergy(c[0], c[1], c[2]) * tough });
-    if (b.canCarve) for (const c of brokenB) cand.push({ isA: false, c, e: b.cellBreakEnergy(c[0], c[1], c[2]) * tough });
+    if (canA) for (const c of brokenA) cand.push({ isA: true, c, e: a.cellBreakEnergy(c[0], c[1], c[2]) * toughA });
+    if (canB) for (const c of brokenB) cand.push({ isA: false, c, e: b.cellBreakEnergy(c[0], c[1], c[2]) * toughB });
     cand.sort((x, y) => x.e - y.e);
     let bud = budget, spent = 0;
     const remA: [number, number, number][] = [], remB: [number, number, number][] = [];

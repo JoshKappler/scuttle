@@ -21,7 +21,11 @@ import { MAXVIS } from "../core/constants";
  */
 
 const R_NEAR = 0.8; // m — innermost ring
-const R_FAR = 950; // m — horizon ring (fog owns everything past it)
+// The sea reaches the horizon. Fog fades the surface to the sky's HORIZON_COLOR well before this
+// radius, so distant islands sit on (hazy) water instead of floating over a void; bumping the radius
+// is nearly free — it covers the same screen pixels (the disk already fills down to the horizon line),
+// it just makes the water "real" much further out. Fog hides the coarser far rings.
+const R_FAR = 2400; // m — horizon ring
 const RINGS = 156;
 const SECTORS = 160;
 
@@ -59,10 +63,10 @@ export interface Ocean {
     keelWorldY: number,
     deckWorldY: number,
   ): void;
-  /** P4: bind a hull's per-column keel/deck profile texture (built once from the
-   *  voxel grid) and its local span, per slot (0 = player, 1 = enemy). Activates
-   *  that hull's voxel-accurate cut. */
-  setHullProfile(slot: number, tex: THREE.Texture, sizeX: number, sizeZ: number): void;
+  /** P4: bind a hull's per-column keel/deck profile (built once from the voxel grid via
+   *  buildHullProfile) and its local span into the per-slot atlas band, activating that slot's
+   *  voxel-accurate cut. `data` is nx*nz*2 floats [keelYLocal, deckYLocal]; works for ANY slot. */
+  setHullProfile(slot: number, data: Float32Array, nx: number, nz: number, sizeX: number, sizeZ: number): void;
   /** P4: feed a hull's live world→local rotation (inverse of the body quaternion)
    *  and world translation each frame, per slot, so its cut tracks heave/pitch/roll. */
   updateHullPose(slot: number, invRot: THREE.Matrix3, trans: THREE.Vector3): void;
@@ -78,6 +82,24 @@ export interface Ocean {
   setDynamicField(tex: THREE.Texture | null, windowSize: number, originX: number, originZ: number, on: boolean, scale?: number): void;
   /** dev-panel chop controls: overall strength (0 = pure swell) + crest-pinch choppiness. */
   setChop(strength: number, choppiness: number): void;
+  /** Bind the live sky+cloud reflection cube (render/sky.ts envCube.texture). The
+   *  surface then mirrors the real sky gradient, sun and clouds (Fresnel-weighted). */
+  setSkyEnv(tex: THREE.Texture): void;
+  /** dev-panel reflection strength (0 = matte water, 1 = full Fresnel reflection) +
+   *  the HDR clamp on the reflected sky (caps a bright sky from whiting out the sea). */
+  setReflStrength(strength: number, clamp?: number): void;
+  /** dev-panel underwater-visibility controls: how many metres of water you can see
+   *  down before the sea is fully opaque (`visibility`), and how see-through the
+   *  shallow band gets (`clarity` 0 = off/current look, 1 = max). */
+  setWaterDepth(visibility: number, clarity: number): void;
+  /** Set the distance-fog colour. main.ts feeds the sky's HORIZON_COLOR so the far sea
+   *  fades into the sky's horizon band seamlessly — no void box, no floating islands. */
+  setFogColor(color: THREE.Color): void;
+  /** Bind the static land-height field (src/game/islandField.ts buildLandField) so the
+   *  surface shoals — wave displacement tapers to flat at each coast (no waves clipping
+   *  through islands) — and a surf-foam line draws where the sea meets land. `min`/`size`
+   *  give the field's world-XZ origin + extent. Call once at startup. */
+  setLandField(tex: THREE.Texture, minX: number, minZ: number, sizeX: number, sizeZ: number): void;
 }
 
 function waveUniforms(waves: Wave[]) {
@@ -137,6 +159,16 @@ uniform float uCascadeChop[NCASC]; // per-cascade horizontal choppiness λ
 uniform float uFftOn; // 1 when the cascade backend is live, else 0
 uniform float uChopScale; // dev: overall chop height/strength (0 = pure swell)
 uniform float uChoppiness; // dev: crest-pinch (horizontal choppiness) multiplier
+
+// SHORE shoaling field (src/game/islandField.ts): R = terrain-top world-Y (m), deep sea ≈ -100,
+// bled outward a little past each coast for a smooth ramp. Used to taper the visual wave
+// displacement to ~0 as the seabed shoals up to the beach, so the sea meets land cleanly
+// instead of crests/troughs clipping straight through the island. VISUAL ONLY (physics never
+// samples this mesh — it rides the analytic swell), so THE LAW #1 holds.
+uniform sampler2D uLandTex;
+uniform vec2 uLandMin;  // world XZ of the field's min corner
+uniform vec2 uLandSize; // world XZ extent the field spans
+uniform float uLandOn;  // 1 when a land field is bound
 
 // P5 dynamic-wave interaction field (Crest/Atlas FDTD ping-pong, src/render/
 // dynamicWaves.ts). A camera-centred height/velocity field the ships stamp their
@@ -281,6 +313,27 @@ void main() {
     crest += sF * (0.45 * exp(-bd2 / 5.5) + 0.28 * ridge * span) * aMix;
   }
 
+  // SHORE SHOALING: as the seabed rises toward a coast, taper the wave displacement back to
+  // the rest (flat sea-level) position so the surface goes calm-and-flat at the beach instead
+  // of waves cutting through the island. shoal = 1 in deep water → 0 at the shoreline.
+  if (uLandOn > 0.5) {
+    vec2 luv = (rest.xz - uLandMin) / uLandSize;
+    if (luv.x > 0.0 && luv.x < 1.0 && luv.y > 0.0 && luv.y < 1.0) {
+      float landY = texture2D(uLandTex, luv).r * 160.0 - 100.0; // decode terrain-top world-Y (m); deep sea ≈ -100
+      // GRADUAL shoaling: the swell eases down to calm over a ~4.5 m depth band approaching each coast,
+      // instead of the 1.3 m hard ring that "abruptly cut off" the waves at the island edge (playtest).
+      // Full waves by ~4.5 m of depth → glassy-calm right at the wet sand. The water is OPAQUE now (the
+      // see-through void was fixed), so the calmed band reads as a sheltered shore, not a flat navy moat.
+      // Paired with the deleted shore surf-foam line (no white ring) in the fragment stage.
+      float shoal = clamp((0.0 - landY) / 4.5, 0.0, 1.0); // 0 at the waterline … 1 by 4.5 m depth
+      shoal = shoal * shoal * (3.0 - 2.0 * shoal);   // smootherstep so the calming eases in
+      p = mix(rest, p, shoal);                       // pull the surface back to flat near land
+      crest *= shoal;
+      nx *= shoal;
+      nz *= shoal;
+    }
+  }
+
   vWorldPos = p;
   vNormal = normalize(vec3(nx, ny, nz));
   vCrest = crest;
@@ -297,8 +350,15 @@ uniform vec3 uSunColor;
 uniform vec3 uDeepColor;
 uniform vec3 uShallowColor;
 uniform vec3 uSkyColor;
+uniform samplerCube uSkyEnv;   // live sky+cloud reflection cube (render/sky.ts)
+uniform float uHasEnv;         // 1 when uSkyEnv is bound, else fall back to uSkyColor
+uniform float uReflStrength;   // dev: overall reflection strength
+uniform float uReflClamp;      // dev: cap on reflected HDR (stops a bright sky → white water)
+uniform float uWaterVis;     // metres of water column visible before fully opaque
+uniform float uWaterClarity; // 0 = depth-murk OFF (current look), 1 = maximally see-through
 uniform vec3 uFogColor;
 uniform float uFogDensity;
+uniform float uFogStart;   // metres of crystal-clear water before the distance haze begins
 uniform float uAmpTotal;
 uniform vec3 uCameraPos;
 uniform float uTime;
@@ -338,21 +398,34 @@ uniform vec4 uShipB[MAXVIS]; // speed, halfL, halfB, 0
 uniform vec2 uShipC[MAXVIS]; // keel world-Y, deck-top world-Y (hull vertical span)
 uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 
-// P4 voxel-accurate, attitude-aware in-hull cut — now PER SHIP (slot 0 = player,
-// slot 1 = enemy). Each live slot poses the sea fragment into THAT hull's LOCAL
-// frame and tests a per-column keel/deck height-field — so BOTH hulls cut the sea
-// by their true voxel plan AND heave/pitch/roll, and the enemy no longer falls back
-// to the flat analytic ellipse. Two named samplers (not a sampler array) keep this
-// valid under GLSL ES 1.00, where a sampler array can't take a dynamic index.
+// P4 voxel-accurate, attitude-aware in-hull cut — for EVERY ship (player + all enemies; they are
+// the same class of object, so they cut the sea the same way). Each live slot poses the sea fragment
+// into THAT hull's LOCAL frame and tests a per-column keel/deck height-field — so every hull cuts
+// the sea by its true voxel plan AND heave/pitch/roll, and no ship falls back to the flat analytic
+// ellipse. The per-ship keel/deck textures are packed into ONE atlas banded vertically by slot (band
+// s occupies uv.y∈[s,s+1]/MAXVIS); a single sampler2D read at a COMPUTED coordinate sidesteps GLSL
+// ES 1.00's no-dynamic-sampler-index rule (the non-sampler arrays below are loop-indexed fine, as
+// uShipA/uShipB already are).
 uniform float uProfileOn[MAXVIS];    // 1 per slot when that hull's profile cut is live
-uniform sampler2D uProfileTex0; // slot 0 (player): RG = keelYLocal, deckYLocal (m)
-uniform sampler2D uProfileTex1; // slot 1 (enemy):  RG = keelYLocal, deckYLocal (m)
-uniform mat3 uProfileInvRot[2]; // world→local rotation per slot (inverse body quat)
-uniform vec3 uProfileTrans[2];  // body world translation per slot (= local origin)
-uniform vec2 uProfileSize[2];   // local span (m) per slot (uv = localXZ / size)
+uniform sampler2D uProfileAtlas;     // RG = keelYLocal, deckYLocal (m); band s = slot s's hull profile
+uniform mat3 uProfileInvRot[MAXVIS]; // world→local rotation per slot (inverse body quat)
+uniform vec3 uProfileTrans[MAXVIS];  // body world translation per slot (= local origin)
+uniform vec2 uProfileSize[MAXVIS];   // local span (m) per slot (uv = localXZ / size)
+
+// shore shoaling field (same texture as the vertex stage) — drives the surf-foam line.
+uniform sampler2D uLandTex;
+uniform vec2 uLandMin;
+uniform vec2 uLandSize;
+uniform float uLandOn;
 
 void main() {
   #include <clipping_planes_fragment>
+
+  // world-Y of the SHALLOWEST solid beneath this fragment (a submerged hull/deck from the
+  // cut loops below, or the island seabed). Stays very low where nothing is in range (open
+  // deep water) so the depth-murk at the end leaves those fragments fully opaque, unchanged.
+  // It drives the translucent depth-fade so a sinking hull DISSOLVES into the sea (no void).
+  float floorY = -1000.0;
 
   // dry bilges, ALWAYS: the sea does not exist inside an intact hull. The
   // surface is discarded within each ship's waterline ellipse so the hold
@@ -388,30 +461,44 @@ void main() {
     // angles"). beamProfile narrows the cut toward the ends so it follows the timber.
     float along2 = al0 * al0;
     float beamProfile = (1.0 - along2) * (0.5 + 0.5 * (1.0 - along2));
-    if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) discard;
+    if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) {
+      if (deckY > 0.3) discard;             // dry deck → cut the sea (no ocean in the hold)
+      else floorY = max(floorY, deckY);     // submerged → record the deck top as the column floor
+    }
   }
 
-  // P4 voxel-accurate cut — BOTH hulls. Pose this fragment into each live hull's
-  // LOCAL frame and discard only sea between the per-column keel and deck (+2 m
-  // crest clearance vs green-water). The full inverse transform folds in heave/
-  // pitch/roll, so no void reveals as either ship bobs, and the per-column profile
-  // follows the true voxel plan (the pointed bow) instead of a fat ellipse.
-  if (uProfileOn[0] > 0.5) {
-    vec3 lp = uProfileInvRot[0] * (vWorldPos - uProfileTrans[0]);
-    vec2 puv = vec2(lp.x / uProfileSize[0].x, lp.z / uProfileSize[0].y);
+  // P4 voxel-accurate cut — EVERY hull. Pose this fragment into each live hull's LOCAL frame and
+  // discard only sea between the per-column keel and deck (+2 m crest clearance vs green-water). The
+  // full inverse transform folds in heave/pitch/roll, so no void reveals as a ship bobs, and the
+  // per-column profile follows the true voxel plan (the pointed bow) instead of a fat ellipse. Every
+  // live slot reads its own band of the profile atlas, so all ships cut identically.
+  for (int s = 0; s < MAXVIS; s++) {
+    if (uProfileOn[s] < 0.5) continue;
+    vec3 lp = uProfileInvRot[s] * (vWorldPos - uProfileTrans[s]);
+    vec2 puv = vec2(lp.x / uProfileSize[s].x, lp.z / uProfileSize[s].y);
     if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
-      vec2 kd = texture2D(uProfileTex0, puv).rg; // keelYLocal, deckYLocal (m)
-      if (kd.y > kd.x && lp.y > kd.x && lp.y < kd.y + 2.0) discard;
+      vec2 kd = texture2D(uProfileAtlas, vec2(puv.x, (puv.y + float(s)) / float(MAXVIS))).rg; // keel, deck (m)
+      if (kd.y > kd.x && lp.y > kd.x) {
+        // world height of THIS column's deck top (local→world Y = trans.y + dot(R⁻¹'s y-column, localPt)).
+        float deckWY = uProfileTrans[s].y + dot(uProfileInvRot[s][1], vec3(lp.x, kd.y, lp.z));
+        // dry deck (still has freeboard) → cut the sea so the hold shows timber, not ocean. Submerged
+        // deck → DON'T cut: let the sea close over it and record the depth for the fade below, so a
+        // sinking bow dissolves into the water. (The old "lp.y < deck + 2 m" band kept carving a hole
+        // 2 m above a submerged deck → you saw straight through the bow to the skybox — the void bug.)
+        if (deckWY > 0.3) discard;
+        else floorY = max(floorY, deckWY); // submerged deck top → column floor
+      }
     }
   }
-  if (uProfileOn[1] > 0.5) {
-    vec3 lp = uProfileInvRot[1] * (vWorldPos - uProfileTrans[1]);
-    vec2 puv = vec2(lp.x / uProfileSize[1].x, lp.z / uProfileSize[1].y);
-    if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
-      vec2 kd = texture2D(uProfileTex1, puv).rg; // keelYLocal, deckYLocal (m)
-      if (kd.y > kd.x && lp.y > kd.x && lp.y < kd.y + 2.0) discard;
-    }
-  }
+
+  // (REMOVED 2026-06-16) island SEABED contributor to the water column. It raised floorY from the
+  // BLED land-field in a wide apron AROUND each island — far beyond the island's actual underwater
+  // mesh — so the depth-fade turned the sea TRANSLUCENT there with NO geometry behind it, revealing
+  // the sky backdrop: the "light see-through void cutout" ringing every island (verified real-GPU A/B
+  // on clarity). The sea near islands is now OPAQUE ("coloured underneath", as intended). Submerged
+  // HULLS still dissolve — their floorY comes from the per-hull profile cut above, which is REAL
+  // geometry the translucent water is actually in front of. The land-field still drives the VERTEX
+  // shoaling (waves taper to the shore) and the surf-foam line below; only this see-through floor is gone.
 
   // cutaway: the sea over the hull footprint is removed outright (the hold
   // is air, not water); the bounded wedge on the camera side of the cut
@@ -458,15 +545,20 @@ void main() {
     // FINER tiles (0.14 / 0.055 m/texel) catch the grazing specular as a crosshatch
     // lattice — the grid nemesis. Downweight the fine cascades hard for SHADING;
     // their chop SHAPE is already in the geometry, so the sea still reads sharp.
-    vec3 cn;
-    cn = texture2D(uCascadeNormal[0], vWorldPos.xz / uCascadeTile[0]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 1.0;
-    #if NCASC > 1
-    cn = texture2D(uCascadeNormal[1], vWorldPos.xz / uCascadeTile[1]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.55;
-    #endif
-    #if NCASC > 2
-    cn = texture2D(uCascadeNormal[2], vWorldPos.xz / uCascadeTile[2]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.28;
-    #endif
-    nSum *= nFade * 0.7;
+    // PERF: the cascade-normal detail is scaled by nFade, which is 0 for the far/grazing water that
+    // fills most of the screen — so skip the 3 dependent texture fetches there entirely (output is
+    // bit-identical, they were multiplied to ~0 anyway). Pure fill savings on the dominant ocean pass.
+    if (nFade > 0.001) {
+      vec3 cn;
+      cn = texture2D(uCascadeNormal[0], vWorldPos.xz / uCascadeTile[0]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 1.0;
+      #if NCASC > 1
+      cn = texture2D(uCascadeNormal[1], vWorldPos.xz / uCascadeTile[1]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.55;
+      #endif
+      #if NCASC > 2
+      cn = texture2D(uCascadeNormal[2], vWorldPos.xz / uCascadeTile[2]).xyz * 2.0 - 1.0; nSum += vec3(cn.x, 0.0, cn.z) * 0.28;
+      #endif
+      nSum *= nFade * 0.7;
+    }
   }
   vec3 Nd = normalize(N + nSum);
 
@@ -474,9 +566,20 @@ void main() {
   float facing = max(dot(N, V), 0.0);
   vec3 water = mix(uShallowColor, uDeepColor, facing);
 
-  // fresnel sky reflection
+  // fresnel reflection of the REAL sky: reflect the view across the wave-detailed
+  // normal Nd and sample the sky+cloud env cube (render/sky.ts), so the sea mirrors
+  // the actual sky gradient, sun and drifting clouds — distorted by the swell. The
+  // flat uSkyColor constant is the fallback when the cube isn't bound yet.
   float fresnel = pow(1.0 - facing, 5.0);
-  vec3 col = mix(water, uSkyColor, clamp(fresnel * 0.85 + 0.05, 0.0, 1.0));
+  vec3 R = reflect(-V, Nd);
+  R.y = max(R.y, 0.02); // keep the reflected ray in the sky hemisphere
+  vec3 skyRefl = (uHasEnv > 0.5) ? textureCube(uSkyEnv, R).rgb : uSkyColor;
+  // cap the reflected HDR: the sky env cube runs far past 1 near the sun, and a
+  // near-mirror grazing surface would otherwise reflect a sheet of white "liquid
+  // metal". Clamping keeps a bright sky reading as a bright sheen, not a blowout.
+  skyRefl = min(skyRefl, vec3(uReflClamp));
+  float reflF = clamp((fresnel * 0.85 + 0.05) * uReflStrength, 0.0, 1.0);
+  vec3 col = mix(water, skyRefl, reflF);
 
   // sun glints — a BROAD glitter path, never a pinpoint. A tight pow-220 highlight
   // on the animated chop normal lit one texel and not its neighbour and flipped
@@ -485,7 +588,7 @@ void main() {
   // reads as a smooth sun-on-water path that holds still in motion.
   vec3 H = normalize(L + V);
   float ndh = max(dot(Nd, H), 0.0);
-  float spec = pow(ndh, 38.0) * 0.38 + pow(ndh, 11.0) * 0.12;
+  float spec = pow(ndh, 48.0) * 0.15 + pow(ndh, 14.0) * 0.04;
   col += uSunColor * spec;
 
   // subsurface light through wave crests facing the sun
@@ -524,12 +627,21 @@ void main() {
     float edge = abs(across) - (hB * taper + 0.2);
     float bandW = mix(0.5, hB * 0.9, devel);
     wash += sF * (0.3 + 0.7 * devel) * inHull * exp(-pow(max(edge, 0.0) / bandW, 2.0));
-
-    // waterline lace: a thin bright ring right at the hull skin (rr ≈ 1)
-    float rr = sqrt((along / hL) * (along / hL) + (across / hB) * (across / hB));
-    float ring = exp(-pow((rr - 1.0) / 0.06, 2.0));
-    wash += 0.5 * ring;
   }
+
+  // (REMOVED 2026-06-16, round 2) the ALWAYS-ON white waterline foam RING around every hull. It traced
+  // a bright white line hugging the hull-cutout edge that the player said "appears white and totally
+  // negates all of the work we did to make a nice hole cutout" — so the sea now meets the clean cut with
+  // NO ring. Cutting it also drops up to MAXVIS×5 profile-atlas texture taps + a per-slot ellipse pass
+  // PER ocean fragment (a real, free fill saving on the whole sea plane). The hull mesh fills the hole;
+  // a subtle NON-white wet darkening could be re-added later, but the player wants the hole read clean.
+
+  // (REMOVED 2026-06-16) the shore surf-foam line. It drew a bright white ring in the shallow band
+  // around every coast — the "white line of wake that abruptly cuts off" the waves at the island edge
+  // (playtest: "if we just got rid of that white wake it would go a long way"). The sea now eases to
+  // calm at the shore by the VERTEX shoaling alone (gradual, no ring), and dropping it saves a
+  // per-near-island texture tap. Whitewater still comes from the ship wake above.
+
   for (int i = 0; i < 63; i++) {
     if (i == 31) continue; // slot boundary: don't lace ship 0's tail to ship 1's head
     vec4 A = uTrail[i];
@@ -566,12 +678,28 @@ void main() {
   // upstream; they are simply no longer sampled into the surface colour.
   col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.6, 0.0, 0.95));
 
-  // exponential-squared fog toward horizon
+  // exponential-squared fog toward the horizon, with a CLEAR-ZONE: the near/mid sea (and the islands
+  // you sail up to) stays crisp, and haze only builds past uFogStart, fading the far sea into the
+  // sky's HORIZON_COLOR by the horizon. (Was an immediate exp² from the camera → a veil over the
+  // mid-field islands the playtest called "too intense ... should only be a thing in the far distance".)
   float dist = length(uCameraPos - vWorldPos);
-  float fog = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
+  float fogD = max(dist - uFogStart, 0.0);
+  float fog = 1.0 - exp(-uFogDensity * uFogDensity * fogD * fogD);
   col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
 
-  gl_FragColor = vec4(col, cutAlpha);
+  // UNDERWATER VISIBILITY — depth-absorption translucency (no additive colour → NO waterline rim).
+  // columnDepth = metres of water over the shallowest solid beneath this fragment. The sea is a body
+  // you see DOWN into: shallow water over a solid (the sandy shelf, a submerged deck) is translucent so
+  // the bottom shows through and DISSOLVES into the opaque deep-water colour by uWaterVis metres down —
+  // carried by ALPHA ALONE. A dark deck therefore reads DARKER through the water, never the LIGHTER
+  // one-voxel rim the old additive murk-mix produced (its tint was brighter than the deep
+  // water, and the veil peaked in the thinnest shallow band at the waterline). Deep / open water
+  // (floorY very low → visFrac 1) stays fully opaque, unchanged. clarity 0 → shallowAlpha 1, an exact no-op.
+  float columnDepth = vWorldPos.y - floorY;
+  float visFrac = clamp(columnDepth / max(uWaterVis, 0.05), 0.0, 1.0);
+  float shallowAlpha = mix(1.0, 0.38, uWaterClarity); // how see-through the shallowest water gets; clarity 0 → opaque
+  float seaAlpha = mix(shallowAlpha, 1.0, visFrac);    // shallow translucent → deep opaque (MONOTONIC → no rim)
+  gl_FragColor = vec4(col, min(cutAlpha, seaAlpha));
 }
 `;
 
@@ -604,6 +732,45 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
   const NCASC = Math.max(1, layers.length);
   const dummyTex: THREE.Texture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   dummyTex.needsUpdate = true;
+
+  // Per-ship hull-profile ATLAS for the in-hull sea-cut: one float texture banded vertically by slot
+  // (MAXVIS bands of PROF_W×PROF_H). Each ship's per-column keel/deck field (buildHullProfile) is
+  // resampled into its band; the fragment shader reads band s at uv.y∈[s,s+1]/MAXVIS. RG = keel, deck
+  // (m). Nearest filtering keeps the cut edges voxel-crisp. One sampler for all ships sidesteps GLSL
+  // ES 1.00's no-dynamic-sampler-index limit that used to cap the cut at two named samplers.
+  const PROF_W = 256, PROF_H = 64;
+  const profileAtlasData = new Float32Array(PROF_W * PROF_H * MAXVIS * 4);
+  const profileAtlas = new THREE.DataTexture(profileAtlasData, PROF_W, PROF_H * MAXVIS, THREE.RGBAFormat, THREE.FloatType);
+  profileAtlas.minFilter = profileAtlas.magFilter = THREE.NearestFilter;
+  profileAtlas.wrapS = profileAtlas.wrapT = THREE.ClampToEdgeWrapping;
+  profileAtlas.flipY = false;
+  profileAtlas.needsUpdate = true;
+  // Resample a hull's nx×nz keel/deck field (src idx (z*nx+x)*2) into band `slot` (nearest, fills the cell).
+  const stampProfile = (slot: number, data: Float32Array, nx: number, nz: number): void => {
+    const band = slot * PROF_H;
+    for (let ty = 0; ty < PROF_H; ty++) {
+      const sz = Math.min(nz - 1, Math.floor((ty / PROF_H) * nz));
+      for (let tx = 0; tx < PROF_W; tx++) {
+        const sx = Math.min(nx - 1, Math.floor((tx / PROF_W) * nx));
+        const si = (sz * nx + sx) * 2;
+        const di = ((band + ty) * PROF_W + tx) * 4;
+        profileAtlasData[di] = data[si];         // keelYLocal → R
+        profileAtlasData[di + 1] = data[si + 1]; // deckYLocal → G
+        profileAtlasData[di + 3] = 1;
+      }
+    }
+    profileAtlas.needsUpdate = true;
+  };
+  // placeholder cube so the samplerCube is always bound before setSkyEnv() runs
+  // (uHasEnv gates whether it is actually sampled).
+  const dummyCube = new THREE.CubeTexture(
+    Array.from({ length: 6 }, () => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 1;
+      return c;
+    }),
+  );
+  dummyCube.needsUpdate = true;
   function padTex(arr: THREE.Texture[]): THREE.Texture[] {
     const out = arr.slice();
     while (out.length < NCASC) out.push(dummyTex);
@@ -650,11 +817,23 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uWaveB: { value: b },
       uSunDir: { value: sunDir.clone() },
       uSunColor: { value: new THREE.Color(1.0, 0.78, 0.55) },
-      uDeepColor: { value: new THREE.Color(0x0a3340) },
-      uShallowColor: { value: new THREE.Color(0x1a6a72) },
-      uSkyColor: { value: new THREE.Color(0x9fc4d4) },
+      // a DARKER teal→navy body (round-2 tune: "the water needs to be a bit darker
+      // and slightly more matte"); the (now weaker) sky reflection only adds a sheen.
+      uDeepColor: { value: new THREE.Color(0x02060e) },   // near-black navy — the "descends to black" deep end
+      uShallowColor: { value: new THREE.Color(0x07223a) }, // navy (was teal) so the body reads navy, not teal
+      uSkyColor: { value: new THREE.Color(0x9fc4d4) }, // fresnel fallback only
+      uSkyEnv: { value: dummyCube },
+      uHasEnv: { value: 0 },
+      uReflStrength: { value: 0.22 },
+      uReflClamp: { value: 1.6 },
+      // underwater visibility (depth-absorption translucency). Defaults match TUN.gfx.water;
+      // main.ts overwrites uWaterVis/uWaterClarity every frame via setWaterDepth. The veil is
+      // alpha-only now (no colour added), so there is no separate murk-tint uniform.
+      uWaterVis: { value: 2.5 },
+      uWaterClarity: { value: 0.85 },
       uFogColor: { value: new THREE.Color(0xc4d6d6) },
       uFogDensity: { value: 0.0016 },
+      uFogStart: { value: 520 }, // crystal-clear out to ~520 m, then haze builds toward the horizon
       uAmpTotal: { value: ampTotal },
       uCameraPos: { value: new THREE.Vector3() },
       uCutOn: { value: 0 },
@@ -667,11 +846,10 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uShipC: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector2(0, -1)) },
       uTrail: { value: Array.from({ length: 64 }, () => new THREE.Vector4()) },
       uProfileOn: { value: Array.from({ length: MAXVIS }, () => 0) },
-      uProfileTex0: { value: dummyTex },
-      uProfileTex1: { value: dummyTex },
-      uProfileInvRot: { value: [new THREE.Matrix3(), new THREE.Matrix3()] },
-      uProfileTrans: { value: [new THREE.Vector3(), new THREE.Vector3()] },
-      uProfileSize: { value: [new THREE.Vector2(1, 1), new THREE.Vector2(1, 1)] },
+      uProfileAtlas: { value: profileAtlas },
+      uProfileInvRot: { value: Array.from({ length: MAXVIS }, () => new THREE.Matrix3()) },
+      uProfileTrans: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector3()) },
+      uProfileSize: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector2(1, 1)) },
       // Cascade field (round 14): displacement is summed in the vertex stage, the
       // normal + foam in the fragment stage, one set of textures per band. uFftOn
       // gates every use so the null fallback (dummy textures) renders the
@@ -684,6 +862,11 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uFftOn: { value: field.active ? 1 : 0 },
       uChopScale: { value: 1 },
       uChoppiness: { value: 1 },
+      // shore shoaling land field (bound once via setLandField from the IslandField)
+      uLandTex: { value: dummyTex },
+      uLandMin: { value: new THREE.Vector2() },
+      uLandSize: { value: new THREE.Vector2(1, 1) },
+      uLandOn: { value: 0 },
       // P5 dynamic-wave interaction field (off until setDynamicField binds it).
       uDynDisp: { value: dummyTex },
       uDynOrigin: { value: new THREE.Vector2() },
@@ -741,12 +924,12 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
         }
       }
     },
-    setHullProfile(slot, tex, sizeX, sizeZ) {
-      if (slot === 0) mat.uniforms.uProfileTex0.value = tex;
-      else mat.uniforms.uProfileTex1.value = tex;
+    setHullProfile(slot, data, nx, nz, sizeX, sizeZ) {
+      stampProfile(slot, data, nx, nz);
       (mat.uniforms.uProfileSize.value as THREE.Vector2[])[slot].set(sizeX, sizeZ);
       (mat.uniforms.uProfileOn.value as number[])[slot] = 1;
     },
+
     clearSlot(slot) {
       (mat.uniforms.uShipB.value as THREE.Vector4[])[slot].set(0, 0, 0, 0); // halfL=0 → collar/bow/wash skip
       (mat.uniforms.uShipC.value as THREE.Vector2[])[slot].set(0, -1); // deck<=keel → ellipse cut skips
@@ -772,6 +955,27 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     setChop(strength, choppiness) {
       mat.uniforms.uChopScale.value = strength;
       mat.uniforms.uChoppiness.value = choppiness;
+    },
+    setSkyEnv(tex) {
+      mat.uniforms.uSkyEnv.value = tex;
+      mat.uniforms.uHasEnv.value = 1;
+    },
+    setReflStrength(strength, clamp) {
+      mat.uniforms.uReflStrength.value = strength;
+      if (clamp !== undefined) mat.uniforms.uReflClamp.value = clamp;
+    },
+    setWaterDepth(visibility, clarity) {
+      mat.uniforms.uWaterVis.value = visibility;
+      mat.uniforms.uWaterClarity.value = clarity;
+    },
+    setFogColor(color) {
+      (mat.uniforms.uFogColor.value as THREE.Color).copy(color);
+    },
+    setLandField(tex, minX, minZ, sizeX, sizeZ) {
+      mat.uniforms.uLandTex.value = tex;
+      (mat.uniforms.uLandMin.value as THREE.Vector2).set(minX, minZ);
+      (mat.uniforms.uLandSize.value as THREE.Vector2).set(sizeX, sizeZ);
+      mat.uniforms.uLandOn.value = 1;
     },
     updateCutaway(shipPos, fwdX, fwdZ, cutPlane) {
       (mat.uniforms.uShipPos.value as THREE.Vector2).set(shipPos.x, shipPos.z);

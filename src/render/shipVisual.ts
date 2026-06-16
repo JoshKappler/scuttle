@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
+import { TUN } from "../core/tunables";
+import { SUN_DIR } from "./sky";
 import {
   barrelDirLocal,
   BARREL_PIVOT_UP,
@@ -58,8 +60,9 @@ export class ShipVisual {
         t.colorSpace = THREE.SRGBColorSpace;
         t.anisotropy = 4;
       };
-      ShipVisual.deckTex = loader.load("/assets/textures/deck.jpg", setup);
-      ShipVisual.hullTex = loader.load("/assets/textures/hull.jpg", setup);
+      // relative paths so they load under file:// in the packaged EXE — see universalModel.ts
+      ShipVisual.deckTex = loader.load("assets/textures/deck.jpg", setup);
+      ShipVisual.hullTex = loader.load("assets/textures/hull.jpg", setup);
       setup(ShipVisual.deckTex);
       setup(ShipVisual.hullTex);
     }
@@ -151,6 +154,7 @@ export class ShipVisual {
     if (this.sailUniforms) {
       this.sailUniforms.uTime.value = time;
       this.sailUniforms.uFill.value = 0.35 + 0.65 * sailSet;
+      this.sailUniforms.uSailTrans.value = TUN.gfx.sail.glow; // live glow strength (sail stays opaque)
     }
     // rudder convention: sailing.rudder + = port turn → trailing edge swings
     // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
@@ -287,7 +291,7 @@ export class ShipVisual {
     this.chunkMeshes.set(key, mesh);
   }
 
-  private sailUniforms: { uTime: { value: number }; uFill: { value: number } } | null = null;
+  private sailUniforms: { uTime: { value: number }; uFill: { value: number }; uSailTrans: { value: number } } | null = null;
   private rudderPivot: THREE.Group | null = null;
   private rudderBlade: THREE.Mesh | null = null;
   private wheelSpin: THREE.Group | null = null;
@@ -325,7 +329,7 @@ export class ShipVisual {
     // dark weathered oak for every spar, carriage, rudder, ladder and wheel —
     // 0xb89878 was a pale tan that read birch next to the hull (round 9)
     const woodMat = new THREE.MeshStandardMaterial({ map: rigTex, color: 0x5a4128, roughness: 0.85 });
-    const sailTex = new THREE.TextureLoader().load("/assets/textures/sail.jpg", (t) => {
+    const sailTex = new THREE.TextureLoader().load("assets/textures/sail.jpg", (t) => {
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.colorSpace = THREE.SRGBColorSpace;
       t.repeat.set(3, 2.2);
@@ -335,15 +339,22 @@ export class ShipVisual {
     // set. SQUARE RIG: the sail hangs between two yards (top/bottom pinned by
     // sin(πv)) and bellies FORWARD along its normal — a vertical bulge, per
     // playtest ("billow out vertically, not in a horizontal curve")
-    this.sailUniforms = { uTime: { value: 0 }, uFill: { value: 1 } };
+    this.sailUniforms = { uTime: { value: 0 }, uFill: { value: 1 }, uSailTrans: { value: TUN.gfx.sail.glow } };
     const su = this.sailUniforms;
-    const injectBillow = (shader: { uniforms: Record<string, unknown>; vertexShader: string }) => {
+    // shared constants for the sail back-light: the world sun direction + a warm tint
+    // for the light transmitted through the canvas (consumed in the fragment inject below).
+    const uSunDirW = { value: SUN_DIR.clone() };
+    const uSailSun = { value: new THREE.Color(1.0, 0.84, 0.62) };
+    const injectBillow = (shader: { uniforms: Record<string, unknown>; vertexShader: string; fragmentShader: string }) => {
       shader.uniforms.uTime = su.uTime;
       shader.uniforms.uFill = su.uFill;
+      shader.uniforms.uSailTrans = su.uSailTrans;
+      shader.uniforms.uSunDirW = uSunDirW;
+      shader.uniforms.uSailSun = uSailSun;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
-          "#include <common>\nuniform float uTime;\nuniform float uFill;\nattribute float aBelly;",
+          "#include <common>\nuniform float uTime;\nuniform float uFill;\nattribute float aBelly;\nvarying vec3 vSailWN;",
         )
         .replace(
           "#include <begin_vertex>",
@@ -364,7 +375,36 @@ export class ShipVisual {
             float belly = yardPin * (0.35 + 0.65 * sin(uv.x * 3.14159)) * aBelly * uFill;
             float flutter = sin(uTime * 4.6 + uv.x * 8.0 + uv.y * 5.0) * (0.04 + aBelly * 0.03) * uFill * yardPin;
             transformed.x += belly + flutter;
-          }`,
+          }
+          // world-space cloth normal, for the back-light term in the fragment
+          vSailWN = normalize(mat3(modelMatrix) * normal);`,
+        );
+      // back-lit translucency: when the sun lights the FAR side of the thin canvas, that
+      // light "leaks" through to the side we're viewing — a sail shaded from the front
+      // glows warmly instead of going flat-dark. gl_FrontFacing picks the viewed side
+      // (DoubleSide); the amount ∝ how squarely the sun strikes the far face, tinted warm
+      // and modulated by the cloth texture so the weave still reads through the glow.
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec3 vSailWN;\nuniform vec3 uSunDirW;\nuniform vec3 uSailSun;\nuniform float uSailTrans;",
+        )
+        .replace(
+          "#include <opaque_fragment>",
+          `{
+            vec3 wnf = normalize(vSailWN);
+            if (!gl_FrontFacing) wnf = -wnf;                      // normal facing the viewer
+            float backlit = max(dot(-wnf, normalize(uSunDirW)), 0.0); // sun lighting the far side
+            // pow 0.8 (was 1.5): real backlit cloth scatters light BROADLY, so the glow
+            // should fall off gently — a tight specular lobe only lit the sail at the exact
+            // sun-dead-behind angle and read as "not there". A broad lobe glows across a
+            // wide arc of headings, so it actually shows on every ship as it sails.
+            backlit = pow(backlit, 0.8);
+            float texL = dot(diffuseColor.rgb, vec3(0.3333));
+            // ADD warm light only — the cloth itself stays fully opaque (same texture)
+            totalEmissiveRadiance += uSailSun * (uSailTrans * backlit * (0.45 + 0.55 * texL));
+          }
+          #include <opaque_fragment>`,
         );
     };
     // every sail needs its OWN material (its own puncture alphaMap), and
