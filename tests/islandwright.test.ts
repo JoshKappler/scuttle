@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildIsland, buildHarborIsland } from "../src/sim/islandwright";
+import { buildIsland, buildHarborIsland, buildSeaStack } from "../src/sim/islandwright";
 import {
   EMPTY,
   SAND,
@@ -96,5 +96,34 @@ describe("buildHarborIsland", () => {
     expect(checksum(buildHarborIsland({ seed: 5 }).grid.data)).toBe(
       checksum(buildHarborIsland({ seed: 5 }).grid.data),
     );
+  });
+});
+
+describe("buildSeaStack", () => {
+  it("is deterministic and pokes a narrow rock spire above the waterline", () => {
+    const a = buildSeaStack({ seed: 7, radiusVox: 4, peakVox: 16 });
+    const b = buildSeaStack({ seed: 7, radiusVox: 4, peakVox: 16 });
+    expect(checksum(a.grid.data)).toBe(checksum(b.grid.data));
+    const { grid, meta } = a;
+    let above = 0;
+    const mats = new Set<number>();
+    grid.forEachSolid((_x, y, _z, m) => {
+      if (y > meta.waterlineY) above++;
+      mats.add(m);
+    });
+    expect(above).toBeGreaterThan(0); // it breaches the surface
+    expect(mats.has(ROCK) || mats.has(DARKROCK)).toBe(true); // made of rock
+  });
+
+  it("is sea-ringed (open water at the grid edge columns)", () => {
+    const { grid } = buildSeaStack({ seed: 7, radiusVox: 4, peakVox: 16 });
+    const [nx, ny, nz] = grid.dims;
+    let edge = 0;
+    for (let x = 0; x < nx; x++)
+      for (let y = 0; y < ny; y++) {
+        if (grid.isSolid(x, y, 0)) edge++;
+        if (grid.isSolid(x, y, nz - 1)) edge++;
+      }
+    expect(edge).toBe(0);
   });
 });

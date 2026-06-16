@@ -378,6 +378,51 @@ export function buildIsland(o: IslandOpts): IslandModel {
   };
 }
 
+/**
+ * A lone SEA STACK / rock spire: a tall, narrow, jagged ROCK/DARKROCK pillar that juts out of open
+ * water — a thing to weave around. Same grid + waterline convention as buildIsland, so IslandField
+ * places and renders it identically; it is terrain, so the ship-vs-terrain crush (game/voxelContact.ts)
+ * erodes the SHIP against it and the spire never breaks. Deterministic (same opts → identical grid).
+ */
+export function buildSeaStack(opts: { seed: number; radiusVox: number; peakVox: number }): IslandModel {
+  const { radiusVox, peakVox } = opts;
+  const margin = 3;
+  const nx = radiusVox * 2 + margin * 2;
+  const nz = radiusVox * 2 + margin * 2;
+  const ny = SEABED_Y + peakVox + 4;
+  const grid = createGrid(nx, ny, nz);
+  const data = grid.data;
+  const nxny = nx * ny;
+
+  const rng = new Rng(`stack-${opts.seed}`);
+  const shapeN = createNoise2D(() => rng.next()); // irregular footprint
+  const heightN = createNoise2D(() => rng.next()); // jagged crown
+  const cx = nx / 2;
+  const cz = nz / 2;
+  const Fs = 1.6 / Math.max(radiusVox, 1);
+
+  for (let x = 1; x < nx - 1; x++) {
+    for (let z = 1; z < nz - 1; z++) {
+      const dx = x - cx;
+      const dz = z - cz;
+      const dist = Math.hypot(dx, dz);
+      const ang = Math.atan2(dz, dx);
+      const rEff = radiusVox * (0.55 + 0.45 * (0.5 + 0.5 * shapeN(Math.cos(ang), Math.sin(ang))));
+      if (dist > rEff) continue;
+      const taper = 1 - dist / Math.max(rEff, 1); // tall in the centre, low at the rim
+      const jag = 0.7 + 0.3 * (0.5 + 0.5 * heightN(x * Fs, z * Fs));
+      const h = Math.max(1, Math.round(peakVox * taper * jag));
+      const topY = Math.min(SEABED_Y + h, ny - 1);
+      const colBase = x + nxny * z;
+      for (let y = 0; y <= topY; y++) {
+        data[colBase + nx * y] = y >= topY - 2 ? DARKROCK : ROCK; // weathered dark crown
+      }
+    }
+  }
+
+  return { grid, meta: { waterlineY: WATERLINE_Y, radiusVox, peakVox, dock: null } };
+}
+
 /** Highest solid voxel y in a column, or -1 if the column is open water. */
 function topSolid(grid: VoxelGrid, x: number, z: number): number {
   for (let y = grid.dims[1] - 1; y >= 0; y--) if (grid.isSolid(x, y, z)) return y;
