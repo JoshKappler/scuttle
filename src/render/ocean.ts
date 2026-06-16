@@ -629,57 +629,12 @@ void main() {
     wash += sF * (0.3 + 0.7 * devel) * inHull * exp(-pow(max(edge, 0.0) / bandW, 2.0));
   }
 
-  // ALWAYS-ON waterline foam ring — the white line where the sea meets the hull skin.
-  // It USED to live inside the speed loop above (so it blinked off whenever the ship slowed
-  // or rode up a swell — speed is forced to 0 once the hull lifts nearly clear of the water).
-  // It is now independent of speed/heading and, for the player + premium enemy, traced from the
-  // VOXEL profile — the SAME per-column keel/deck height-field the in-hull cutout uses — so it
-  // hugs the true hull plan (pointed bow and all) and only appears where the hull is genuinely
-  // wet (keel at/under the local waterline). Distant non-profiled slots keep the analytic ellipse.
-  float wlFoam = 0.0;
-  // profiled slots (voxel-accurate, EVERY ship): march from the fragment toward the hull centre in
-  // the hull's local frame; the world distance to the first WET-SOLID column is the distance to the
-  // skin. Each slot reads its own band of the profile atlas (a computed coord, not a dynamic sampler
-  // index), so every ship's foam ring hugs its true plan.
-  for (int ps = 0; ps < MAXVIS; ps++) {
-    if (uProfileOn[ps] < 0.5) continue;
-    vec3 lp = uProfileInvRot[ps] * (vWorldPos - uProfileTrans[ps]);
-    vec2 sz = uProfileSize[ps];
-    vec2 fragM = lp.xz;        // fragment in the hull's local metres
-    vec2 ctrM = sz * 0.5;      // hull centre in local metres
-    if (fragM.x < -2.0 || fragM.x > sz.x + 2.0 || fragM.y < -2.0 || fragM.y > sz.y + 2.0) continue; // far away
-    vec2 dM = ctrM - fragM;
-    float dlen = length(dM);
-    vec2 dir = dlen > 1e-3 ? dM / dlen : vec2(0.0);
-    // step toward the centre in fixed ~0.45 m increments; the distance to the first WET column
-    // is the world distance to the hull skin (a crisp, plan-accurate ring, not a fat ellipse).
-    for (int k = 0; k < 5; k++) {
-      float d = 0.4 + float(k) * 0.45;  // 0.4 .. 2.2 m
-      if (d > dlen) break;              // never march past the hull centre
-      vec2 sUv = (fragM + dir * d) / sz;
-      if (sUv.x < 0.0 || sUv.x > 1.0 || sUv.y < 0.0 || sUv.y > 1.0) continue;
-      vec2 kd = texture2D(uProfileAtlas, vec2(sUv.x, (sUv.y + float(ps)) / float(MAXVIS))).rg;
-      if (kd.y > kd.x && lp.y > kd.x - 0.4 && lp.y < kd.y + 0.6) { // a wet hull column at this height
-        wlFoam = max(wlFoam, exp(-pow(d / 0.85, 2.0)));
-        break; // nearest skin along the ray
-      }
-    }
-  }
-  // non-profiled live slots (distant cheap enemies): analytic ellipse ring, also always-on.
-  for (int s3 = 0; s3 < MAXVIS; s3++) {
-    if (uProfileOn[s3] > 0.5) continue; // handled above
-    float hL3 = uShipB[s3].y;
-    if (hL3 < 0.5) continue; // unused slot
-    float hB3 = uShipB[s3].z;
-    vec2 fwd3 = uShipA[s3].zw;
-    vec2 ctr3 = uShipA[s3].xy - fwd3 * hL3;
-    vec2 rel3 = vWorldPos.xz - ctr3;
-    float al3 = dot(rel3, fwd3);
-    float ac3 = dot(rel3, vec2(-fwd3.y, fwd3.x));
-    float rr3 = sqrt((al3 / hL3) * (al3 / hL3) + (ac3 / hB3) * (ac3 / hB3));
-    wlFoam = max(wlFoam, exp(-pow((rr3 - 1.0) / 0.06, 2.0)));
-  }
-  wash += 0.7 * wlFoam;
+  // (REMOVED 2026-06-16, round 2) the ALWAYS-ON white waterline foam RING around every hull. It traced
+  // a bright white line hugging the hull-cutout edge that the player said "appears white and totally
+  // negates all of the work we did to make a nice hole cutout" — so the sea now meets the clean cut with
+  // NO ring. Cutting it also drops up to MAXVIS×5 profile-atlas texture taps + a per-slot ellipse pass
+  // PER ocean fragment (a real, free fill saving on the whole sea plane). The hull mesh fills the hole;
+  // a subtle NON-white wet darkening could be re-added later, but the player wants the hole read clean.
 
   // (REMOVED 2026-06-16) the shore surf-foam line. It drew a bright white ring in the shallow band
   // around every coast — the "white line of wake that abruptly cuts off" the waves at the island edge
