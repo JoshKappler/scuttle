@@ -51,6 +51,83 @@ function armorBow(grid: VoxelGrid, forwardFrac = 0.7): void {
   }
 }
 
+/**
+ * Evenly-spaced transverse-bulkhead stations (voxel x) for `comps` watertight holds.
+ * `comps` holds need `comps − 1` interior bulkheads, dropped at the fractional stations
+ * k/comps for k = 1..comps−1. Computed from L so the layout scales with the hull and
+ * stays maintainable (no magic offsets). Spanning the FULL beam and full height below
+ * deck (the walls themselves), they partition the below-deck air into `comps` regions
+ * ordered bow→stern — preserving the 1-D fore-aft neighbour chain that seepage rides on.
+ * (The very fore/aft taper still encloses air, so the count lands at `comps` in practice.)
+ */
+function bulkheadStations(x0: number, L: number, comps: number): number[] {
+  const xs: number[] = [];
+  for (let k = 1; k < comps; k++) xs.push(x0 + Math.round((L * k) / comps));
+  return xs;
+}
+
+/**
+ * Deck-hatch stations (voxel x) = the CENTRES of `nHatches` evenly-spread holds. Centring a
+ * hatch in its hold (between bulkheads) guarantees it lands inside a compartment's x-bbox —
+ * placing one at a fixed L-fraction can fall exactly ON a bulkhead (the boundary belongs to
+ * no hold) and silently give that ship zero flooding hatches. Spreading them keeps the
+ * deck-wash flood/drain path on a few holds (fore/mid/aft) while the rest stay sealed.
+ */
+function hatchStations(x0: number, L: number, bulkheadXs: number[], nHatches: number): number[] {
+  const bounds = [x0, ...bulkheadXs, x0 + L]; // hold k spans [bounds[k], bounds[k+1]]
+  const comps = bounds.length - 1;
+  const n = Math.min(nHatches, comps);
+  const xs: number[] = [];
+  for (let i = 0; i < n; i++) {
+    // evenly pick hold indices across the length (e.g. n=3 over 12 holds → ~fore, mid, aft)
+    const k = n === 1 ? Math.floor(comps / 2) : Math.round((i * (comps - 1)) / (n - 1));
+    xs.push(Math.round((bounds[k] + bounds[k + 1]) / 2));
+  }
+  return xs;
+}
+
+/**
+ * Stamp full-section watertight bulkheads at the given stations (OAK below deck).
+ * Shared so every hull builds bulkheads the same way — only the station COUNT differs.
+ */
+function stampBulkheads(
+  grid: VoxelGrid,
+  xs: number[],
+  deckY: number,
+  inside: (x: number, y: number, z: number) => boolean,
+): void {
+  const [, , nz] = grid.dims;
+  for (const bx of xs) {
+    for (let y = 0; y < deckY; y++) {
+      for (let z = 0; z < nz; z++) {
+        if (inside(bx, y, z) && grid.get(bx, y, z) === EMPTY) grid.set(bx, y, z, OAK);
+      }
+    }
+  }
+}
+
+/**
+ * Assign a deck-hatch flooding orifice ONLY to the compartments that actually sit under a
+ * deck hatch (one of `hatchXs`), leaving every other hold SEALED (it can only flood via a
+ * breach or slow inter-bulkhead seepage). With ~10 holds this is what keeps the ship
+ * resilient — giving every tiny compartment its own hatch would let a normal swell wash
+ * the whole hull down, defeating the point. Returns the count that received a hatch.
+ *
+ * A compartment "owns" a hatch when the hatch's x falls within its cell-space x-bbox.
+ * (`hatchArea` is the only field flooding reads; `build.hatches` is render/metadata.)
+ */
+function assignHatchAreas(compartments: Compartment[], hatchXs: number[], hatchAreaM2: number): number {
+  let n = 0;
+  for (const c of compartments) {
+    const has = hatchXs.some((hx) => hx >= c.bboxMin[0] && hx <= c.bboxMax[0]);
+    if (has) {
+      c.hatchArea = hatchAreaM2;
+      n++;
+    }
+  }
+  return n;
+}
+
 export function buildSloop(): ShipBuild {
   // a proper fighting brig: 24 m hull (playtest: the 16 m boat "looks like a
   // fishing vessel and somehow has eight cannons"), with a TALL hull —
@@ -153,15 +230,11 @@ export function buildSloop(): ShipBuild {
     }
   }
 
-  // transverse watertight bulkheads at 1/3 and 2/3 of length
-  const bulkheadXs = [x0 + Math.round(L / 3), x0 + Math.round((2 * L) / 3)];
-  for (const bx of bulkheadXs) {
-    for (let y = 0; y < deckY; y++) {
-      for (let z = 0; z < nz; z++) {
-        if (inside(bx, y, z) && grid.get(bx, y, z) === EMPTY) grid.set(bx, y, z, OAK);
-      }
-    }
-  }
+  // transverse watertight bulkheads: ~9 holds so a single breach floods one
+  // section, not the whole ship (part B of the flooding rework). Evenly spaced
+  // from L; the fore/stern taper still encloses air → COMPARTMENTS lands at ~9.
+  const bulkheadXs = bulkheadStations(x0, L, 9);
+  stampBulkheads(grid, bulkheadXs, deckY, inside);
 
   // cannon ports are decided BEFORE the rail so the fence can leave
   // embrasures for the barrels (playtest: "cannon barrels clipping directly
@@ -199,16 +272,13 @@ export function buildSloop(): ShipBuild {
     }
   }
 
-  // deck hatches: 2×2 openings over each hold (between/before/after bulkheads)
-  // hatches are GRATED: the deck cells stay solid (walkable — an open hole
-  // by the helm swallowed the captain in playtest), but each hatch is
-  // registered as a flooding path (water pours through gratings once the
-  // deck goes under the coaming)
-  const hatchXs = [
-    x0 + Math.round(L / 6),
-    x0 + Math.round(L / 2),
-    x0 + Math.round((5 * L) / 6),
-  ];
+  // deck hatches: 2×2 openings centred in three spread holds (fore/mid/aft). With ~9
+  // bulkheaded holds only these few flood/drain from the deck — the rest stay sealed,
+  // which is what makes a single-section breach survivable (part B of the flooding rework).
+  // hatches are GRATED: the deck cells stay solid (walkable — an open hole by the helm
+  // swallowed the captain in playtest), but each is a flooding path (water pours through
+  // the gratings once the deck goes under the coaming).
+  const hatchXs = hatchStations(x0, L, bulkheadXs, 3);
   const hatchZ = Math.floor(cz);
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) {
@@ -222,7 +292,9 @@ export function buildSloop(): ShipBuild {
   // compartments + leak audit
   const compartments = findCompartments(grid, deckY);
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
-  for (const c of compartments) c.hatchArea = hatchAreaM2;
+  // only the holds actually UNDER a deck hatch get a flooding orifice; the rest are sealed
+  // (resilience: with ~9 holds a normal swell mustn't wash the whole ship via every hatch).
+  assignHatchAreas(compartments, hatchXs, hatchAreaM2);
 
   // leak audit: every interior empty region below deck must be a compartment;
   // count interior-ish air cells not claimed by any compartment near the hull interior
@@ -453,15 +525,11 @@ export function buildBrig(): ShipBuild {
   // she rides at ~0.45 (a tall, reference-like freeboard) AND lowers the COM (the
   // dropped mass was the closest to it), so she stiffens rather than tips.
 
-  // transverse watertight bulkheads at 1/3 and 2/3
-  const bulkheadXs = [x0 + Math.round(L / 3), x0 + Math.round((2 * L) / 3)];
-  for (const bx of bulkheadXs) {
-    for (let y = 0; y < deckY; y++) {
-      for (let z = 0; z < nz; z++) {
-        if (inside(bx, y, z) && grid.get(bx, y, z) === EMPTY) grid.set(bx, y, z, OAK);
-      }
-    }
-  }
+  // transverse watertight bulkheads: ~10 holds (part B of the flooding rework) so a
+  // single breach floods one section. Evenly spaced from L; quarterdeck stations carry
+  // the same below-deck partition. fore/aft taper still encloses air → ~10 compartments.
+  const bulkheadXs = bulkheadStations(x0, L, 10);
+  stampBulkheads(grid, bulkheadXs, deckY, inside);
 
   // five gun ports a side along the waist, clear of the quarterdeck break.
   // Spread pulled aft (round 8: the 0.78 station rode the bow taper — "the
@@ -496,7 +564,9 @@ export function buildBrig(): ShipBuild {
   }
 
   // grated deck hatches over each hold (flooding paths, walkable)
-  const hatchXs = [x0 + Math.round(L / 6), x0 + Math.round(L / 2), x0 + Math.round((5 * L) / 6)];
+  // hatches centred in three spread holds (fore/mid/aft) so only those flood/drain from the
+  // deck; the rest of the ~10 holds stay sealed (part B of the flooding rework — resilience).
+  const hatchXs = hatchStations(x0, L, bulkheadXs, 3);
   const hatchZ = Math.floor(cz);
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
@@ -506,7 +576,8 @@ export function buildBrig(): ShipBuild {
 
   const compartments = findCompartments(grid, deckY);
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
-  for (const c of compartments) c.hatchArea = hatchAreaM2;
+  // only holds under a deck hatch flood from the deck; the rest stay sealed (resilience).
+  assignHatchAreas(compartments, hatchXs, hatchAreaM2);
 
   const claimed = new Set<number>();
   for (const c of compartments) for (const cell of c.cells) claimed.add(cell);
@@ -658,14 +729,11 @@ export function buildCutter(): ShipBuild {
     }
   }
 
-  const bulkheadXs = [x0 + Math.round(L / 3), x0 + Math.round((2 * L) / 3)];
-  for (const bx of bulkheadXs) {
-    for (let y = 0; y < deckY; y++) {
-      for (let z = 0; z < nz; z++) {
-        if (inside(bx, y, z) && grid.get(bx, y, z) === EMPTY) grid.set(bx, y, z, OAK);
-      }
-    }
-  }
+  // transverse watertight bulkheads: ~8 holds — fewer than the bigger hulls since the
+  // little cutter (L=76) shouldn't be absurdly chopped, but enough that a single breach
+  // floods one section, not the whole boat (part B of the flooding rework).
+  const bulkheadXs = bulkheadStations(x0, L, 8);
+  stampBulkheads(grid, bulkheadXs, deckY, inside);
 
   // two guns a side
   const portXs = [0.4, 0.62].map((f) => x0 + Math.round(L * f));
@@ -689,7 +757,9 @@ export function buildCutter(): ShipBuild {
     }
   }
 
-  const hatchXs = [x0 + Math.round(L / 4), x0 + Math.round((3 * L) / 4)];
+  // two hatches centred in a fore and an aft hold so a couple of holds flood/drain from the
+  // deck; the rest of the ~8 stay sealed (part B of the flooding rework — resilience).
+  const hatchXs = hatchStations(x0, L, bulkheadXs, 2);
   const hatchZ = Math.floor(cz);
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
@@ -698,7 +768,8 @@ export function buildCutter(): ShipBuild {
 
   const compartments = findCompartments(grid, deckY);
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
-  for (const c of compartments) c.hatchArea = hatchAreaM2;
+  // only holds under a deck hatch flood from the deck; the rest stay sealed (resilience).
+  assignHatchAreas(compartments, hatchXs, hatchAreaM2);
 
   const claimed = new Set<number>();
   for (const c of compartments) for (const cell of c.cells) claimed.add(cell);
@@ -883,14 +954,11 @@ export function buildFrigate(): ShipBuild {
     }
   }
 
-  const bulkheadXs = [x0 + Math.round(L / 3), x0 + Math.round((2 * L) / 3)];
-  for (const bx of bulkheadXs) {
-    for (let y = 0; y < deckY; y++) {
-      for (let z = 0; z < nz; z++) {
-        if (inside(bx, y, z) && grid.get(bx, y, z) === EMPTY) grid.set(bx, y, z, OAK);
-      }
-    }
-  }
+  // transverse watertight bulkheads: ~11 holds on this long hull (part B of the flooding
+  // rework) so a single breach floods one section. Evenly spaced from L; the deep fore/aft
+  // taper still encloses air → ~11 compartments.
+  const bulkheadXs = bulkheadStations(x0, L, 11);
+  stampBulkheads(grid, bulkheadXs, deckY, inside);
 
   // six guns a side along the waist
   const portXs = [0.3, 0.39, 0.48, 0.57, 0.66, 0.75].map((f) => x0 + Math.round(L * f));
@@ -917,7 +985,9 @@ export function buildFrigate(): ShipBuild {
     }
   }
 
-  const hatchXs = [x0 + Math.round(L / 6), x0 + Math.round(L / 2), x0 + Math.round((5 * L) / 6)];
+  // hatches centred in three spread holds (fore/mid/aft) so only those flood/drain from the
+  // deck; the rest of the ~10 holds stay sealed (part B of the flooding rework — resilience).
+  const hatchXs = hatchStations(x0, L, bulkheadXs, 3);
   const hatchZ = Math.floor(cz);
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
@@ -926,7 +996,8 @@ export function buildFrigate(): ShipBuild {
 
   const compartments = findCompartments(grid, deckY);
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
-  for (const c of compartments) c.hatchArea = hatchAreaM2;
+  // only holds under a deck hatch flood from the deck; the rest stay sealed (resilience).
+  assignHatchAreas(compartments, hatchXs, hatchAreaM2);
 
   const claimed = new Set<number>();
   for (const c of compartments) for (const cell of c.cells) claimed.add(cell);
@@ -1117,15 +1188,10 @@ export function buildManOfWar(): ShipBuild {
     }
   }
 
-  // transverse watertight bulkheads at 1/4, 1/2, 3/4 (a longer hull → an extra one)
-  const bulkheadXs = [x0 + Math.round(L / 4), x0 + Math.round(L / 2), x0 + Math.round((3 * L) / 4)];
-  for (const bx of bulkheadXs) {
-    for (let y = 0; y < deckY; y++) {
-      for (let z = 0; z < nz; z++) {
-        if (inside(bx, y, z) && grid.get(bx, y, z) === EMPTY) grid.set(bx, y, z, OAK);
-      }
-    }
-  }
+  // transverse watertight bulkheads: ~12 holds on this first-rate (part B of the flooding
+  // rework) so a single breach floods one section, not the whole ship. Evenly spaced from L.
+  const bulkheadXs = bulkheadStations(x0, L, 12);
+  stampBulkheads(grid, bulkheadXs, deckY, inside);
 
   // ---- gun decks: three broadside tiers + axial chasers ----
   // lower & middle decks fire through framed ports in the side shell (the shell
@@ -1160,7 +1226,9 @@ export function buildManOfWar(): ShipBuild {
   }
 
   // grated deck hatches over the holds (flooding paths, walkable)
-  const hatchXs = [x0 + Math.round(L / 6), x0 + Math.round(L / 2), x0 + Math.round((5 * L) / 6)];
+  // hatches centred in three spread holds (fore/mid/aft) so only those flood/drain from the
+  // deck; the rest of the ~10 holds stay sealed (part B of the flooding rework — resilience).
+  const hatchXs = hatchStations(x0, L, bulkheadXs, 3);
   const hatchZ = Math.floor(cz);
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
@@ -1170,7 +1238,8 @@ export function buildManOfWar(): ShipBuild {
 
   const compartments = findCompartments(grid, deckY);
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
-  for (const c of compartments) c.hatchArea = hatchAreaM2;
+  // only holds under a deck hatch flood from the deck; the rest stay sealed (resilience).
+  assignHatchAreas(compartments, hatchXs, hatchAreaM2);
 
   const claimed = new Set<number>();
   for (const c of compartments) for (const cell of c.cells) claimed.add(cell);

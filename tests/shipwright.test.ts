@@ -56,8 +56,15 @@ describe("shipwright sloop", () => {
     expect(maxWaterlogLoss).toBeGreaterThan(residual * 1.5); // healthy margin
   });
 
-  it("has exactly three watertight compartments", () => {
-    expect(findCompartments(ship.grid, ship.deckY).length).toBe(3);
+  it("has ~9 watertight compartments (more bulkheads = a single breach floods one section)", () => {
+    const comps = findCompartments(ship.grid, ship.deckY);
+    expect(comps.length).toBe(9);
+    // bow→stern invariant: dense ids 0..N-1, centroid-x strictly ascending (each adjacent
+    // pair is a real fore-aft neighbour — what equalizeFlooding seepage relies on).
+    comps.forEach((c, i) => expect(c.id).toBe(i));
+    for (let i = 1; i < comps.length; i++) {
+      expect(comps[i].centroid[0]).toBeGreaterThan(comps[i - 1].centroid[0]);
+    }
   });
 
   it("hull shell is watertight below deck", () => {

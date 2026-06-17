@@ -93,8 +93,15 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
     expect(sternRam).toBe(0);
   });
 
-  it("subdivides the hold into watertight compartments, three masts, three hatches", () => {
-    expect(findCompartments(ship.grid, ship.deckY).length).toBeGreaterThanOrEqual(3);
+  it("subdivides the hold into ~12 watertight compartments, three masts, three hatches", () => {
+    const comps = findCompartments(ship.grid, ship.deckY);
+    // many transverse bulkheads → a single breach floods one section, not the whole ship.
+    expect(comps.length).toBeGreaterThanOrEqual(10);
+    // bow→stern invariant: dense ids, ascending centroid-x (real fore-aft neighbours for seepage).
+    comps.forEach((c, i) => expect(c.id).toBe(i));
+    for (let i = 1; i < comps.length; i++) {
+      expect(comps[i].centroid[0]).toBeGreaterThan(comps[i - 1].centroid[0]);
+    }
     expect(ship.hatches.length).toBe(3);
     expect(ship.masts.length).toBe(3);
   });
