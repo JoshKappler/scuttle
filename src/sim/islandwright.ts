@@ -454,7 +454,7 @@ export function buildHarborIsland(opts: { seed: number; radiusVox?: number; peak
     peakVox,
     ruggedness: 0.5,
     landBias: 0.5, // solid landmass for the town
-    marginVox: 36, // wide water ring so the pier reaches the sea
+    marginVox: 130, // VERY wide water ring so the long pier reaches the open sea
   });
   const { grid, meta } = model;
   const [nx, ny, nz] = grid.dims;
@@ -482,14 +482,15 @@ export function buildHarborIsland(opts: { seed: number; radiusVox?: number; peak
     anchorX = Math.floor(nx * 0.62);
     anchorZ = cz0;
   }
-  anchorX = Math.max(4, anchorX - 14); // sit the bench on land, not half in the sea
+  anchorX = Math.max(4, anchorX - 30); // sit the bigger bench on land, not half in the sea
 
   // 2. level an IRREGULAR coastal bench: noise-warped radius + height cap (excludes
-  //    higher ground so the edge follows the coast — not a clean disc)
+  //    higher ground so the edge follows the coast — not a clean disc). Scaled ~3× from
+  //    the old 26-vox town so the dock + buildings read to scale against a ~34 m ship.
   const benchRng = new Rng(`bench-${opts.seed}`);
   const benchN = createNoise2D(() => benchRng.next());
-  const townR = 26;
-  const maxRise = 7;
+  const townR = 88; // big enough to seat the scaled-up (34–52 m) buildings with room to spread
+  const maxRise = 9;
   for (let x = anchorX - townR; x <= anchorX + townR; x++)
     for (let z = anchorZ - townR; z <= anchorZ + townR; z++) {
       if (x < 2 || z < 2 || x >= nx - 2 || z >= nz - 2) continue;
@@ -509,47 +510,71 @@ export function buildHarborIsland(opts: { seed: number; radiusVox?: number; peak
       }
     }
 
-  // 3. pier from the bench's seaward edge, out over the water, on visible pylons
+  // 2b. clear ALL trees from the town footprint — scatterPalms() ran in buildIsland() before the
+  //     town existed, so palms/bushes (incl. canopy overhanging from trees rooted just outside the
+  //     bench) can land where buildings go. Strip PALMWOOD + FOLIAGE within townR (+canopy reach)
+  //     of the anchor so nothing clips through / stands in front of the buildings.
+  const clearR = townR + 6; // covers every building lot (corners ≈ townR) + the ±3 palm canopy reach
+  for (let x = anchorX - clearR; x <= anchorX + clearR; x++)
+    for (let z = anchorZ - clearR; z <= anchorZ + clearR; z++) {
+      if (x < 1 || z < 1 || x >= nx - 1 || z >= nz - 1) continue;
+      if (Math.hypot(x - anchorX, z - anchorZ) > clearR) continue;
+      const colBase = x + nxny * z;
+      for (let y = 0; y < ny; y++) {
+        const i = colBase + nx * y;
+        if (data[i] === PALMWOOD || data[i] === FOLIAGE) data[i] = 0;
+      }
+    }
+
+  // 3. a long, wide pier from the bench's seaward edge, out over the water, on visible pylons.
+  //    Width 13 cells (half 6) and length ~120 cells so a Man-o'-War (~34 m) berths against
+  //    a dock several times her length — not the old 5×29 stub.
   const pierZ = anchorZ;
+  const pierHalf = 6; // 13-cell-wide deck
+  const pierLen = 130; // capped below by the open-water runway to the grid edge (nx-3)
   let pierStart = anchorX;
   for (let x = anchorX; x <= anchorX + townR + 2; x++)
     if (top(x, pierZ) === shelfY) pierStart = x;
-  const pierEnd = Math.min(pierStart + 44, nx - 3);
+  const pierEnd = Math.min(pierStart + pierLen, nx - 3);
+  const postOffsets: number[] = [-pierHalf, -pierHalf >> 1, 0, pierHalf >> 1, pierHalf]; // rails, quarters, centre
   for (let x = pierStart; x <= pierEnd; x++) {
-    for (let dz = -2; dz <= 2; dz++) {
+    for (let dz = -pierHalf; dz <= pierHalf; dz++) {
       const z = clampZ(pierZ + dz, nz);
       for (let y = shelfY + 1; y < ny; y++) grid.remove(x, y, z);
       grid.set(x, shelfY, z, PINE); // deck
     }
-    // support bents every 3 cells: posts (rails + centre) to the seabed + a tie-beam
-    if (x % 3 === 0) {
+    // support bents every 4 cells: posts (rails/quarters/centre) to the seabed + a tie-beam
+    if (x % 4 === 0) {
       let overWater = false;
-      for (const dz of [-2, 0, 2]) {
+      for (const dz of postOffsets) {
         const z = clampZ(pierZ + dz, nz);
         if (grid.get(x, shelfY - 1, z) === EMPTY) {
           overWater = true;
           for (let y = SEABED_Y; y < shelfY; y++) grid.set(x, y, z, OAK); // pylon
         }
       }
-      if (overWater) for (let dz = -2; dz <= 2; dz++) grid.set(x, shelfY - 1, clampZ(pierZ + dz, nz), OAK); // tie-beam
+      if (overWater)
+        for (let dz = -pierHalf; dz <= pierHalf; dz++) grid.set(x, shelfY - 1, clampZ(pierZ + dz, nz), OAK); // tie-beam
     }
   }
   meta.dock = { x: pierEnd, y: shelfY, z: pierZ, bearing: 0 };
 
-  // 4. buildings around the bench (inland of the pier), then the lighthouse landmark
+  // 4. buildings around the bigger bench (inland of the pier), then the lighthouse landmark.
+  //    Lots scaled ~3× in footprint and ~1.9× in height off the old town, and spread out
+  //    so the layout stays coherent on the larger bench.
   const rng = new Rng(`town-${opts.seed}`);
   const lots: BuildingLot[] = [
-    { x: anchorX - 24, z: anchorZ - 13, w: 18, d: 14, h: 13, kind: "tavern" },
-    { x: anchorX - 11, z: anchorZ - 21, w: 13, d: 12, h: 10, kind: "house" },
-    { x: anchorX - 26, z: anchorZ + 7, w: 12, d: 12, h: 10, kind: "house" },
-    { x: anchorX - 8, z: anchorZ + 18, w: 11, d: 10, h: 9, kind: "house" },
-    { x: anchorX - 20, z: anchorZ + 2, w: 10, d: 9, h: 9, kind: "house" },
+    { x: anchorX - 72, z: anchorZ - 23, w: 52, d: 34, h: 24, kind: "tavern" },
+    { x: anchorX - 52, z: anchorZ - 61, w: 36, d: 30, h: 18, kind: "house" },
+    { x: anchorX - 75, z: anchorZ + 10, w: 34, d: 32, h: 18, kind: "house" },
+    { x: anchorX - 44, z: anchorZ + 36, w: 32, d: 28, h: 17, kind: "house" },
+    { x: anchorX - 65, z: anchorZ - 15, w: 30, d: 26, h: 17, kind: "house" },
   ];
   for (const lot of lots) {
     if (grid.get(lot.x + (lot.w >> 1), shelfY, lot.z + (lot.d >> 1)) === EMPTY) continue; // off the bench
     stampBuilding(grid, lot, shelfY, rng);
   }
-  stampLighthouse(grid, pierStart - 4, anchorZ + 11, shelfY, 26);
+  stampLighthouse(grid, pierStart - 12, anchorZ + 32, shelfY, 46);
 
   return model;
 }
@@ -565,13 +590,22 @@ interface BuildingLot {
 
 /**
  * A timber pirate-town building: PINE walls with OAK corner posts and an OAK
- * sill/top-plate, a framed doorway and shuttered windows, and a pitched terracotta
- * roof that OVERHANGS the walls by a cell. Per-building Rng variation (roof gable
- * direction, chimney, tavern porch) keeps the town from reading as a row of cubes.
+ * sill/top-plate, a real framed OAK doorway with a darker leaf, shuttered windows,
+ * and a SOLID pitched terracotta roof (a watertight surface — no open top or open
+ * flat end-faces: the slopes meet at a closed ridge and the triangular gable ends
+ * are walled in). Per-building Rng variation (chimney, tavern porch) keeps the town
+ * from reading as a row of cubes.
  */
 function stampBuilding(grid: VoxelGrid, lot: BuildingLot, floorY: number, rng: Rng): void {
   const { x: x0, z: z0, w, d, h } = lot;
   const set = (x: number, y: number, z: number, m: number): void => grid.set(x0 + x, floorY + y, z0 + z, m);
+
+  // street-facing doorway, scaled to the building (centred on the −z wall, dz===0)
+  const doorH = Math.min(h - 1, Math.max(4, Math.round(h * 0.45))); // a real, tall opening
+  const doorHalf = Math.max(1, Math.round(w * 0.06)); // ~2..4 cells wide either side of centre
+  const doorCx = w >> 1;
+  const isDoorOpening = (dx: number, dy: number): boolean =>
+    Math.abs(dx - doorCx) <= doorHalf && dy >= 1 && dy <= doorH;
 
   // floor + walls
   for (let dx = 0; dx < w; dx++)
@@ -582,32 +616,59 @@ function stampBuilding(grid: VoxelGrid, lot: BuildingLot, floorY: number, rng: R
         if (!edge) continue;
         const corner = (dx === 0 || dx === w - 1) && (dz === 0 || dz === d - 1);
         const sillOrPlate = dy === 1 || dy === h; // OAK timber frame top & bottom
-        const isDoor = dz === 0 && Math.abs(dx - (w >> 1)) <= 1 && dy <= 3;
+        const door = dz === 0 && !corner && isDoorOpening(dx, dy); // leave the doorway clear (incl. the sill row)
         const isWindow =
-          !corner && !sillOrPlate && dy >= 3 && dy <= h - 2 && dy % 3 === 0 && (dx % 3 === 1 || dz % 3 === 1);
-        if (isDoor || isWindow) continue;
+          !corner && !sillOrPlate && !(dz === 0 && Math.abs(dx - doorCx) <= doorHalf + 2) && // keep windows off the door
+          dy >= 3 && dy <= h - 2 && dy % 3 === 0 && (dx % 3 === 1 || dz % 3 === 1);
+        if (door || isWindow) continue;
         set(dx, dy, dz, corner || sillOrPlate ? OAK : PINE);
       }
     }
 
-  // pitched, OVERHANGING terracotta roof — gable along the longer axis
+  // a real DOOR in that opening: an OAK frame (jambs + lintel) around a darker leaf,
+  // standing on the floor — so it reads as a closed door, not an empty hole.
+  for (let dy = 1; dy <= doorH + 1; dy++)
+    for (let dx = doorCx - doorHalf - 1; dx <= doorCx + doorHalf + 1; dx++) {
+      if (dx <= 0 || dx >= w - 1) continue; // stay clear of the corner posts
+      const jamb = dx === doorCx - doorHalf - 1 || dx === doorCx + doorHalf + 1;
+      const lintel = dy === doorH + 1;
+      if (jamb || lintel) set(dx, dy, 0, OAK); // frame
+      else if (dy <= doorH) set(dx, dy, 0, DARKROCK); // dark door leaf, floor to lintel
+    }
+
+  // SOLID pitched, OVERHANGING terracotta roof — gable along the longer axis so the
+  // slopes climb across the SHORTER span (lower, hipped-looking roof). Each plan
+  // column gets ONE roof voxel whose height = its distance from the nearer eave, so
+  // the surface is watertight and the ridge is ALWAYS laid (even AND odd spans).
   const gableAlongX = w >= d;
   const span = gableAlongX ? d : w; // the axis the slopes climb across
   const peakRows = Math.ceil(span / 2);
-  for (let r = 0; r <= peakRows; r++) {
-    const ry = h + 1 + r;
-    const lo = r - 1; // -1 → one-cell eave overhang past the wall
-    if (gableAlongX) {
-      for (let dx = -1; dx <= w; dx++) {
-        if (r === peakRows && span % 2 === 0) continue;
-        set(dx, ry, lo, ROOFTILE);
-        set(dx, ry, d - 1 - lo, ROOFTILE);
+  // roof row (rise above the wall top) for a cross-position c, allowing the −1..span overhang
+  const roofRow = (c: number): number => Math.min(Math.min(c + 1, span - c), peakRows);
+  if (gableAlongX) {
+    for (let dx = -1; dx <= w; dx++)
+      for (let dz = -1; dz <= d; dz++) set(dx, h + 1 + roofRow(dz), dz, ROOFTILE);
+  } else {
+    for (let dz = -1; dz <= d; dz++)
+      for (let dx = -1; dx <= w; dx++) set(dx, h + 1 + roofRow(dx), dz, ROOFTILE);
+  }
+
+  // GABLE-END infill: wall in the two triangular end faces under the slope so the flat
+  // (non-sloped) ends are closed. Fill from the wall top up to just below the roof tile.
+  if (gableAlongX) {
+    for (let dz = 0; dz < d; dz++) {
+      const top = h + roofRow(dz); // last solid row beneath the roof tile (h+1+roofRow)
+      for (let dy = h + 1; dy <= top; dy++) {
+        set(0, dy, dz, PINE);
+        set(w - 1, dy, dz, PINE);
       }
-    } else {
-      for (let dz = -1; dz <= d; dz++) {
-        if (r === peakRows && span % 2 === 0) continue;
-        set(lo, ry, dz, ROOFTILE);
-        set(w - 1 - lo, ry, dz, ROOFTILE);
+    }
+  } else {
+    for (let dx = 0; dx < w; dx++) {
+      const top = h + roofRow(dx);
+      for (let dy = h + 1; dy <= top; dy++) {
+        set(dx, dy, 0, PINE);
+        set(dx, dy, d - 1, PINE);
       }
     }
   }
@@ -619,16 +680,18 @@ function stampBuilding(grid: VoxelGrid, lot: BuildingLot, floorY: number, rng: R
     for (let dy = h - 1; dy <= h + peakRows + 2; dy++) set(cxp, dy, czp, DARKROCK);
   }
 
-  // a porch for the tavern: a few posts + a small lean-to roof over the doorway
+  // a porch for the tavern: posts + a small lean-to roof over the doorway, scaled to the door
   if (lot.kind === "tavern") {
-    const px = w >> 1;
-    for (const ox of [-1, 1]) {
+    const px = doorCx;
+    const reach = doorHalf + 1;
+    const porchY = Math.min(doorH + 1, h - 1);
+    for (const ox of [-reach, reach]) {
       grid.set(x0 + px + ox, floorY + 1, z0 - 2, OAK);
-      grid.set(x0 + px + ox, floorY + 2, z0 - 2, OAK);
+      for (let dy = 2; dy <= porchY; dy++) grid.set(x0 + px + ox, floorY + dy, z0 - 2, OAK);
     }
-    for (let dx = -1; dx <= 1; dx++) {
-      grid.set(x0 + px + dx, floorY + 3, z0 - 2, ROOFTILE);
-      grid.set(x0 + px + dx, floorY + 3, z0 - 1, ROOFTILE);
+    for (let dx = -reach; dx <= reach; dx++) {
+      grid.set(x0 + px + dx, floorY + porchY + 1, z0 - 2, ROOFTILE);
+      grid.set(x0 + px + dx, floorY + porchY + 1, z0 - 1, ROOFTILE);
     }
   }
 }
@@ -636,19 +699,21 @@ function stampBuilding(grid: VoxelGrid, lot: BuildingLot, floorY: number, rng: R
 /** A square watch-tower / lighthouse: a tall ROCK+OAK+PINE shaft with a railed
  *  lantern room and a terracotta cap — the harbor's landmark (refs: dock tower). */
 function stampLighthouse(grid: VoxelGrid, x0: number, z0: number, baseY: number, h: number): void {
-  const s = 5; // footprint side
+  const s = 9; // footprint side (scaled up with the town)
+  const rockBase = Math.max(3, Math.round(h * 0.18)); // stone plinth height
+  const capRows = Math.floor(s / 2); // pyramidal terracotta cap
   for (let dy = 1; dy <= h; dy++) {
     for (let dx = 0; dx < s; dx++)
       for (let dz = 0; dz < s; dz++) {
         const edge = dx === 0 || dx === s - 1 || dz === 0 || dz === s - 1;
         if (!edge) continue;
         const corner = (dx === 0 || dx === s - 1) && (dz === 0 || dz === s - 1);
-        const lantern = dy > h - 3 && !corner && dy !== h - 2; // open railing near the top
+        const lantern = dy > h - 4 && !corner && dy !== h - 3; // open railing near the top
         if (lantern) continue;
-        grid.set(x0 + dx, baseY + dy, z0 + dz, dy <= 3 ? ROCK : corner ? OAK : PINE);
+        grid.set(x0 + dx, baseY + dy, z0 + dz, dy <= rockBase ? ROCK : corner ? OAK : PINE);
       }
   }
-  for (let r = 0; r <= 2; r++) {
+  for (let r = 0; r <= capRows; r++) {
     const ry = baseY + h + 1 + r;
     for (let dx = r; dx < s - r; dx++)
       for (let dz = r; dz < s - r; dz++) grid.set(x0 + dx, ry, z0 + dz, ROOFTILE);
