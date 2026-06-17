@@ -19,10 +19,11 @@ export function windGain(intensity: number): number {
   return Math.min(1, 1 - Math.exp(-0.6 * x));
 }
 
-/** Which music track id plays in each game phase. */
+/** Which music track id plays in each game phase. "" = no music (at sea is ambience-only —
+ *  wind + ocean carry it; a scored track over open-water sailing fought the soundscape). */
 export function musicTrackForState(state: MusicState): string {
   switch (state) {
-    case "playing": return "sea_ambient";
+    case "playing": return "";
     case "port": return "harbor";
     case "menu":
     case "paused":

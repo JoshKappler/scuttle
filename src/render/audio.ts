@@ -23,27 +23,38 @@ interface PlayOpts {
 }
 
 const BASE = "assets/audio/";
-const MANIFEST: Record<string, string> = {
-  cannon: "sfx/cannon.wav",
-  impact_wood: "sfx/impact_wood.wav",
-  impact_thud: "sfx/impact_thud.wav",
-  crunch: "sfx/crunch.wav",
-  sink: "sfx/sink.wav",
-  coins: "sfx/coins.wav",
-  splash: "sfx/splash.wav",
-  gull: "sfx/gull.wav",
-  creak: "sfx/creak.wav",
-  rope: "sfx/rope.wav",
-  ui_click: "sfx/ui_click.wav",
-  ui_confirm: "sfx/ui_confirm.wav",
-  ui_buy: "sfx/ui_buy.wav",
-  port_open: "sfx/port_open.wav",
-  ship_ready: "sfx/ship_ready.wav",
-  ocean_loop: "ambient/ocean_loop.wav",
-  wind_loop: "ambient/wind_loop.wav",
-  menu_theme: "music/menu_theme.wav",
-  sea_ambient: "music/sea_ambient.wav",
-  harbor: "music/harbor.wav",
+// An id maps to ONE file or an ARRAY of interchangeable takes. When it's an array, playAt/playUi pick
+// a random take (never the same one twice running) — so a broadside or a string of cannon hits varies
+// shot to shot instead of the same canned clip. The four real wood-cracks cover ALL damage (a ball
+// boring the hull, a hull grinding another), so impact + crunch share that pool. Shared paths decode
+// once (the loader dedupes by path). Drop-in convention + provenance: public/assets/audio/README.md.
+const WOOD_CRACKS = [
+  "sfx/wood_crack_1.ogg",
+  "sfx/wood_crack_2.ogg",
+  "sfx/wood_crack_3.ogg",
+  "sfx/wood_crack_4.ogg",
+];
+const MANIFEST: Record<string, string | string[]> = {
+  cannon: ["sfx/cannon_1.ogg", "sfx/cannon_2.ogg", "sfx/cannon_3.ogg", "sfx/cannon_4.ogg"],
+  impact_wood: WOOD_CRACKS,
+  impact_thud: WOOD_CRACKS,
+  crunch: WOOD_CRACKS,
+  sink: "sfx/sink.wav", // still a procedural placeholder (no real recording dropped in yet)
+  coins: "sfx/coins.ogg",
+  splash: "sfx/splash.wav", // unused
+  gull: "sfx/gull.wav", // MUTED placeholder (no real recording yet) — see PLACEHOLDER_MUTED
+  creak: "sfx/creak.ogg",
+  rope: ["sfx/rope_1.ogg", "sfx/rope_2.ogg", "sfx/rope_3.ogg"],
+  ui_click: "sfx/ui_click.mp3",
+  ui_confirm: "sfx/ui_confirm.wav", // placeholder
+  ui_buy: "sfx/ui_buy.mp3",
+  port_open: "sfx/port_open.ogg",
+  ship_ready: "sfx/ship_ready.wav", // placeholder
+  ocean_loop: "ambient/ocean_loop.ogg",
+  wind_loop: "ambient/wind_loop.ogg",
+  menu_theme: "music/menu_theme.ogg",
+  sea_ambient: "music/sea_ambient.wav", // unused — at sea is ambience-only (no music track)
+  harbor: "music/harbor.ogg",
 };
 
 const POS_VOICES = 16;
@@ -52,16 +63,16 @@ const MUSIC_GAIN = 0.4;
 const OCEAN_GAIN = 0.28;
 const WIND_BASE = 0.4;
 
-// Procedural placeholders that read poorly in play-test (the synthetic "seagull" was ungodly;
-// the noise-based "creak"/"rope" came across as bubbling on rudder/tilt). They stay MUTED until a
-// real recording is dropped into public/assets/audio/ — DELETE an id here the moment its real file
-// lands and it springs back to life (the trigger logic in main.ts is untouched). See that README.
-const PLACEHOLDER_MUTED = new Set<string>(["gull", "creak", "rope"]);
+// Placeholders still awaiting a real recording that sound worse than silence stay MUTED — the
+// synthetic seagull was unpleasant, so `gull` waits. (creak + rope now have real files and play.)
+// DELETE an id here the moment its real file lands; the trigger logic in main.ts is untouched.
+const PLACEHOLDER_MUTED = new Set<string>(["gull"]);
 
 export class AudioManager {
   readonly listener: THREE.AudioListener;
   private ctx: AudioContext;
-  private buffers = new Map<string, AudioBuffer>();
+  private buffers = new Map<string, AudioBuffer[]>(); // id -> one or more interchangeable takes
+  private lastTake = new Map<string, number>(); // last variant played per id (avoid back-to-back repeats)
   private loader = new THREE.AudioLoader();
   private posVoices: THREE.PositionalAudio[] = [];
   private posBusy: number[] = [];
@@ -113,25 +124,48 @@ export class AudioManager {
     this.ready = this.loadAll();
   }
 
-  private loadOne(id: string, path: string): Promise<void> {
-    return new Promise((res) => {
-      this.loader.load(
-        BASE + path,
-        (buf) => {
-          this.buffers.set(id, buf);
-          res();
-        },
-        undefined,
-        () => {
-          console.warn("[audio] failed to load", id, BASE + path);
-          res();
-        },
-      );
-    });
+  private loadPath(path: string, cache: Map<string, Promise<AudioBuffer | null>>): Promise<AudioBuffer | null> {
+    let pr = cache.get(path);
+    if (!pr) {
+      pr = new Promise((res) => {
+        this.loader.load(
+          BASE + path,
+          (buf) => res(buf),
+          undefined,
+          () => {
+            console.warn("[audio] failed to load", BASE + path);
+            res(null);
+          },
+        );
+      });
+      cache.set(path, pr);
+    }
+    return pr;
   }
 
-  private loadAll(): Promise<void> {
-    return Promise.all(Object.entries(MANIFEST).map(([id, p]) => this.loadOne(id, p))).then(() => {});
+  private async loadAll(): Promise<void> {
+    const cache = new Map<string, Promise<AudioBuffer | null>>(); // a shared path decodes once
+    await Promise.all(
+      Object.entries(MANIFEST).map(async ([id, val]) => {
+        const paths = Array.isArray(val) ? val : [val];
+        const bufs = (await Promise.all(paths.map((p) => this.loadPath(p, cache)))).filter(
+          (b): b is AudioBuffer => b !== null,
+        );
+        if (bufs.length) this.buffers.set(id, bufs);
+      }),
+    );
+  }
+
+  /** One take for `id`: the only one, or a random variant that isn't the one we just played. */
+  private pickTake(id: string): AudioBuffer | null {
+    const arr = this.buffers.get(id);
+    if (!arr || arr.length === 0) return null;
+    if (arr.length === 1) return arr[0];
+    const last = this.lastTake.get(id) ?? -1;
+    let i = Math.floor(Math.random() * arr.length);
+    if (i === last) i = (i + 1) % arr.length;
+    this.lastTake.set(id, i);
+    return arr[i];
   }
 
   /** Unlock Web Audio (browsers start the context suspended until a user gesture). */
@@ -146,7 +180,7 @@ export class AudioManager {
   /** Pooled positional one-shot at a world point. */
   playAt(id: string, pos: Vec, opts: PlayOpts = {}): void {
     if (PLACEHOLDER_MUTED.has(id)) return; // muted bad placeholder — re-enabled by deleting it from the set
-    const buf = this.buffers.get(id);
+    const buf = this.pickTake(id);
     if (!buf) return;
     const now = this.ctx.currentTime;
     const i = pickVoiceIndex(this.posBusy, now);
@@ -164,7 +198,8 @@ export class AudioManager {
 
   /** Pooled non-positional one-shot (UI / off-screen cues). */
   playUi(id: string, opts: PlayOpts = {}): void {
-    const buf = this.buffers.get(id);
+    if (PLACEHOLDER_MUTED.has(id)) return;
+    const buf = this.pickTake(id);
     if (!buf) return;
     const now = this.ctx.currentTime;
     const i = pickVoiceIndex(this.uiBusy, now);
@@ -181,7 +216,7 @@ export class AudioManager {
   ambient(which: "ocean" | "wind", on: boolean, gain?: number): void {
     const v = which === "ocean" ? this.ocean : this.wind;
     const id = which === "ocean" ? "ocean_loop" : "wind_loop";
-    const buf = this.buffers.get(id);
+    const buf = this.buffers.get(id)?.[0];
     if (!buf) return;
     if (on) {
       if (!v.buffer) {
@@ -201,13 +236,24 @@ export class AudioManager {
     this.wind.setVolume(windGain(intensity) * WIND_BASE);
   }
 
-  /** Crossfade the music to the track for `state` (no-op if already on it). */
+  /** Crossfade the music to the track for `state` (no-op if already on it). An empty track id
+   *  (at sea — no music, just ambience) fades the current track out and leaves it silent. */
   music(state: MusicState): void {
     const track = musicTrackForState(state);
     if (track === this.currentTrack) return;
-    const buf = this.buffers.get(track);
-    if (!buf) return;
     const now = this.ctx.currentTime;
+    if (track === "") {
+      const out = this.musicVoices[this.activeMusic];
+      if (out.isPlaying) {
+        out.gain.gain.cancelScheduledValues(now);
+        out.gain.gain.setValueAtTime(out.gain.gain.value, now);
+        out.gain.gain.linearRampToValueAtTime(0, now + 1.5);
+      }
+      this.currentTrack = "";
+      return;
+    }
+    const buf = this.buffers.get(track)?.[0];
+    if (!buf) return;
     const incoming = this.musicVoices[1 - this.activeMusic];
     const outgoing = this.musicVoices[this.activeMusic];
     if (incoming.isPlaying) incoming.stop();

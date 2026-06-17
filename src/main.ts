@@ -50,7 +50,7 @@ import { PortController } from "./game/port";
 import { createMenuScreen, type SandboxConfig } from "./render/menuScreen";
 import { PerfMonitor } from "./render/perf";
 import { AudioManager } from "./render/audio";
-import { ThrottleGate } from "./render/audioMath";
+import { ThrottleGate, type MusicState } from "./render/audioMath";
 
 async function main() {
   // THROWAWAY (plan Task 0): ?spike=1 runs the voxel-collider perf gate and bails.
@@ -1802,11 +1802,14 @@ async function main() {
     // ---- audio: music + ambience crossfade on phase changes; wind + underwater per frame ----
     if (gs.phase !== lastAudioPhase) {
       lastAudioPhase = gs.phase;
-      // Music auto-play is OFF: the procedural pads read as a "stuck hum" (playtest). The crossfade
-      // system stays ready — drop real tracks into public/assets/audio/music and re-enable audio.music().
       const atSea = gs.phase === "playing" || gs.phase === "port";
       audio.ambient("ocean", atSea);
       audio.ambient("wind", atSea);
+      // Music: real tracks now — menu/pause theme, the harbor track at port, and NOTHING at sea
+      // (open-water sailing is ambience-only; music() fades out for the "playing" state).
+      const ms: MusicState =
+        gs.phase === "playing" ? "playing" : gs.phase === "port" ? "port" : gs.phase === "paused" ? "paused" : "menu";
+      audio.music(ms);
     }
     {
       const pv = sloop.body.linvel();

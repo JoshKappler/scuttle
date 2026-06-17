@@ -26,7 +26,7 @@ describe("windGain", () => {
 describe("musicTrackForState", () => {
   it("maps phases to track ids", () => {
     expect(musicTrackForState("menu")).toBe("menu_theme");
-    expect(musicTrackForState("playing")).toBe("sea_ambient");
+    expect(musicTrackForState("playing")).toBe(""); // at sea = ambience only, no music track
     expect(musicTrackForState("port")).toBe("harbor");
     expect(musicTrackForState("paused")).toBe("menu_theme");
   });

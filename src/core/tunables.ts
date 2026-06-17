@@ -115,6 +115,13 @@ export const TUN = {
      *  at the Task 8 harness / Task 10 sweep alongside STRENGTH_TO_JOULES. Dropped 40→13 when
      *  STRENGTH_TO_JOULES was softened 15000→5000, so a ball still bores ~the same depth. */
     crushEfficiency: 13,
+    /** Broadside RAGGEDNESS (s): a battery doesn't all fire on one tick — a real ship-of-the-line
+     *  lets the guns off in a ripple. The first gun cracks the instant you click (responsive), the
+     *  rest fire at random offsets across this window until the whole battery is expended. 0 = the
+     *  old simultaneous volley. Each ball still leaves from its OWN muzzle at LAUNCH time, so a
+     *  later shot fires along where that gun bears then (the cost of the ripple vs. the frozen
+     *  aim-line; accepted for the feel — "wouldn't fire twenty-one cannons at exactly the same time"). */
+    broadsideSpread: 1.6,
   },
 
   /** Ship-vs-ship DEFORMABLE contact (game/voxelContact.ts) — the Teardown rule. Ship-ship pairs

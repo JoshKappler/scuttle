@@ -181,24 +181,15 @@ function pad(chord, sec) {
   return loopFade(out);
 }
 
-save("sfx/cannon.wav", cannon());
-save("sfx/impact_wood.wav", band(N(0.25), 18, 0.5));
-save("sfx/impact_thud.wav", band(N(0.2), 30, 0.15));
-save("sfx/crunch.wav", band(N(0.35), 10, 0.6));
+// Only the ids STILL on a procedural placeholder are generated here. The rest (cannon, the
+// wood-crack damage pool, creak, rope, coins, port_open, ui_click/ui_buy, ocean/wind beds, and
+// the menu/harbor music) now have real recordings under public/assets/audio/ — see that README's
+// manifest. Re-running this script must NOT recreate those, so their save() calls are gone.
+// (The cannon()/band()/windBed()/etc generators above are kept as a reference for the next round.)
 save("sfx/sink.wav", sink());
-save("sfx/coins.wav", blips([880, 1175, 1568, 1319], 0.5));
 save("sfx/splash.wav", band(N(0.3), 12, 0.7));
-save("sfx/gull.wav", gull());
-save("sfx/creak.wav", creak());
-save("sfx/rope.wav", rope());
-save("sfx/ui_click.wav", chime([1200], 0.05, 60));
+save("sfx/gull.wav", gull()); // MUTED in audio.ts (PLACEHOLDER_MUTED) until a real gull lands
 save("sfx/ui_confirm.wav", chime([784, 1175], 0.18, 14));
-save("sfx/ui_buy.wav", blips([1047, 1319, 1568], 0.35));
-save("sfx/port_open.wav", chime([523, 659, 784], 0.6, 4));
 save("sfx/ship_ready.wav", chime([392, 523, 659, 784], 0.8, 3));
-save("ambient/ocean_loop.wav", oceanBed());
-save("ambient/wind_loop.wav", windBed());
-save("music/menu_theme.wav", pad([196, 233, 294], 6));
-save("music/sea_ambient.wav", pad([147, 220, 247], 6));
-save("music/harbor.wav", pad([262, 330, 392], 6));
-console.log("done");
+save("music/sea_ambient.wav", pad([147, 220, 247], 6)); // unused — at sea is ambience-only
+console.log("done — placeholders only; real audio lives beside these and is not regenerated");

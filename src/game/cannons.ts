@@ -12,11 +12,6 @@ import type { Ship } from "./ship";
  * ray-march against target ships' voxel grids for impact detection.
  */
 const MAX_BALLS = 64;
-// no stagger: every loaded gun fires the tick you click. Staggered barrels
-// launched later balls from a muzzle that had MOVED since the preview was
-// drawn — "it's not really firing along where the trajectory line is"
-// (playtest round 6: "fire all simultaneously with the left click")
-const STAGGER = 0;
 
 interface Ball {
   alive: boolean;
@@ -120,12 +115,15 @@ export class Cannons {
    *  or the bow/stern chasers for "fore"/"aft"). */
   fireBroadside(ship: Ship, key: 1 | -1 | GunFacing, simTime: number, elevationDeg = 5, traverseDeg = 0): boolean {
     let i = 0;
+    const spread = Math.max(0, TUN.gun.broadsideSpread);
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
       if (!this.bears(ship.build.cannonPorts[p], key)) continue;
       if (this.portReload(ship, p, simTime) > 0) continue;
       this.portReloadAt.set(this.portKey(ship, p), simTime + this.reloadS * this.reloadMul);
+      // Ragged volley: the first bearing gun fires immediately (click feedback); the rest are
+      // scattered across `spread` seconds so the battery ripples instead of cracking as one.
       this.pendingShots.push({
-        delay: i * STAGGER,
+        delay: i === 0 ? 0 : Math.random() * spread,
         portIndex: p,
         owner: ship,
         elevation: elevationDeg,
