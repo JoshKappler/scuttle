@@ -1711,6 +1711,23 @@ async function main() {
         { type: "slider", label: "flood inflow ×", obj: TUN.flood, key: "inflowScale", min: 0, max: 1, step: 0.05 },
       ],
     },
+    {
+      title: "⛵ Voxel rig (masts/sails)",
+      controls: [
+        { type: "toggle", label: "rig enabled", obj: TUN.rig, key: "enabled" },
+        { type: "toggle", label: "bowsprit bore", obj: TUN.rig, key: "bowsprit" },
+        { type: "toggle", label: "mast fall", obj: TUN.rig, key: "masts" },
+        { type: "toggle", label: "sail tear", obj: TUN.rig, key: "sails" },
+        { type: "slider", label: "bore radius", obj: TUN.rig, key: "boreRadiusVox", min: 0, max: 3, step: 1 },
+        { type: "slider", label: "topple kick", obj: TUN.rig, key: "toppleKick", min: 0, max: 6, step: 0.25 },
+        { type: "slider", label: "hinge time s", obj: TUN.rig, key: "hingeTime", min: 0, max: 4, step: 0.1 },
+        { type: "slider", label: "waterlog /s", obj: TUN.rig, key: "waterlog", min: 0, max: 0.3, step: 0.01 },
+        { type: "slider", label: "fall mass kg", obj: TUN.rig, key: "fallMass", min: 100, max: 2000, step: 50 },
+        { type: "slider", label: "wind force", obj: TUN.rig, key: "windForce", min: 0, max: 6, step: 0.2 },
+        { type: "slider", label: "cloth break", obj: TUN.rig, key: "clothBreak", min: 0.1, max: 1.5, step: 0.05 },
+        { type: "slider", label: "sever radius m", obj: TUN.rig, key: "severRadius", min: 0.5, max: 4, step: 0.1 },
+      ],
+    },
   ]);
   const _roQ = new THREE.Quaternion();
   const _roF = new THREE.Vector3();
