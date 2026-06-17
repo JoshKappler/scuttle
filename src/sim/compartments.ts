@@ -39,6 +39,13 @@ export interface BreachInput {
 
 const DISCHARGE = 0.6; // sharp-edged orifice coefficient (Cd)
 const EXCHANGE_HEAD_SCALE = 2.0; // m of head per unit fill-fraction difference
+/** How far up the wet column the floodwater weight bears (0 = keel, 0.5 = mid-water = the physically
+ *  correct centroid of settled water). At 0.5 an unevenly-flooded hull develops a VISIBLE fore/aft
+ *  trim (the user's ask) because the flood mass shifts the longitudinal CG by its true moment, not a
+ *  damped-low fraction of it. Turtle-safety does NOT come from biasing this low — it comes from the
+ *  per-voxel buoyancy righting + the heel-INDEPENDENCE of this point (it never slides to the low side
+ *  as she heels), so 0.5 is safe. See floodBallastLocal. */
+const BALLAST_BIAS = 0.5;
 
 /**
  * Signed two-reservoir orifice flow (m³/s) through a submerged hull hole. The hole connects the
@@ -109,12 +116,15 @@ export function floodStep(
 export function floodBallastLocal(c: Compartment): [number, number, number] {
   const fill = c.volume > 0 ? c.waterVolume / c.volume : 0;
   // Bottom-up pool: the surface rises with fill. We bias the bearing point BELOW the physical mid-
-  // water-column (factor 0.28, not 0.5) so heavy flooding acts like the keel BALLAST the user asked
-  // for — a near-sunk hull (where reserve buoyancy and waterplane righting are nearly gone, so only
-  // KG-below-KB holds her up) stays MORE bottom-heavy and rides upright down to the bottom instead of
+  // water-column (factor BALLAST_BIAS, not 0.5) so heavy flooding acts like the keel BALLAST the user
+  // asked for — a near-sunk hull (where reserve buoyancy and waterplane righting are nearly gone, so
+  // only KG-below-KB holds her up) stays bottom-heavy and rides upright down to the bottom instead of
   // turning turtle. The actual sinking is still driven by `waterlog`, not by losing stability, so she
   // founders upright rather than flipping. Still rises monotonically with fill; still heel-independent.
-  const ly = (c.bboxMin[1] + (c.bboxMax[1] + 1 - c.bboxMin[1]) * fill * 0.28 + 0.5) * VOXEL_SIZE;
+  // 0.42 (was 0.28): low enough to stay safe against turtling but high enough that the floodwater
+  // weight produces a VISIBLE fore/aft trim moment (the bow noses down when the forward holds flood)
+  // instead of bearing so deep it's almost on the keel line and barely shifts the longitudinal CG.
+  const ly = (c.bboxMin[1] + (c.bboxMax[1] + 1 - c.bboxMin[1]) * fill * BALLAST_BIAS + 0.5) * VOXEL_SIZE;
   return [c.centroid[0], ly, c.centroid[2]];
 }
 
@@ -194,8 +204,8 @@ export function fillHeightLocal(curve: FillCurve, waterVolume: number): number {
   return (curve.layerY[lo] + frac) * VOXEL_SIZE;
 }
 
-const SEEP_FILL_GATE = 0.55; // a compartment only sheds to a neighbour once it's this full
-const SEEP_RATE = 0.06; // per-second fraction of the fill-fraction gap moved (slow overtopping)
+const SEEP_FILL_GATE = 0.8; // a compartment only sheds to a neighbour once it's this full (was 0.55)
+const SEEP_RATE = 0.015; // per-second fraction of the fill-fraction gap moved (slow overtopping; was 0.06)
 
 /**
  * Slow cross-compartment seepage: real bulkheads aren't watertight under a standing head — once a

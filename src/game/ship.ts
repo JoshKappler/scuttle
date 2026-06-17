@@ -444,9 +444,8 @@ export class Ship implements ContactTarget {
 
   /** Planks left for breach repairs. */
   planks = 8;
-  /** Pump state: drains the most-flooded compartment while on. */
+  /** Pump state: drains the most-flooded compartment while on. Rate is the live TUN.flood.pumpRate. */
   pumpOn = false;
-  private static PUMP_RATE = 0.12; // m³/s
 
   /**
    * Plug the deepest open breach with a plank. Returns true on success.
@@ -512,6 +511,10 @@ export class Ship implements ContactTarget {
 
     const breaches: BreachInput[] = [];
     const p = this.tmpV;
+    // Per-CELL orifice area: every breach cell pushes its own orifice below, so a compartment's total
+    // inflow scales with the NUMBER of its punctured cells (a 1-cell nick vs a 30-cell gash differ
+    // ~30×) AND with each cell's depth (the √(2g·dh) head term: a deep hole floods faster). This is
+    // the user's severity model — small/high holes the pump wins, a big low chunk outpaces it.
     const cellArea = VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale;
 
     for (const c of this.build.compartments) {
@@ -571,7 +574,7 @@ export class Ship implements ContactTarget {
       for (const c of this.build.compartments) {
         if (!worst || c.waterVolume > worst.waterVolume) worst = c;
       }
-      if (worst) worst.waterVolume = Math.max(worst.waterVolume - Ship.PUMP_RATE * dt, 0);
+      if (worst) worst.waterVolume = Math.max(worst.waterVolume - TUN.flood.pumpRate * dt, 0);
     }
   }
 

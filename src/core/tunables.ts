@@ -266,10 +266,20 @@ export const TUN = {
    *  up above the pool (heel/capsize). These knobs scale the play-feel game/ship.ts feeds the
    *  deterministic oracle; the oracle's Cd + flow law stay exact. */
   flood: {
-    /** multiplier on breach area → flow rate (1 = the raw orifice rate). 0.15 ≈ the playtest's
-     *  "reduce flood rates ~85%": a holed hull settles and founders over a minute, not seconds,
-     *  so flooding is a fightable, dramatic process (pumps + plank repairs matter). */
-    inflowScale: 0.15,
+    /** multiplier on EACH breach cell's orifice area → flow rate (1 = the raw orifice rate). A
+     *  compartment's total inflow is this × the NUMBER of its breach cells × √(2g·depth), so a 1-cell
+     *  nick and a 30-cell gash differ ~30× in area and further by depth (a deep hole has more head).
+     *  Tuned WITH pumpRate so the three damage cases land where the player asked: a single waterline
+     *  cell is trivially pumped, a ~6-10 cell hole sits about at pump capacity, a big low chunk
+     *  (~25-40 cells, deep) outpaces the pump. 0.2 keeps a holed hull settling/foundering over the
+     *  better part of a minute (fightable: pumps + plank repairs matter), not seconds. */
+    inflowScale: 0.2,
+    /** pump drain rate (m³/s) — the bilge pump empties the single MOST-flooded compartment while ON
+     *  (`P` toggles). Set so it beats every case BUT the worst: a small/medium breach is held or
+     *  reversed, a gaping low hole still outpaces it. At a ~0.7 m-deep mid hole (~8 cells) the inflow
+     *  is ≈0.22 m³/s, just under this; a single waterline cell (~0.013 m³/s) is trivially won; a
+     *  ~30-cell deep gash (~1.4 m³/s) overwhelms it ~5×. Pair with inflowScale when retuning feel. */
+    pumpRate: 0.25,
     /** submerged fraction past which reserve buoyancy is treated as GONE and `waterlog` ramps to
      *  the final plunge. With waterline equilibrium in place a single nick never reaches this — only
      *  deep/progressive flooding does — so she mostly settles & survives (recovers below 0.7× this

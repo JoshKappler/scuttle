@@ -61,7 +61,7 @@ export class CompartmentFluid {
   private scl = new THREE.Vector3();
   private v = new THREE.Vector3();
   private d = new THREE.Vector3();
-  private one = new THREE.Vector3(1, 1, 1);
+  private boxScale = new THREE.Vector3(1, 1, 1);
   private m4 = new THREE.Matrix4();
 
   constructor(compartments: Compartment[], dims: [number, number, number]) {
@@ -171,9 +171,11 @@ uniform vec3 uDeep;`,
     const cx = ((c.bboxMin[0] + c.bboxMax[0]) / 2 + 0.5) * VOXEL_SIZE;
     const cz = ((c.bboxMin[2] + c.bboxMax[2]) / 2 + 0.5) * VOXEL_SIZE;
 
-    // a flat tile lying in the XZ plane (normal +Y), per-instance counter-rotated to world-up
-    const geo = new THREE.PlaneGeometry(VOXEL_SIZE, VOXEL_SIZE);
-    geo.rotateX(-Math.PI / 2);
+    // a UNIT box [-0.5,0.5]³ — per instance scaled to (VOXEL_SIZE, depth, VOXEL_SIZE) and counter-
+    // rotated to WORLD up, so each wet column draws a SOLID water prism from its hull floor up to the
+    // gravity-level pool surface (no more floating top sheet). The top faces of all columns land at the
+    // same world-Y plane → a flat pool; the side/bottom faces give the room real filled depth.
+    const geo = new THREE.BoxGeometry(VOXEL_SIZE, 1, VOXEL_SIZE);
     const aEdge = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(cols, 1)), 1);
     geo.setAttribute("aEdge", aEdge);
     const surf = new THREE.InstancedMesh(geo, this.mat, Math.max(cols, 1));
@@ -222,25 +224,36 @@ uniform vec3 uDeep;`,
     }
   }
 
-  /** Build the world-level surface: one up-facing tile per wet voxel-column, at the pool height.
-   *  The fill level comes from the static curve (no per-cell sort); columns whose floor sits below
-   *  that level are wet and get a tile at the world-horizontal pool height. */
+  /** Build the SOLID flooded volume: one world-vertical water prism per wet voxel-column, spanning from
+   *  the column's hull floor up to the world-horizontal pool surface. The fill level comes from the
+   *  static curve (no per-cell sort); columns whose floor sits below that level are wet. Each prism is
+   *  a unit box counter-rotated to WORLD up (so the surface stays gravity-level under heel) and scaled
+   *  to (VOXEL_SIZE, depth, VOXEL_SIZE). Reads as a filled room, not a floating sheet. */
   private rebuild(cf: CF, waterVolume: number): void {
     const q = this.q, pos = this.pos;
     // ship-local fill height (m) → the world Y of the free surface at the compartment centre.
     const localFillY = fillHeightLocal(cf.curve, waterVolume);
     this.v.set(cf.cx, localFillY, cf.cz).applyQuaternion(q).add(pos);
     const poolWorldY = this.v.y;
+    // box instances are counter-rotated by qInv so they stand WORLD-up despite the parent ship tilt.
     const qInv = this.qInv.copy(q).invert();
 
     let s = 0;
     for (let i = 0; i < cf.cols; i++) {
       // a column is wet if its floor sits below the (local) fill surface
       if (cf.colFloorY[i] > localFillY) continue;
-      // world x,z of this column, place the tile at (worldX, poolWorldY, worldZ) world-up.
+      // world position of this column's hull floor — the bottom of the water prism (follows the hull
+      // tilt). The top is the gravity-level pool surface poolWorldY.
       this.v.set(cf.colX[i], cf.colFloorY[i], cf.colZ[i]).applyQuaternion(q).add(pos);
-      this.d.set(this.v.x - pos.x, poolWorldY - pos.y, this.v.z - pos.z).applyQuaternion(qInv);
-      this.m4.compose(this.d, qInv, this.one);
+      const floorWorldY = this.v.y;
+      const depth = poolWorldY - floorWorldY;
+      if (depth <= 1e-4) continue; // surface at/below this column's floor → nothing to draw
+      // box CENTRE in world: column x/z, midway up the prism in Y. Convert to group-local for the mesh.
+      const cWorldX = this.v.x, cWorldZ = this.v.z;
+      const cWorldY = floorWorldY + depth * 0.5;
+      this.d.set(cWorldX - pos.x, cWorldY - pos.y, cWorldZ - pos.z).applyQuaternion(qInv);
+      this.boxScale.set(VOXEL_SIZE, depth, VOXEL_SIZE);
+      this.m4.compose(this.d, qInv, this.boxScale);
       cf.surf.setMatrixAt(s, this.m4);
       cf.aEdge.setX(s, cf.colEdge[i]);
       s++;

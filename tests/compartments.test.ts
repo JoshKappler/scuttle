@@ -87,6 +87,19 @@ describe("floodStep", () => {
     expect(c.waterVolume).toBe(0);
   });
 
+  // TASK 4 severity model: ship.ts pushes ONE orifice per breach cell, so a big hole = many orifices.
+  // More punctured cells (and deeper ones) flood dramatically faster than a single nick.
+  it("many breach cells flood far faster than one (the gash-vs-nick severity model)", () => {
+    const nick = comp(100, 0);
+    const gash = comp(100, 0);
+    const A = 0.0625 * 0.2; // VOXEL_SIZE² × inflowScale, one cell's orifice
+    floodStep([nick], [], [breach(0, A, 0.3, 0)], 0.1); // 1 shallow waterline cell
+    const many: BreachInput[] = [];
+    for (let i = 0; i < 30; i++) many.push(breach(0, A, 2.0, 0)); // 30 deep cells
+    floodStep([gash], [], many, 0.1);
+    expect(gash.waterVolume).toBeGreaterThan(nick.waterVolume * 50);
+  });
+
   it("water equalizes through an opening between connected compartments", () => {
     const a = comp(10, 8, 0);
     const b = comp(10, 0, 1);
@@ -162,14 +175,19 @@ describe("equalizeFlooding (slow cross-compartment seepage)", () => {
     expect(b.waterVolume).toBeLessThan(0.2);
   });
 
-  it("converges toward equal FILL over time; never negative or over capacity", () => {
+  it("narrows the fill gap over time (PARTIAL leveller) but never overshoots; mass conserved", () => {
     const a = comp(10, 10, 0);
-    const b = comp(8, 0, 1); // different capacity — equalize by fraction, not volume
+    const b = comp(8, 0, 1); // different capacity — seepage equalizes by FRACTION, not volume
+    const gap0 = a.waterVolume / a.volume - b.waterVolume / b.volume; // = 1.0 initially
     for (let i = 0; i < 6000; i++) equalizeFlooding([a, b], 1 / 60);
-    expect(a.waterVolume / a.volume).toBeCloseTo(b.waterVolume / b.volume, 2);
+    const gap1 = a.waterVolume / a.volume - b.waterVolume / b.volume;
+    // seepage SHEDS from the fuller side toward the drier one — the gap shrinks…
+    expect(gap1).toBeLessThan(gap0);
+    expect(gap1).toBeGreaterThan(0); // …but only PARTIALLY: it stalls once the fuller side drops below
+    // the overtopping gate, so a flooded end stays heavier and the hull keeps its trim (TASK 5).
     expect(a.waterVolume).toBeGreaterThanOrEqual(0);
     expect(b.waterVolume).toBeLessThanOrEqual(b.volume);
-    expect(a.waterVolume + b.waterVolume).toBeCloseTo(10, 6);
+    expect(a.waterVolume + b.waterVolume).toBeCloseTo(10, 6); // mass conserved
   });
 });
 
