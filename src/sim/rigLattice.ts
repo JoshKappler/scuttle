@@ -56,3 +56,32 @@ export function dist(a: Vec3, b: Vec3): number {
   const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
+
+/**
+ * Satisfy all alive links over `iterations` passes (position-based dynamics).
+ * THE ONE RULE: a link whose tension strain exceeds breakStrain is deleted
+ * (alive=false) instead of satisfied. WOOD resists both stretch and
+ * compression; CLOTH only resists stretch (slack under compression).
+ */
+export function relax(rig: Rig, iterations: number): void {
+  const { nodes, links } = rig;
+  for (let it = 0; it < iterations; it++) {
+    for (const lk of links) {
+      if (!lk.alive) continue;
+      const a = nodes[lk.a], b = nodes[lk.b];
+      const dx = b.pos.x - a.pos.x, dy = b.pos.y - a.pos.y, dz = b.pos.z - a.pos.z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (d < 1e-9) continue;
+      const delta = d - lk.rest;
+      if (delta > 0 && delta / lk.rest > lk.breakStrain) { lk.alive = false; continue; }
+      if (lk.kind === LinkKind.CLOTH && delta < 0) continue;
+      const wa = a.pinned ? 0 : 1 / a.mass;
+      const wb = b.pinned ? 0 : 1 / b.mass;
+      const wsum = wa + wb;
+      if (wsum === 0) continue;
+      const f = (delta / d) / wsum;
+      a.pos.x += dx * f * wa; a.pos.y += dy * f * wa; a.pos.z += dz * f * wa;
+      b.pos.x -= dx * f * wb; b.pos.y -= dy * f * wb; b.pos.z -= dz * f * wb;
+    }
+  }
+}
