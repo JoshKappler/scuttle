@@ -56,3 +56,19 @@ describe("rigLattice relax", () => {
     expect(rig.nodes[1].pos.x).toBeCloseTo(0.5, 6);
   });
 });
+
+describe("rigLattice integrate", () => {
+  it("a free node under gravity falls by accel*dt^2 on the first step", () => {
+    const rig: Rig = { nodes: [node(0, 10, 0)], links: [], awake: true, sleepTimer: 0 };
+    const dt = 1 / 60;
+    integrate(rig, () => ({ x: 0, y: -9.81, z: 0 }), dt, 1);
+    expect(rig.nodes[0].pos.y).toBeCloseTo(10 - 9.81 * dt * dt, 6);
+    expect(rig.nodes[0].prev.y).toBeCloseTo(10, 6);
+  });
+
+  it("a pinned node ignores acceleration", () => {
+    const rig: Rig = { nodes: [node(0, 10, 0, true)], links: [], awake: true, sleepTimer: 0 };
+    integrate(rig, () => ({ x: 0, y: -9.81, z: 0 }), 1 / 60, 1);
+    expect(rig.nodes[0].pos.y).toBe(10);
+  });
+});

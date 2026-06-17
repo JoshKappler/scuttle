@@ -85,3 +85,27 @@ export function relax(rig: Rig, iterations: number): void {
     }
   }
 }
+
+/** Acceleration supplier (gravity + wind + buoyancy), injected so the core
+ *  stays pure and deterministic. Returns m/s^2 in ship-local axes. */
+export type AccelFn = (n: RigNode, i: number) => Vec3;
+
+/**
+ * Position-Verlet integrate. `damp` is velocity retention (1 = none, <1 bleeds
+ * energy). Pinned nodes are skipped. prev is set to the pre-step position so
+ * the implicit velocity carries to the next step.
+ */
+export function integrate(rig: Rig, accel: AccelFn, dt: number, damp: number): void {
+  const dt2 = dt * dt;
+  const nodes = rig.nodes;
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (n.pinned) continue;
+    const a = accel(n, i);
+    const px = n.pos.x, py = n.pos.y, pz = n.pos.z;
+    n.pos.x = px + (px - n.prev.x) * damp + a.x * dt2;
+    n.pos.y = py + (py - n.prev.y) * damp + a.y * dt2;
+    n.pos.z = pz + (pz - n.prev.z) * damp + a.z * dt2;
+    n.prev.x = px; n.prev.y = py; n.prev.z = pz;
+  }
+}
