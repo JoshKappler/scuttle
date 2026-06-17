@@ -8,6 +8,23 @@ const oneMast: RigSpec = {
   masts: [{ x: 10, z: 4, h: 15 }],
 };
 
+describe("buildRig yards", () => {
+  it("adds three yards (5 nodes each) per mast, spanning the beam", () => {
+    const rig = buildRig(oneMast);
+    const trunkCount = Math.round(15 / 2) + 1;
+    const woodNodes = rig.nodes.filter((n) => n.flags & NodeFlag.WOOD).length;
+    expect(woodNodes).toBe(trunkCount + 15);
+  });
+
+  it("each yard center is laced to the trunk by a wood link", () => {
+    const rig = buildRig(oneMast);
+    const trunkCount = Math.round(15 / 2) + 1;
+    const woodLinks = rig.links.filter((l) => l.kind === LinkKind.WOOD).length;
+    // trunk: count-1; each yard: 4 span + 1 sling = 5; *3 yards = 15
+    expect(woodLinks).toBe(trunkCount - 1 + 15);
+  });
+});
+
 describe("buildRig trunk", () => {
   it("builds a trunk whose foot is the single pinned, FOOT-flagged node", () => {
     const rig = buildRig(oneMast);
