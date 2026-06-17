@@ -446,18 +446,28 @@ async function main() {
     const tierId = forcedEnemyTier ?? pickEnemyTier(economy.state.notoriety, currentTier, Math.random);
     const build = tierById(tierId).build();
     const visual = new ShipVisual(build);
-    // fan upwind around the player so multiple hulls don't stack (the old single
-    // enemy spawned dead upwind at 85 m, bow turned toward you — generalized here).
-    const ang = (Math.random() - 0.5) * Math.PI * 1.2;
-    const dist = 85 + Math.random() * 45;
-    const dx = waves[0].dirX;
-    const dz = waves[0].dirZ;
-    const ox = dx * Math.cos(ang) - dz * Math.sin(ang);
-    const oz = dx * Math.sin(ang) + dz * Math.cos(ang);
+    // ARENA SPAWN: stand the hostile fleet up as a regular polygon facing a shared CENTRE, so they
+    // close from the FRONT in formation instead of popping in behind you (bad form). The player is
+    // one vertex (the rearmost) and the enemies the others — a triangle for 2 foes, a hexagon-ish
+    // ring for 5, every bow pointed at the centre, all equidistant. Centring the ring AHEAD of the
+    // player by its own radius puts the WHOLE formation forward of her: nothing spawns on the stern.
+    const total = Math.max(1, Math.min(MAXVIS, Math.round(TUN.fleet.enemyCount)));
+    const slot = fleet.enemies.length; // 0..total-1: which enemy vertex this hull takes
+    const verts = total + 1; // polygon vertices, incl. the player at the rear vertex
+    const R = 105; // ring radius (m) — they open the action about a broadside's reach out
     const pc = sloop.body.translation();
-    const ship = new Ship(physics, build, visual, { x: pc.x - ox * dist, y: 0.2, z: pc.z - oz * dist }, false); // enemy → no walkable deck collider
-    const etr = ship.body.translation();
-    const ea = -Math.atan2(pc.z - etr.z, pc.x - etr.x);
+    const prot = sloop.body.rotation();
+    const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(new THREE.Quaternion(prot.x, prot.y, prot.z, prot.w));
+    fwd.y = 0;
+    fwd.normalize();
+    const cx = pc.x + fwd.x * R; // ring centre, R ahead of the player
+    const cz = pc.z + fwd.z * R;
+    const baseAng = Math.atan2(pc.z - cz, pc.x - cx); // centre→player = the player's own vertex
+    const vAng = baseAng + ((slot + 1) * 2 * Math.PI) / verts; // step round to this enemy's vertex
+    const ex = cx + Math.cos(vAng) * R;
+    const ez = cz + Math.sin(vAng) * R;
+    const ship = new Ship(physics, build, visual, { x: ex, y: 0.2, z: ez }, false); // enemy → no walkable deck collider
+    const ea = -Math.atan2(cz - ez, cx - ex); // bow toward the ring centre
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
     ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
     ship.onCannonLost = (pi) => debris.spawnFallingCannon(ship, pi);
@@ -1245,8 +1255,7 @@ async function main() {
     const windBearing = Math.atan2(-wind.dirZ, -wind.dirX) - heading;
     hudEls.windMarker.style.transform = `rotate(${(windBearing * 180) / Math.PI}deg)`;
 
-    const readiness = cannons.sideReadiness(sloop, aimBearing(), world.simTime);
-    hudEls.gunBar.style.width = `${readiness * 100}%`;
+    hudEls.gunBar.style.width = `${gunReadout().frac * 100}%`;
     // helm indicator: where the rudder is SET (it holds until changed)
     hudEls.rudderInd.style.left = `${50 - sailing.rudder * 42}%`;
 
@@ -1287,16 +1296,15 @@ async function main() {
       `planks ${sloop.planks} · pump ${sloop.pumpOn ? "ON" : "off"}` +
       `${plugChannel > 0 ? ` · plugging ${plugChannel.toFixed(1)}s` : ""}`;
 
-    const ready2 = cannons.sideReadiness(sloop, aimBearing(), world.simTime);
+    const gun = gunReadout();
     if (plugChannel > 0) {
       hudEls.gunStatus.textContent = "REPAIRING";
       hudEls.gunStatus.className = "";
-    } else if (ready2 >= 0.999) {
+    } else if (gun.frac >= 0.999) {
       hudEls.gunStatus.textContent = "GUNS READY";
       hudEls.gunStatus.className = "ready";
     } else {
-      const sideGuns = sloop.build.cannonPorts.filter((p, i) => sloop.cannonAlive[i] && gunBears(p, aimBearing())).length;
-      hudEls.gunStatus.textContent = `LOADING ${Math.round(ready2 * sideGuns)}/${sideGuns}`;
+      hudEls.gunStatus.textContent = `LOADING ${gun.ready}/${gun.total}`;
       hudEls.gunStatus.className = "";
     }
     hudEls.gunSub.textContent =
@@ -1384,6 +1392,27 @@ async function main() {
   }
   function gunBears(p: { side: 1 | -1; facing?: "fore" | "aft" }, b: Bearing): boolean {
     return typeof b === "number" ? !p.facing && p.side === b : p.facing === b;
+  }
+
+  /**
+   * Reload readout for the bottom-right meter. While AIMING (RMB) it reports the battery you're
+   * actually pointing at — what the next shot fires. Otherwise it reports the WHOLE ship's loaded
+   * fraction, so the meter visibly drops and refills after any broadside. (The old meter was keyed
+   * to the camera-look battery even when not aiming, so it read the fore chasers as "ready" while
+   * your broadsides were reloading — i.e. flat-out wrong the moment you weren't looking down a side.)
+   */
+  function gunReadout(): { frac: number; ready: number; total: number } {
+    const aiming = controls.aiming;
+    const key = aimBearing();
+    let total = 0;
+    let ready = 0;
+    for (let i = 0; i < sloop.build.cannonPorts.length; i++) {
+      if (!sloop.cannonAlive[i]) continue;
+      if (aiming && !gunBears(sloop.build.cannonPorts[i], key)) continue;
+      total++;
+      if (cannons.portReload(sloop, i, world.simTime) <= 0) ready++;
+    }
+    return { frac: total > 0 ? ready / total : 0, ready, total };
   }
 
   const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };

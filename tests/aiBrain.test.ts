@@ -9,6 +9,7 @@ const base: AIView = {
   floodFrac: 0,
   reloadReady: true,
   committedBeam: 0,
+  targetHeadingDeg: 0, // target heads the same way we do (parallel) by default
 };
 
 describe("AI captain brain", () => {
@@ -94,6 +95,30 @@ describe("AI captain brain", () => {
     const d = decideAI({ ...base, range: 60, bearingDeg: 90, floodFrac: 0.6 });
     expect(d.fire).toBe("starboard"); // still firing the bearing broadside
     expect(d.sailSet).toBeLessThan(1); // pacing the target, not running downwind
+  });
+
+  it("paces alongside: once abeam on a matched course she HOLDS, not orbits", () => {
+    // target abeam to starboard (90), running the SAME way we are (targetHeadingDeg 0), at the
+    // standoff range → we're already in the slot, so the helm steadies instead of spinning to keep
+    // chasing her round. (The old "hold bearing ±90" steering never settled — it mirrored the target.)
+    const d = decideAI({ ...base, range: 85, bearingDeg: 90, targetHeadingDeg: 0 });
+    expect(d.rudderSign).toBe(0);
+    expect(d.fire).toBe("starboard");
+  });
+
+  it("matches the target's course even when she's already abeam (parallel pass, not an orbit)", () => {
+    // she's abeam to starboard but angling off toward our starboard (targetHeadingDeg +40): a pure
+    // keep-her-abeam captain would hold (rudder 0); a pacing captain turns to MATCH her course.
+    const d = decideAI({ ...base, range: 85, bearingDeg: 90, targetHeadingDeg: 40 });
+    expect(d.rudderSign).toBe(1); // turn starboard to fall in alongside on her heading
+  });
+
+  it("takes the anti-parallel pass when the target runs dead opposite", () => {
+    // she heads the reciprocal of our course (targetHeadingDeg 180) and sits fine off the bow:
+    // matching her bow-to-bow is the smaller turn, so the captain doesn't wheel all the way round.
+    const d = decideAI({ ...base, range: 90, bearingDeg: 8, targetHeadingDeg: 180 });
+    // parErr 180 vs antiErr 0 → anti-parallel (courseErr ~0); only the off-beam bias steers her.
+    expect(d.rudderSign).toBe(-1); // bearing 8 well off the starboard beam → ease toward it
   });
 
   it("commits to a beam and does not thrash side to side (hysteresis)", () => {

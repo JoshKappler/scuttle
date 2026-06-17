@@ -21,6 +21,8 @@ export class AICaptain {
   // reused per update() instead of allocating two Vector3 per enemy per fixed step
   private tmpRel = new THREE.Vector3();
   private tmpWind = new THREE.Vector3();
+  private tmpFwd = new THREE.Vector3();
+  private tmpTQ = new THREE.Quaternion();
   private accuracyJitter: number;
   // the broadside the brain is currently committed to presenting (-1 port,
   // +1 starboard, 0 = not yet engaged). Carried across ticks so the beam
@@ -61,11 +63,20 @@ export class AICaptain {
     const wrel = this.tmpWind.set(-wind.dirX, 0, -wind.dirZ).applyQuaternion(this.tmpQ);
     const windBearingDeg = (Math.atan2(wrel.z, wrel.x) * 180) / Math.PI;
 
+    // the TARGET's heading off our own bow: her bow (+x) rotated to world, then expressed in our
+    // frame (tmpQ is already our inverse rotation). 0 = she heads our way, ±180 = dead opposite.
+    const ptr = target.body.rotation();
+    const pFwd = this.tmpFwd.set(1, 0, 0).applyQuaternion(this.tmpTQ.set(ptr.x, ptr.y, ptr.z, ptr.w));
+    pFwd.y = 0;
+    pFwd.applyQuaternion(this.tmpQ);
+    const targetHeadingDeg = (Math.atan2(pFwd.z, pFwd.x) * 180) / Math.PI;
+
     const d = decideAI({
       range,
       bearingDeg,
       angleOffWindDeg: this.sailing.angleOffWind,
       windBearingDeg,
+      targetHeadingDeg,
       floodFrac: worstFlood,
       // ready when the broadside that's actually pointing at the target (its
       // side in ship frame) is mostly loaded

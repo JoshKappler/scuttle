@@ -154,6 +154,11 @@ export class Ship implements ContactTarget {
   mastTopY: number[];
   /** Per mast: 1 = whole canvas → 0.15 floor as shot full of holes. */
   sailIntegrity: number[];
+  /** Per mast: TRUE when the voxel trunk is CAPPED below the rigged height (the man-o-war, whose
+   *  grid is too short to hold the whole mast — a thin cosmetic topmast carries the upper rig).
+   *  For such a mast the voxel top is artificially low, so sail visibility/puncture must use the
+   *  FULL rig height while the trunk stands; only an actual sever (mastAlive→false) drops the rig. */
+  mastCapped: boolean[];
   rudderHp = 3;
   /** Steering authority 0.15..1 — yaw torque multiplier (DAMAGE state). */
   rudderEff = 1;
@@ -323,6 +328,13 @@ export class Ship implements ContactTarget {
     this.mastTopY = build.masts.map(() => -Infinity);
     this.sailIntegrity = build.masts.map(() => 1);
     this.updateMastState(); // seed mastAlive / mastTopY from the freshly-stamped voxels
+    // a mast whose freshly-stamped voxel trunk falls short of its rigged height was grid-CAPPED
+    // (the man-o-war). Its upper yards/sails ride the cosmetic topmast, so they must stay
+    // visible + hittable while the trunk stands — never culled by the artificially-low voxel top.
+    this.mastCapped = build.masts.map((m, mi) => {
+      const footY = (build.deckYAt(m.x) + 1) * VOXEL_SIZE; // first spar voxel sits on the deck
+      return this.mastTopY[mi] < footY + m.h - 1; // trunk top short of foot+riggedHeight → capped
+    });
 
     // cannon mounts: every gun starts bolted on; record its intact mount-cell count so
     // flushDamage can fell it once the hull beneath it is carved below TUN.gun.mountToughness.
@@ -418,8 +430,12 @@ export class Ship implements ContactTarget {
       if (!this.mastAlive[rec.mastIdx]) continue; // whole rig gone: rects are stale
       // a partly-felled mast keeps its lower canvas: skip a sail whose foot now hangs above the
       // surviving trunk (its mesh is hidden by updateRig), so a ball can't "tear" a dropped sail.
-      if (rec.yMin > this.mastTopY[rec.mastIdx]) continue;
-      const hit = segmentSailHit(p0, p1, rec);
+      // EXCEPTION: a grid-capped mast (man-o-war) always has a short voxel trunk; its sails ride
+      // the cosmetic topmast and stay hittable while the mast stands (matching updateRig).
+      if (!this.mastCapped[rec.mastIdx] && rec.yMin > this.mastTopY[rec.mastIdx]) continue;
+      // ~1 m fore-aft slab so a BEAM-WISE broadside ball passing through the canvas tears it, not
+      // just a shot that pierces the zero-width plane (which a side-on duel almost never produces).
+      const hit = segmentSailHit(p0, p1, rec, 1.0);
       if (hit) sails.push({ rec, y: hit.y, z: hit.z });
     }
 

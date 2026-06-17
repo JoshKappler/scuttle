@@ -16,6 +16,14 @@ export interface AIView {
    * choice has hysteresis and never thrashes side to side frame to frame.
    */
   committedBeam?: -1 | 0 | 1;
+  /**
+   * The TARGET's heading relative to our own bow, -180..180 (0 = she heads the
+   * same way we do, ±180 = dead opposite, +90 = she heads off toward our
+   * starboard). Lets the captain run a PARALLEL broadside PASS — pace her
+   * beam-to-beam on a matched course — instead of pivoting to keep her abeam,
+   * which read as a nose-chase that mirrored the player's every turn.
+   */
+  targetHeadingDeg?: number;
 }
 
 export interface AIDecision {
@@ -40,6 +48,11 @@ const STANDOFF_BAND = 20; // m — dead-band around STANDOFF before correcting r
 // this the captain would oscillate port/starboard whenever the bearing hovers
 // near 0 or ±180.
 const BEAM_FLIP_MARGIN = 25; // degrees the new beam must beat the committed one by
+
+/** Wrap an angle to -180..180. */
+function wrap180(a: number): number {
+  return (((a + 180) % 360) + 360) % 360 - 180;
+}
 
 /** Rudder sign that moves the current bearing toward the desired bearing. */
 function steerToward(bearingDeg: number, desiredDeg: number): -1 | 0 | 1 {
@@ -89,40 +102,49 @@ export function decideAI(v: AIView): AIDecision {
     return { sailSet: 1, rudderSign: steerToward(v.bearingDeg, 0), fire: null, committedBeam: 0 };
   }
 
-  // IN ENGAGEMENT RANGE: present the broadside. Commit to a beam (with
-  // hysteresis) and steer so the target sits abeam of THAT side, then pace at
-  // the standoff range.
+  // IN ENGAGEMENT RANGE: run a BROADSIDE PASS alongside her. Commit to a beam
+  // (with hysteresis), then steer to MATCH her course — run parallel (or, when
+  // that's the smaller turn, anti-parallel) so we PACE her beam-to-beam instead
+  // of pivoting to keep her abeam. The old "hold the target at ±90" steering
+  // orbited the target: as the player turned, the captain spun to follow, so the
+  // player could never line up a side shot ("it just chases / mirrors me"). Now
+  // a gentle off-beam bias slides us onto the standoff line without that spin.
   const beam = chooseBeam(v.bearingDeg, committed);
-  const desiredBearing = beam === 1 ? 90 : -90; // target abeam on the chosen side
 
-  // a broadside that bears is a broadside that fires
+  // a broadside that bears is a broadside that fires — fire whichever side the
+  // target is actually on (within the firing arc), independent of the pass.
   let fire: AIDecision["fire"] = null;
   if (v.range <= GUN_RANGE && v.reloadReady) {
-    // fire whichever side the target is actually on (within the firing arc),
-    // independent of the beam we're maneuvering toward
     if (v.bearingDeg > 30 && v.bearingDeg < 150) fire = "starboard";
     else if (v.bearingDeg < -30 && v.bearingDeg > -150) fire = "port";
   }
 
-  // Range keeping: bias the abeam heading slightly toward (when too far) or
-  // away from (when too close) the target so she paces the standoff instead of
-  // orbiting out to the horizon or boring in to ram. A ±18° lead on the abeam
-  // bearing spirals her gently in/out without ever turning her stern or bow
-  // fully onto the target.
-  let desired = desiredBearing;
-  if (v.range > STANDOFF + STANDOFF_BAND) {
-    // too far → angle the bow inward (bearing toward 0) to close a little
-    desired = beam === 1 ? 72 : -72;
-  } else if (v.range < STANDOFF - STANDOFF_BAND) {
-    // too close → angle the stern inward (bearing toward ±180) to open a little
-    desired = beam === 1 ? 108 : -108;
-  }
+  // course-match: the turn that aligns our bow with HER heading (parallel) or her
+  // reciprocal (anti-parallel). Prefer parallel; only take the reciprocal when it
+  // is a clearly smaller turn, so a target hovering near beam-on doesn't flip the
+  // pass back and forth.
+  const headRel = v.targetHeadingDeg ?? 0;
+  const parErr = wrap180(headRel); // turn to run the SAME way she does
+  const antiErr = wrap180(headRel - 180); // turn to run the OPPOSITE way
+  const courseErr = Math.abs(antiErr) + 20 < Math.abs(parErr) ? antiErr : parErr;
+
+  // off-beam bias: how far the target sits off the chosen beam (+ → turn toward
+  // her to bring her onto it). Range lean nudges the bias in/out so she paces the
+  // standoff band instead of drifting away or boring in. Both scaled down so they
+  // trim the matched course rather than overpower it back into an orbit.
+  const offBeam = v.bearingDeg - beam * 90;
+  let rangeLean = 0;
+  if (v.range > STANDOFF + STANDOFF_BAND) rangeLean = -beam * 12; // too far → angle bow inward to close
+  else if (v.range < STANDOFF - STANDOFF_BAND) rangeLean = beam * 12; // too close → angle bow outward to open
+
+  const desiredTurn = courseErr * 0.7 + (offBeam + rangeLean) * 0.4;
+  const rudderSign: -1 | 0 | 1 = Math.abs(desiredTurn) < 6 ? 0 : desiredTurn > 0 ? 1 : -1;
 
   // Ease the sail in the engagement band: full-canvas turning circles spent
   // minutes pointed away (round 8). 0.72 keeps steerage while pacing.
   return {
     sailSet: 0.72,
-    rudderSign: steerToward(v.bearingDeg, desired),
+    rudderSign,
     fire,
     committedBeam: beam,
   };

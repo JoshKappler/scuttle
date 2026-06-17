@@ -21,6 +21,16 @@ describe("rig damage geometry (round 7)", () => {
     expect(segmentSailHit({ x: 12, y: 10, z: 5 }, { x: 12, y: 11, z: 6 }, SAIL)).toBeNull();
   });
 
+  it("with a slab thickness, a BEAM-WISE ball through the canvas tears it", () => {
+    // a broadside ball runs along z (parallel to the cloth) at the sail's fore-aft position, INSIDE
+    // its y/z rectangle → with a 1 m slab it tears; the same shot 2 m off the plane still misses.
+    const hit = segmentSailHit({ x: 10.2, y: 11, z: 0 }, { x: 10.2, y: 11, z: 10 }, SAIL, 1.0);
+    expect(hit).not.toBeNull();
+    expect(hit!.z).toBeGreaterThanOrEqual(SAIL.zMin);
+    expect(hit!.z).toBeLessThanOrEqual(SAIL.zMax);
+    expect(segmentSailHit({ x: 12, y: 11, z: 0 }, { x: 12, y: 11, z: 10 }, SAIL, 1.0)).toBeNull();
+  });
+
   const MAST = { x: 5, z: 5, yBase: 6, yTop: 26, r: 0.3 };
 
   it("a ball through the trunk is a mast hit; a near miss is not", () => {

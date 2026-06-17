@@ -396,8 +396,14 @@ export class ShipVisual {
       // surviving trunk height measured from the mast-group origin (which sits at the deck top) —
       // the same convention detachMast uses for its cut height.
       const top = mastTopY[mi] ?? -Infinity;
-      const survAboveFoot = top - rig.group.position.y;
       const aliveAtFoot = top > -Infinity; // any voxel trunk still standing off the deck?
+      let survAboveFoot = top - rig.group.position.y;
+      // a grid-CAPPED mast (the man-o-war: its voxel trunk truncates partway up, with a thin
+      // cosmetic topmast carrying the upper rig) reaches its FULL rigged height as long as any
+      // trunk stands — the voxel top is artificially low, so don't cull the upper yards/sails by
+      // it. Only an actual sever (aliveAtFoot → false) drops the whole rig. This is what restores
+      // the man-o-war's missing top sails (the voxel-mast change had hidden everything above ~16 m).
+      if (rig.cosmeticPole && aliveAtFoot) survAboveFoot = Math.max(survAboveFoot, rig.mastH);
       // the cosmetic TOPMAST cylinder (only present on a grid-capped hull, e.g. the man-o-war) hangs
       // above the voxels — it shows while the voxel trunk under it stands and drops once it's gone.
       if (rig.cosmeticPole) rig.pole.visible = aliveAtFoot;
@@ -448,6 +454,9 @@ export class ShipVisual {
     rec.mesh.getWorldPosition(pos);
     rec.mesh.getWorldQuaternion(quat);
     rec.mesh.visible = false;
+    // drop the empty gunport frame + dark recess too, so the WHOLE gun goes — barrel, carriage AND
+    // the framed port — instead of leaving the port surround floating where the gun used to sit.
+    for (const m of this.gunportMeshes.get(portIndex) ?? []) m.visible = false;
     return { pos, quat };
   }
 
@@ -505,6 +514,10 @@ export class ShipVisual {
   /** Per gun: the yaw pivot, plus (once the GLB is dissected) the trunnion
    *  group that takes elevation and the sculpt's baked tilt to counter. */
   private barrels: { mesh: THREE.Object3D; portIndex: number; side: 1 | -1; elev?: THREE.Object3D; tilt?: number; facing?: GunFacing }[] = [];
+  /** Per port: its decorative gunport frame + dark recess meshes, so when the gun is shot off its
+   *  mount they're hidden ALONG WITH the carriage (else the empty frame floats where the gun sat —
+   *  the "base of the cannon stays" bug). Keyed by portIndex; absent for guns with no framed port. */
+  private gunportMeshes = new Map<number, THREE.Object3D[]>();
   private dispRudder = 0;
   private lastAnimT = 0;
   /** Local position of the ship's wheel — gameplay anchors helm control here. */
@@ -961,6 +974,7 @@ export class ShipVisual {
         hole.position.set(wx + dir * 0.05, wy, wz); // PROUD of the skin so the dark opening shows
         hole.rotation.y = Math.PI / 2;
         this.group.add(frame, hole);
+        this.gunportMeshes.set(portIndex, [frame, hole]); // hidden with the gun when its mount is shot away
       } else if (port.y < this.build.deckY) {
         // a below-deck broadside gunport on the hull side
         const wz = (port.z + 0.5) * VOXEL_SIZE;
@@ -969,6 +983,7 @@ export class ShipVisual {
         const hole = new THREE.Mesh(gunportHoleGeo, gunportMat);
         hole.position.set(px, wy, wz + port.side * 0.05);
         this.group.add(frame, hole);
+        this.gunportMeshes.set(portIndex, [frame, hole]); // hidden with the gun when its mount is shot away
       }
     }
 

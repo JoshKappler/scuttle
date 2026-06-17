@@ -34,12 +34,41 @@ export interface Box {
   max: V3;
 }
 
-/** Where (if anywhere) the segment p0→p1 crosses the sail's plane inside
- *  its rectangle. Returns the crossing point's (y, z) or null. */
-export function segmentSailHit(p0: V3, p1: V3, sail: SailRect): { y: number; z: number } | null {
+/**
+ * Where (if anywhere) the segment p0→p1 strikes the sail inside its rectangle, returning the
+ * (y, z) of the strike or null.
+ *
+ * `thickness` gives the canvas a small FORE-AFT depth so it's a thin SLAB, not a zero-width plane.
+ * With thickness 0 (default — what the geometry tests use) only a ball PIERCING the plane fore-aft
+ * tears it. A real broadside ball, though, crosses the rig nearly BEAM-WISE (parallel to the cloth)
+ * and the old plane-only test let every such shot sail straight through untouched ("sails don't get
+ * holes every time they should"). A slab lets a beam-wise ball passing through the canvas's depth
+ * tear it too.
+ */
+export function segmentSailHit(
+  p0: V3,
+  p1: V3,
+  sail: SailRect,
+  thickness = 0,
+): { y: number; z: number } | null {
   const dx = p1.x - p0.x;
-  if (Math.abs(dx) < 1e-9) return null; // flying parallel to the cloth
-  const t = (sail.planeX - p0.x) / dx;
+  const half = thickness / 2;
+  if (Math.abs(dx) < 1e-9) {
+    // beam-wise (parallel to the cloth): tears only if it runs within the canvas depth AND some
+    // point of its sweep lands inside the rectangle.
+    if (Math.abs(p0.x - sail.planeX) > half) return null;
+    for (const t of [0, 0.5, 1]) {
+      const y = p0.y + (p1.y - p0.y) * t;
+      const z = p0.z + (p1.z - p0.z) * t;
+      if (y >= sail.yMin && y <= sail.yMax && z >= sail.zMin && z <= sail.zMax) return { y, z };
+    }
+    return null;
+  }
+  // entry parameter into the slab [planeX-half, planeX+half] (the bare plane crossing when half=0).
+  const t =
+    half > 0
+      ? Math.min(Math.max(Math.min((sail.planeX - half - p0.x) / dx, (sail.planeX + half - p0.x) / dx), 0), 1)
+      : (sail.planeX - p0.x) / dx;
   if (t < 0 || t > 1) return null;
   const y = p0.y + (p1.y - p0.y) * t;
   const z = p0.z + (p1.z - p0.z) * t;
