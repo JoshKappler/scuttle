@@ -76,6 +76,7 @@ export class Cannons {
     let ready = 0;
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
       if (!this.bears(ship.build.cannonPorts[p], key)) continue;
+      if (!ship.cannonAlive[p]) continue; // a dismounted gun is neither ready nor counted
       total++;
       if (this.portReload(ship, p, simTime) <= 0) ready++;
     }
@@ -118,6 +119,7 @@ export class Cannons {
     const spread = Math.max(0, TUN.gun.broadsideSpread);
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
       if (!this.bears(ship.build.cannonPorts[p], key)) continue;
+      if (!ship.cannonAlive[p]) continue; // a gun off its mount can't fire (player + AI)
       if (this.portReload(ship, p, simTime) > 0) continue;
       this.portReloadAt.set(this.portKey(ship, p), simTime + this.reloadS * this.reloadMul);
       // Ragged volley: the first bearing gun fires immediately (click feedback); the rest are

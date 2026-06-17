@@ -122,6 +122,15 @@ export const TUN = {
      *  later shot fires along where that gun bears then (the cost of the ripple vs. the frozen
      *  aim-line; accepted for the feel — "wouldn't fire twenty-one cannons at exactly the same time"). */
     broadsideSpread: 1.6,
+    /** Cannon MOUNT survival fraction: a gun stays bolted to the deck while at least this share of
+     *  its initial mount cells (the bed + the planking under the truck — sim/cannonMount.ts) is still
+     *  solid. Once the hull beneath it is shot/rammed away below this, the gun loses its footing,
+     *  tips off the side into the sea, and can no longer be fired or counted in a broadside. Lower =
+     *  the gun clings on through more damage; higher = a glancing hit dismounts it. */
+    mountToughness: 0.5,
+    /** Outboard kick (m/s) added to a dismounted gun as it tips over the rail — so it clears the
+     *  hull and splashes alongside instead of dropping straight through the deck. */
+    fallKick: 1.5,
   },
 
   /** Ship-vs-ship DEFORMABLE contact (game/voxelContact.ts) — the Teardown rule. Ship-ship pairs

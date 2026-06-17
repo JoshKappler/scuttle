@@ -422,6 +422,7 @@ async function main() {
   const cannons = new Cannons(scene, effects);
   const debris = new DebrisManager(physics, scene, effects);
   sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
+  sloop.onCannonLost = (pi) => debris.spawnFallingCannon(sloop, pi);
 
   // ---- the hostile fleet (game/fleet.ts) ----
   // Each enemy now gets its OWN voxel sea-cut profile, stamped into its ocean slot's atlas band when
@@ -452,6 +453,7 @@ async function main() {
     const ea = -Math.atan2(pc.z - etr.z, pc.x - etr.x);
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
     ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
+    ship.onCannonLost = (pi) => debris.spawnFallingCannon(ship, pi);
     ship.onMastFelled = () => gs.msg.post("her mast goes by the board!");
     ship.onRudderHit = (hp) => {
       visual.chipRudder(hp / 3);
@@ -567,6 +569,7 @@ async function main() {
     const fresh = new Ship(physics, build, visual, { x: at.x, y: Math.max(at.y, 0.5), z: at.z });
     fresh.body.setRotation(rot, true);
     fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
+    fresh.onCannonLost = (pi) => debris.spawnFallingCannon(fresh, pi);
     fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
     fresh.onRudderHit = (hp) => {
       visual.chipRudder(hp / 3);
@@ -611,6 +614,7 @@ async function main() {
   // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
   // equivalents are wired per-spawn in the fleet factory above.
   sloop.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
+  sloop.onCannonLost = (pi) => debris.spawnFallingCannon(sloop, pi);
   sloop.onRudderHit = (hp) => {
     sloopVisual.chipRudder(hp / 3);
     gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
@@ -1174,7 +1178,7 @@ async function main() {
       hudEls.gunStatus.textContent = "GUNS READY";
       hudEls.gunStatus.className = "ready";
     } else {
-      const sideGuns = sloop.build.cannonPorts.filter((p) => gunBears(p, aimBearing())).length;
+      const sideGuns = sloop.build.cannonPorts.filter((p, i) => sloop.cannonAlive[i] && gunBears(p, aimBearing())).length;
       hudEls.gunStatus.textContent = `LOADING ${Math.round(ready2 * sideGuns)}/${sideGuns}`;
       hudEls.gunStatus.className = "";
     }
@@ -1272,7 +1276,7 @@ async function main() {
     if (controls.aiming) {
       const bearing = aimBearing();
       sloop.build.cannonPorts.forEach((p, i) => {
-        if (gunBears(p, bearing)) portIdxs.push(i);
+        if (sloop.cannonAlive[i] && gunBears(p, bearing)) portIdxs.push(i);
       });
     }
 

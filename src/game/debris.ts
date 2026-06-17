@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
 import { G, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
+import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { MATERIALS } from "../sim/materials";
 import { createGrid } from "../sim/voxelGrid";
@@ -156,6 +157,77 @@ export class DebrisManager {
       age: 0,
       probes,
       wreck,
+    });
+  }
+
+  /** Shared falling-cannon barrel geometry/material (one ~2 m iron tube), built once. */
+  private static cannonGeo: THREE.BufferGeometry | null = null;
+  private static cannonMat: THREE.Material | null = null;
+
+  /**
+   * A cannon whose hull mount has been carved away (ship.loseCannon → onCannonLost): HIDE the static
+   * gun mesh and drop a falling cast-iron barrel at its exact world pose, inheriting the ship's
+   * velocity plus an OUTBOARD kick so it tips over the rail. It's a low-buoyancy flotsam piece — iron
+   * is heavy, so it splashes alongside and sinks (the existing update() Archimedes + lifetime own it).
+   * Headless / no-mesh ships no-op (hideCannon returns null).
+   */
+  spawnFallingCannon(ship: Ship, portIndex: number): void {
+    const pose = ship.visual.hideCannon(portIndex);
+    if (!pose) return;
+    const { world, RAPIER: R } = this.physics;
+    const port = ship.build.cannonPorts[portIndex];
+
+    // shared mesh: a stubby iron tube, oriented along its length (x) like the real barrel.
+    if (!DebrisManager.cannonGeo) {
+      const g = new THREE.CylinderGeometry(0.13, 0.16, 2.0, 10);
+      g.rotateZ(Math.PI / 2); // lie the tube along x
+      DebrisManager.cannonGeo = g;
+      DebrisManager.cannonMat = new THREE.MeshStandardMaterial({ color: 0x16161a, roughness: 0.5, metalness: 0.7 });
+    }
+    const mesh = new THREE.Mesh(DebrisManager.cannonGeo, DebrisManager.cannonMat!);
+    mesh.castShadow = true;
+    mesh.position.copy(pose.pos);
+    mesh.quaternion.copy(pose.quat);
+    this.scene.add(mesh);
+
+    // outboard world direction: a broadside gun tips out ±z (its side); a chaser tips out ±x.
+    const rot = ship.body.rotation();
+    const sq = this.tmpQ.set(rot.x, rot.y, rot.z, rot.w);
+    const outLocal = port.facing
+      ? this.tmpP.set(port.facing === "fore" ? 1 : -1, 0, 0)
+      : this.tmpP.set(0, 0, port.side);
+    const out = outLocal.applyQuaternion(sq).normalize();
+    const sv = ship.body.linvel();
+    const kick = TUN.gun.fallKick;
+
+    const desc = R.RigidBodyDesc.dynamic()
+      .setTranslation(pose.pos.x, pose.pos.y, pose.pos.z)
+      .setRotation({ x: pose.quat.x, y: pose.quat.y, z: pose.quat.z, w: pose.quat.w })
+      .setLinvel(sv.x + out.x * kick, sv.y + 0.4, sv.z + out.z * kick)
+      .setAngvel({ x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2, z: (Math.random() - 0.5) * 2 })
+      .setLinearDamping(0.4)
+      .setAngularDamping(0.9);
+    const body = world.createRigidBody(desc);
+    // a slim capsule-ish cuboid around the barrel; density 0 (mass set explicitly below).
+    const col = R.ColliderDesc.cuboid(1.0, 0.16, 0.16).setDensity(0);
+    world.createCollider(col, body);
+    body.setAdditionalMassProperties(
+      320, // a real iron 6-pounder barrel is heavy — it pulls itself under
+      { x: 0, y: 0, z: 0 },
+      { x: 4, y: 40, z: 40 },
+      { x: 0, y: 0, z: 0, w: 1 },
+      true,
+    );
+
+    this.pieces.push({
+      body,
+      mesh,
+      // small displacing volume so iron rides LOW and founders fast (a splash, then under).
+      volume: 0.22,
+      halfHeight: 0.16,
+      age: 0,
+      probes: [[0, 0, 0]],
+      wreck: false,
     });
   }
 

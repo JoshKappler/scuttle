@@ -19,6 +19,7 @@ import {
   type Compartment,
 } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
+import { mountSolidCount, mountLost } from "../sim/cannonMount";
 import { MATERIALS, breakEnergy } from "../sim/materials";
 import { segmentBoxHit, segmentMastHit, segmentSailHit } from "../sim/rigDamage";
 import { meshChunk } from "../render/voxelMesher";
@@ -77,6 +78,9 @@ export class Ship implements ContactTarget {
   onMastFelled?: (mi: number) => void;
   /** Fired when the rudder takes a ball. */
   onRudderHit?: (hpLeft: number) => void;
+  /** Fired when a cannon's hull mount is shot/rammed away — receiver hides the static gun
+   *  mesh and spawns a falling cannon body that tips off the side and sinks. */
+  onCannonLost?: (portIndex: number) => void;
 
   // ---- rig damage state (round 7) ----
   /** Per mast: still standing? */
@@ -101,6 +105,15 @@ export class Ship implements ContactTarget {
   hullToughness = 1;
   private mastFootInit: number[];
   private mastColliders: RAPIER.Collider[] = [];
+
+  // ---- cannon-mount state (Task 8) ----
+  /** Per cannon port: is the gun still mounted (and therefore firable)? A port whose hull
+   *  mount is shot/rammed away flips false — `cannons.ts`/`main.ts` skip it for fire +
+   *  readiness, and `loseCannon` tips the static gun mesh off the side as a falling body. */
+  cannonAlive: boolean[] = [];
+  /** Per port: mount-cell count sampled on the intact hull at build time (the denominator
+   *  for the survival fraction). */
+  private cannonMountInit: number[] = [];
 
   /** Ship-local center of mass (meters), cached for force application points. */
   comLocal: [number, number, number];
@@ -252,6 +265,11 @@ export class Ship implements ContactTarget {
     this.sailIntegrity = build.masts.map(() => 1);
     this.mastFootInit = build.masts.map((m) => this.mastFootCount(m));
 
+    // cannon mounts: every gun starts bolted on; record its intact mount-cell count so
+    // flushDamage can fell it once the hull beneath it is carved below TUN.gun.mountToughness.
+    this.cannonAlive = build.cannonPorts.map(() => true);
+    this.cannonMountInit = build.cannonPorts.map((p) => mountSolidCount(build.grid, p));
+
     this.rebuildDeckCollider();
   }
 
@@ -287,6 +305,15 @@ export class Ship implements ContactTarget {
     if (col) this.phys.world.removeCollider(col, false);
     this.visual.fellMast(mi);
     this.onMastFelled?.(mi);
+  }
+
+  /** A cannon's hull mount has been carved away: the gun is dead. It no longer fires or
+   *  counts toward a broadside (cannons.ts / main.ts read cannonAlive), and the receiver
+   *  (onCannonLost → game/rig.ts) tips the static gun mesh off the side as a falling body. */
+  loseCannon(portIndex: number): void {
+    if (!this.cannonAlive[portIndex]) return;
+    this.cannonAlive[portIndex] = false;
+    this.onCannonLost?.(portIndex);
   }
 
   /** A ball into the trunk. Two stop the mast cold. `localY` (ship-local m) is
@@ -1026,6 +1053,14 @@ export class Ship implements ContactTarget {
     this.build.masts.forEach((m, mi) => {
       if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) this.fellMast(mi);
     });
+    // a cannon whose deck/hull mount has been carved away tips off the side (same cheap 10 Hz
+    // sweep, a few isSolid reads per live gun — no per-frame cost on an undamaged ship).
+    const mountFrac = TUN.gun.mountToughness;
+    for (let i = 0; i < this.build.cannonPorts.length; i++) {
+      if (this.cannonAlive[i] && mountLost(grid, this.build.cannonPorts[i], this.cannonMountInit[i], mountFrac)) {
+        this.loseCannon(i);
+      }
+    }
     this.recomputeMassProperties();
   }
 

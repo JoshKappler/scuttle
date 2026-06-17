@@ -264,6 +264,20 @@ export class ShipVisual {
     if (rig) rig.group.visible = false;
   }
 
+  /** A cannon loses its mount: HIDE the static gun mesh (the live physical fall is a falling
+   *  body spawned by game/rig.ts) and report its current WORLD pose so the caller can spawn the
+   *  toppling cannon exactly where it sat. Returns null if that port has no mesh (e.g. headless). */
+  hideCannon(portIndex: number): { pos: THREE.Vector3; quat: THREE.Quaternion } | null {
+    const rec = this.barrels.find((b) => b.portIndex === portIndex);
+    if (!rec) return null;
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    rec.mesh.getWorldPosition(pos);
+    rec.mesh.getWorldQuaternion(quat);
+    rec.mesh.visible = false;
+    return { pos, quat };
+  }
+
   /** Shrink the rudder blade as it's shot away (1 = whole, 0 = stump). */
   chipRudder(hpFrac: number): void {
     if (this.rudderBlade) this.rudderBlade.scale.y = 0.3 + 0.7 * hpFrac;
@@ -317,7 +331,7 @@ export class ShipVisual {
   private wheelSpin: THREE.Group | null = null;
   /** Per gun: the yaw pivot, plus (once the GLB is dissected) the trunnion
    *  group that takes elevation and the sculpt's baked tilt to counter. */
-  private barrels: { mesh: THREE.Object3D; side: 1 | -1; elev?: THREE.Object3D; tilt?: number; facing?: GunFacing }[] = [];
+  private barrels: { mesh: THREE.Object3D; portIndex: number; side: 1 | -1; elev?: THREE.Object3D; tilt?: number; facing?: GunFacing }[] = [];
   private dispRudder = 0;
   private lastAnimT = 0;
   /** Local position of the ship's wheel — gameplay anchors helm control here. */
@@ -650,7 +664,8 @@ export class ShipVisual {
     const gunportHoleGeo = new THREE.BoxGeometry(0.66, 0.56, 0.18);
     const gunportMat = new THREE.MeshStandardMaterial({ color: 0x07070a, roughness: 1, metalness: 0 });
     const deckInPivot = -0.62; // the pivot origin floats 0.62 above the deck (model space)
-    for (const port of this.build.cannonPorts) {
+    for (let portIndex = 0; portIndex < this.build.cannonPorts.length; portIndex++) {
+      const port = this.build.cannonPorts[portIndex];
       const px = (port.x + 0.5) * VOXEL_SIZE;
       // r17: the gun's own height — deck guns store y = deckY+1 (unchanged), below-deck
       // chase guns a lower y. Mirrors pivotLocal() in gunnery exactly.
@@ -702,7 +717,7 @@ export class ShipVisual {
         add(gg.axle, ironMat, 0, deckInPivot + 0.15, -0.55, true);
       }
       this.group.add(pivot);
-      this.barrels.push({ mesh: pivot, side: port.side, elev, tilt: 0, facing: port.facing });
+      this.barrels.push({ mesh: pivot, portIndex, side: port.side, elev, tilt: 0, facing: port.facing });
 
       // a framed gunport "window" where the barrel exits the hull skin: a wood surround with a
       // dark recess proud of the planking, the barrel running out through it. (The hull voxels
