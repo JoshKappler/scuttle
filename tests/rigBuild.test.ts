@@ -25,6 +25,32 @@ describe("buildRig yards", () => {
   });
 });
 
+describe("buildRig cloth + bowsprit", () => {
+  it("adds 8x6 cloth nodes per sail (2 sails per mast)", () => {
+    const rig = buildRig(oneMast);
+    const cloth = rig.nodes.filter((n) => n.flags & NodeFlag.CLOTH).length;
+    expect(cloth).toBe(2 * 8 * 6);
+  });
+
+  it("every cloth node is initially attached to the ship via the yards", () => {
+    const rig = buildRig(oneMast);
+    const att = attachedToPin(rig);
+    rig.nodes.forEach((n, i) => {
+      if (n.flags & NodeFlag.CLOTH) expect(att[i]).toBe(true);
+    });
+  });
+
+  it("a bowsprit becomes a wood chain whose heel is pinned (FOOT)", () => {
+    const rig = buildRig({
+      ...oneMast,
+      bowsprit: { heel: { x: 8, y: 3, z: 1 }, tip: { x: 12, y: 4, z: 1 } },
+    });
+    const feet = rig.nodes.filter((n) => n.pinned && n.flags & NodeFlag.FOOT);
+    expect(feet.length).toBe(2); // mast foot + bowsprit heel
+    expect(feet.some((n) => Math.abs(n.pos.x - 8) < 1e-6 && Math.abs(n.pos.y - 3) < 1e-6)).toBe(true);
+  });
+});
+
 describe("buildRig trunk", () => {
   it("builds a trunk whose foot is the single pinned, FOOT-flagged node", () => {
     const rig = buildRig(oneMast);
