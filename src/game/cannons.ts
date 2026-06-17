@@ -157,6 +157,7 @@ export class Cannons {
       this.launch(m.pos, m.dir, this.tmpV);
       this.effects.muzzleFlash(m.pos, m.dir);
       this.effects.muzzleSmoke(m.pos, m.dir);
+      this.effects.cannonBoom(m.pos);
     }
 
     // integrate balls
@@ -221,6 +222,7 @@ export class Cannons {
             // debris MATCHES the damage: ~one flying mote per voxel removed, thrown out
             // along the bore (dir negated → points outward). No sparks-and-flash storm.
             this.effects.impactDebris(hit.world, dir.negate(), removed);
+            this.effects.impact(hit.world, removed);
             // momentum transfer: ball mass × impact velocity. Mass lives in
             // TUN.gun.mass (r18: dropped 9→4.3 so the faster muzzle doesn't shove
             // ships ~2× harder — see TUN.gun). Round 8: "more powerful".

@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import type { Spray } from "./spray";
+import { ThrottleGate, crunchVolume } from "./audioMath";
+import type { AudioManager } from "./audio";
 
 /**
  * Pooled particle systems for all transient effects. Two layers:
@@ -98,6 +100,10 @@ export class Effects {
   // the CPU pool. `_simTime` is the absolute sim clock the GPU arcs need.
   private gpuSpray: Spray | null = null;
   private _simTime = 0;
+  /** Optional audio sink — set from main once the AudioManager exists. Feedback (visual + sound)
+   *  flows through this one handle, so cannons/voxelContact don't need extra plumbing. */
+  audio: AudioManager | null = null;
+  private crunchGate = new ThrottleGate(0.06);
   /** Route water spray to the GPU instanced system. */
   attachSpray(spray: Spray): void {
     this.gpuSpray = spray;
@@ -277,6 +283,26 @@ export class Effects {
         2.4,
       );
     }
+  }
+
+  /** Cannon going off — positional boom at the muzzle (slight per-shot pitch variance). */
+  cannonBoom(p: THREE.Vector3): void {
+    this.audio?.playAt("cannon", p, { rate: 0.94 + Math.random() * 0.12, refDistance: 30 });
+  }
+
+  /** Cannonball striking timber — positional, louder for a deeper bite. */
+  impact(p: THREE.Vector3, removed: number): void {
+    if (!this.audio) return;
+    const id = removed >= 4 ? "impact_wood" : "impact_thud";
+    this.audio.playAt(id, p, { volume: Math.min(1, 0.5 + removed / 12) });
+  }
+
+  /** Ship/terrain crunch — rate-limited (ThrottleGate on the sim clock) so a sustained ram
+   *  doesn't machine-gun the sound; loudness scales with the voxels removed. */
+  crunch(p: THREE.Vector3, removed: number): void {
+    if (!this.audio || removed <= 0) return;
+    if (!this.crunchGate.allow(this._simTime)) return;
+    this.audio.playAt("crunch", p, { volume: crunchVolume(removed), refDistance: 26 });
   }
 
   muzzleSmoke(p: THREE.Vector3, dir: THREE.Vector3): void {

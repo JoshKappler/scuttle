@@ -264,6 +264,9 @@ export class VoxelContact {
       force = (jA + jB) / dt;
 
       const removed = removedA + removedB;
+      if (this.effects && removed > 0) {
+        this.effects.crunch(this.pt2.set(bcx, bcy, bcz), removed);
+      }
       if (this.effects && TUN.crush.fling > 0 && removed > 0) {
         this.pt2.set(bcx, bcy, bcz);
         this.imp.set(dhx, 0, dhz);

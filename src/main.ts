@@ -387,6 +387,7 @@ async function main() {
   const controls = new PlayerControls(renderer.domElement);
 
   const effects = new Effects();
+  effects.audio = audio; // feedback (visual + sound) flows through the one effects handle
   scene.add(effects.group); // both particle layers + pooled flash lights
   // P5: GPU-instanced ballistic spray — effects.ts routes its bow/crest WATER spray
   // here (the arc runs in the vertex shader; "utilize the GPU heavily"). Spray splash-
