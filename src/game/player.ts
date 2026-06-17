@@ -153,8 +153,13 @@ export class PlayerControls {
    *  and it STAYS where you leave it — no auto-centering "like a car"
    *  (playtest round 5). The HUD shows the live rudder angle. */
   updateSailing(sail: SailingController, dt: number): void {
+    // W ramps the throttle toward full ahead; S drops it back and, held past
+    // zero, engages ASTERN (backing the sails / sweeps) down to -0.5 — so a
+    // ship spawned with her bow into an island can simply back off the dock
+    // instead of plowing forward into the rock (playtest: "no way to go
+    // backwards … I literally can't continue").
     if (this.keys.has("KeyW")) sail.sailSet = Math.min(sail.sailSet + dt * 0.6, 1);
-    if (this.keys.has("KeyS")) sail.sailSet = Math.max(sail.sailSet - dt * 0.6, 0);
+    if (this.keys.has("KeyS")) sail.sailSet = Math.max(sail.sailSet - dt * 0.6, -0.5);
     const steer = (this.keys.has("KeyA") ? 1 : 0) + (this.keys.has("KeyD") ? -1 : 0);
     if (steer !== 0) {
       sail.rudder = Math.min(Math.max(sail.rudder + steer * dt * 1.6, -1), 1);

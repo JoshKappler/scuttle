@@ -13,8 +13,12 @@ export interface Wind {
 }
 
 export class SailingController {
-  sailSet = 0.7; // 0..1
+  sailSet = 0.7; // -0.5..1 (negative = backed sails / sternway)
   rudder = 0; // -1..1 (+ = turn to port)
+  /** Astern is weaker than ahead — backing the sails / sweeps can't match a
+   *  full reach. A negative throttle drives along -fwd at this fraction of the
+   *  ahead thrust the same set would make (playtest: spawn-into-island unstuck). */
+  asternFrac = 0.45;
   /** Crew quality 0..1 — scales thrust. The AI captain sails at a deficit so
    *  the player can out-run and out-turn to a firing position (round 6:
    *  "no amount of throttle and turning can take you broadside … nerf"). */
@@ -78,10 +82,13 @@ export class SailingController {
     const rotUp = this.tmpU.set(0, 1, 0).applyQuaternion(this.tmpQ);
     const upright = Math.min(Math.max(rotUp.y, 0), 1);
     // 0.019: the deep round-5 hull drags more wetted surface than the old
-    // canoe — this keeps full sail in the low-20s of knots
-    const thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.019 * upright * this.efficiency * this.boost;
+    // canoe — this keeps full sail in the low-20s of knots. A negative sailSet
+    // (S held past zero) yields a negative thrust → drive along -fwd at the
+    // reduced asternFrac, so she backs off a dock instead of plowing ahead.
+    let thrust = this.sailSet * wf * wind.speed * wind.speed * mass * 0.019 * upright * this.efficiency * this.boost;
+    if (thrust < 0) thrust *= this.asternFrac;
 
-    if (thrust > 0 && ship.submergedFrac > 0.02) {
+    if (thrust !== 0 && ship.submergedFrac > 0.02) {
       // drive and heel split across every mast (the brig carries two) —
       // scaled per mast by its canvas integrity, zero once it's by the board
       // (round 7: shot-up sails slow you; a felled mast pulls nothing)

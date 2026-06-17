@@ -331,7 +331,7 @@ async function main() {
     const dock = islands.nearestDock(tr.x, tr.z);
     if (dock) {
       sloop.body.setTranslation({ x: dock.x + 54, y: 0.5, z: dock.z }, true);
-      sloop.body.setRotation({ x: 0, y: 1, z: 0, w: 0 }, true); // bow toward the town (-x)
+      sloop.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true); // bow SEAWARD (+x) — sail away from the dock
       sloop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       sloop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     }
@@ -598,7 +598,7 @@ async function main() {
     const dock = islands.nearestDock(tr.x, tr.z);
     if (dock) {
       sloop.body.setTranslation({ x: dock.x + 54, y: 0.6, z: dock.z }, true);
-      sloop.body.setRotation({ x: 0, y: 1, z: 0, w: 0 }, true); // bow toward the town
+      sloop.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true); // bow SEAWARD (+x) — sail away from the dock
     }
     sloop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     sloop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
