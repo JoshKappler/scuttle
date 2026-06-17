@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildBrig } from "../src/sim/shipwright";
+import { mountSolidCount } from "../src/sim/cannonMount";
 import { EMPTY } from "../src/sim/materials";
 import { WATER_DENSITY } from "../src/core/constants";
 
@@ -39,11 +40,20 @@ describe("shipwright brig (round 6: the real fighting vessel)", () => {
     for (const p of broadside) {
       expect(ship.deckYAt(p.x)).toBe(ship.deckY); // not under the quarterdeck
     }
-    // r17: axial chasers — fore and aft — seated below the main deck, fired apart from the sides
-    expect(ship.cannonPorts.filter((p) => p.facing === "fore").length).toBeGreaterThan(0);
-    expect(ship.cannonPorts.filter((p) => p.facing === "aft").length).toBeGreaterThan(0);
+    // axial chasers — fore and aft — seated below the main deck, fired apart from the sides.
+    // cannon-count pass: 3 bow + 3 stern (was 2+2) — the brig is bigger than the sloop's 2+2.
+    expect(ship.cannonPorts.filter((p) => p.facing === "fore").length).toBe(3);
+    expect(ship.cannonPorts.filter((p) => p.facing === "aft").length).toBe(3);
     for (const p of ship.cannonPorts.filter((p) => p.facing)) {
       expect(p.y).toBeLessThan(ship.deckY);
+      expect(mountSolidCount(ship.grid, p)).toBeGreaterThan(0); // each chaser bolts to real timber
+    }
+    // each chaser battery's z-values are symmetric about the centerline (a centred gun +
+    // a mirror pair): sorted, the i-th from each end sum to nz − 1.
+    const nz = ship.grid.dims[2];
+    for (const key of ["fore", "aft"] as const) {
+      const zs = ship.cannonPorts.filter((p) => p.facing === key).map((p) => p.z).sort((a, b) => a - b);
+      for (let i = 0, j = zs.length - 1; i < j; i++, j--) expect(zs[i] + zs[j]).toBe(nz - 1);
     }
   });
 

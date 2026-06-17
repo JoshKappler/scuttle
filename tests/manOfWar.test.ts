@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildManOfWar } from "../src/sim/shipwright";
 import { findCompartments } from "../src/sim/compartments";
+import { mountSolidCount } from "../src/sim/cannonMount";
 import { RAM } from "../src/sim/materials";
 
 const ship = buildManOfWar();
@@ -47,12 +48,24 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
     }
   });
 
-  it("mounts bow AND stern chasers, seated below the weather deck (front + back guns)", () => {
+  it("mounts a heavy chase battery: 6 bow + 8 stern chasers, seated below the weather deck", () => {
+    // cannon-count pass: the first-rate's explicit minimum — 6 forward + 8 aft axial guns,
+    // far beyond the brig's pair (the bigger the ship, the more chasers).
     const fore = ship.cannonPorts.filter((p) => p.facing === "fore");
     const aft = ship.cannonPorts.filter((p) => p.facing === "aft");
-    expect(fore.length).toBeGreaterThanOrEqual(2);
-    expect(aft.length).toBeGreaterThanOrEqual(2);
-    for (const p of [...fore, ...aft]) expect(p.y).toBeLessThan(ship.deckY);
+    expect(fore.length).toBe(6);
+    expect(aft.length).toBe(8);
+    for (const p of [...fore, ...aft]) {
+      expect(p.y).toBeLessThan(ship.deckY); // axial guns fire below the weather deck
+      expect(mountSolidCount(ship.grid, p)).toBeGreaterThan(0); // each bolts to real hull timber
+    }
+    // each battery's z-values are mirror pairs about the centerline (port/starboard symmetry).
+    const nz = ship.grid.dims[2];
+    for (const guns of [fore, aft]) {
+      const zs = guns.map((p) => p.z).sort((a, b) => a - b);
+      expect(zs.length % 2).toBe(0); // even count → all paired
+      for (let i = 0, j = zs.length - 1; i < j; i++, j--) expect(zs[i] + zs[j]).toBe(nz - 1);
+    }
   });
 
   it("leaves embrasures in the weather-deck fence for the upper-tier guns", () => {

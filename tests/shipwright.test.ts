@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildSloop, buildCutter, buildFrigate, type ShipBuild } from "../src/sim/shipwright";
 import { findCompartments } from "../src/sim/compartments";
+import { mountSolidCount } from "../src/sim/cannonMount";
 import { WATER_DENSITY, VOXEL_SIZE } from "../src/core/constants";
 import { RAM } from "../src/sim/materials";
 
@@ -71,12 +72,24 @@ describe("shipwright sloop", () => {
     expect(ship.interiorLeaks).toEqual([]);
   });
 
-  it("metadata: 10 cannon ports (8 broadside + 2 chasers), ≥1 mast, hatches over each hold", () => {
-    expect(ship.cannonPorts.length).toBe(10);
+  it("metadata: 12 cannon ports (8 broadside + 4 chasers), ≥1 mast, hatches over each hold", () => {
+    // cannon-count pass: the sloop carries 2 bow + 2 stern chasers (was 1+1).
+    expect(ship.cannonPorts.length).toBe(12);
     expect(ship.cannonPorts.filter((p) => !p.facing).length).toBe(8);
-    expect(ship.cannonPorts.filter((p) => p.facing).length).toBe(2);
+    expect(ship.cannonPorts.filter((p) => p.facing === "fore").length).toBe(2);
+    expect(ship.cannonPorts.filter((p) => p.facing === "aft").length).toBe(2);
     expect(ship.masts.length).toBeGreaterThanOrEqual(1);
     expect(ship.hatches.length).toBe(3);
+  });
+
+  it("every chaser is mirrored in z about the centerline (the fleet pairs straddle it)", () => {
+    const nz = ship.grid.dims[2];
+    for (const key of ["fore", "aft"] as const) {
+      const zs = ship.cannonPorts.filter((p) => p.facing === key).map((p) => p.z).sort((a, b) => a - b);
+      // a 2-gun battery is one mirror pair: z values sum to nz − 1.
+      expect(zs.length).toBe(2);
+      expect(zs[0] + zs[zs.length - 1]).toBe(nz - 1);
+    }
   });
 
   it("compartments carry volume and centroid", () => {
@@ -131,7 +144,24 @@ function tierInvariants(name: string, build: () => ShipBuild, broadside: number,
     it(`carries ${broadside} broadside guns + ${chasers} chasers, ≥1 mast`, () => {
       expect(s.cannonPorts.filter((p) => !p.facing).length).toBe(broadside);
       expect(s.cannonPorts.filter((p) => p.facing).length).toBe(chasers);
+      // cannon-count pass: bow + stern chasers split evenly (front + back guns).
+      expect(s.cannonPorts.filter((p) => p.facing === "fore").length).toBe(chasers / 2);
+      expect(s.cannonPorts.filter((p) => p.facing === "aft").length).toBe(chasers / 2);
       expect(s.masts.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("every chaser is seated below deck on solid timber, mirrored in z", () => {
+      const nz = s.grid.dims[2];
+      for (const key of ["fore", "aft"] as const) {
+        const guns = s.cannonPorts.filter((p) => p.facing === key);
+        for (const p of guns) {
+          expect(p.y).toBeLessThan(s.deckY); // axial guns fire below the weather deck
+          expect(mountSolidCount(s.grid, p)).toBeGreaterThan(0); // a real hull mount, not air
+        }
+        // the battery's z-values form mirror pairs about the centerline (set sums symmetric).
+        const zs = guns.map((p) => p.z).sort((a, b) => a - b);
+        for (let i = 0, j = zs.length - 1; i < j; i++, j--) expect(zs[i] + zs[j]).toBe(nz - 1);
+      }
     });
 
     it("deterministic: building twice yields identical grids", () => {
@@ -140,5 +170,5 @@ function tierInvariants(name: string, build: () => ShipBuild, broadside: number,
   });
 }
 
-tierInvariants("cutter", buildCutter, 4, 2); // 2 guns/side + bow & stern chasers
-tierInvariants("frigate", buildFrigate, 12, 4); // 6 guns/side + 2 bow + 2 stern chasers
+tierInvariants("cutter", buildCutter, 4, 2); // 2 guns/side + 1 bow + 1 stern chaser
+tierInvariants("frigate", buildFrigate, 12, 8); // 6 guns/side + 4 bow + 4 stern chasers

@@ -330,9 +330,15 @@ export function buildSloop(): ShipBuild {
   }
 
   // r17: the sloop's bow + stern chasers (axial guns; see the brig for the rationale).
-  const czi = Math.round(cz);
-  cannonPorts.push({ x: x0 + L - 5, y: deckY - 4, z: czi, side: 1, facing: "fore" });
-  cannonPorts.push({ x: x0 + 4, y: deckY - 1, z: czi, side: 1, facing: "aft" });
+  // Cannon-count pass: 2 bow + 2 stern (was 1+1) — bigger ship, more chasers. The pair
+  // straddles the centerline (cz0/cz1 sum to nz−1 → exact mirror), both seated in solid
+  // bow/stern timber below the deck so each has a real mount (sim/cannonMount.ts).
+  const cz0 = Math.floor(cz),
+    cz1 = Math.ceil(cz); // true mirror pair: cz0 + cz1 === nz − 1
+  cannonPorts.push({ x: x0 + L - 5, y: deckY - 4, z: cz0, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 5, y: deckY - 4, z: cz1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + 4, y: deckY - 1, z: cz0, side: -1, facing: "aft" });
+  cannonPorts.push({ x: x0 + 4, y: deckY - 1, z: cz1, side: 1, facing: "aft" });
 
   // single mast slightly forward of midship
   const masts = [{ x: x0 + Math.round(L * 0.42), z: Math.round(cz), h: 15 }];
@@ -606,15 +612,22 @@ export function buildBrig(): ShipBuild {
     cannonPorts.push({ x: px, y: deckY + 1, z: Math.ceil(cz) - hb, side: -1 });
   }
 
-  // r17: a bow chaser one gun deck BELOW the main deck (fires forward) and a stern chaser
-  // from the great cabin (fires aft) — axial guns so you can line a shot on a ship you're
+  // r17: bow chasers one gun deck BELOW the main deck (fire forward) and stern chasers
+  // from the great cabin (fire aft) — axial guns so you can line a shot on a ship you're
   // chasing or running from, not only abeam ("so hard to line up shots with the enemy").
-  // The hull voxels stay intact (shipVisual frames the gunport); both sit above the water.
-  const czi = Math.round(cz);
-  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: czi - 1, side: -1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: czi + 1, side: 1, facing: "fore" });
-  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: czi - 1, side: -1, facing: "aft" });
-  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: czi + 1, side: 1, facing: "aft" });
+  // The hull voxels stay intact (shipVisual frames the gunport); all sit above the water.
+  // Cannon-count pass: 3 bow + 3 stern (was 2+2) — a mirror pair straddling the centerline
+  // plus a CENTRED gun seated one station further inboard so no two share a voxel. cz0/cz1 are
+  // the two centre cells (cz0 + cz1 === nz − 1 → an exact mirror pair); the centred gun sits on
+  // cz1. Each seats in solid bow/stern timber (sim/cannonMount.ts samples a box around the port).
+  const cz0 = Math.floor(cz),
+    cz1 = Math.ceil(cz); // true mirror pair about the centerline
+  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: cz0, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: cz1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 9, y: deckY - 3, z: cz1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: cz0, side: -1, facing: "aft" });
+  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: cz1, side: 1, facing: "aft" });
+  cannonPorts.push({ x: x0 + 8, y: deckY - 3, z: cz1, side: 1, facing: "aft" });
 
   // brig rig: main mast forward of midship, fore mast toward the bow
   const masts = [
@@ -1020,11 +1033,21 @@ export function buildFrigate(): ShipBuild {
     cannonPorts.push({ x: px, y: deckY + 1, z: Math.floor(cz) + hb, side: 1 });
     cannonPorts.push({ x: px, y: deckY + 1, z: Math.ceil(cz) - hb, side: -1 });
   }
-  const czi = Math.round(cz);
-  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: czi - 1, side: -1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: czi + 1, side: 1, facing: "fore" });
-  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: czi - 1, side: -1, facing: "aft" });
-  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: czi + 1, side: 1, facing: "aft" });
+  // Cannon-count pass: 4 bow + 4 stern chasers (was 2+2) on this big late-game frigate —
+  // two mirror pairs per end on two gun-deck heights, the inner pair tucked near the
+  // centerline and the outer pair spread in z and seated a deck lower. cz0/cz1 are the centre
+  // cells (cz0 + cz1 === nz − 1); spreading both outward by k keeps each pair an exact mirror.
+  // All sit in solid bow/stern timber below the weather deck (sim/cannonMount.ts).
+  const cz0 = Math.floor(cz),
+    cz1 = Math.ceil(cz);
+  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: cz0, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 6, y: deckY - 5, z: cz1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 8, y: deckY - 9, z: cz0 - 2, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 8, y: deckY - 9, z: cz1 + 2, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: cz0, side: -1, facing: "aft" });
+  cannonPorts.push({ x: x0 + 5, y: deckY - 1, z: cz1, side: 1, facing: "aft" });
+  cannonPorts.push({ x: x0 + 7, y: deckY - 6, z: cz0 - 2, side: -1, facing: "aft" });
+  cannonPorts.push({ x: x0 + 7, y: deckY - 6, z: cz1 + 2, side: 1, facing: "aft" });
 
   // three masts
   const masts = [
@@ -1270,13 +1293,36 @@ export function buildManOfWar(): ShipBuild {
   addBroadside(midXs, midGunY);
   addBroadside(upperXs, deckY + 1);
 
-  // axial chasers: 2 bow (fore, under the forecastle) + 2 stern (aft, great cabin),
-  // seated below the weather deck and fired apart from the broadsides (like the brig).
-  const czi = Math.round(cz);
-  cannonPorts.push({ x: x0 + L - 7, y: deckY - 5, z: czi - 1, side: -1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 7, y: deckY - 5, z: czi + 1, side: 1, facing: "fore" });
-  cannonPorts.push({ x: x0 + 6, y: deckY - 1, z: czi - 1, side: -1, facing: "aft" });
-  cannonPorts.push({ x: x0 + 6, y: deckY - 1, z: czi + 1, side: 1, facing: "aft" });
+  // axial chasers (cannon-count pass): 6 bow (fore, under the forecastle) + 8 stern (aft,
+  // through the great cabin / transom) — the first-rate's explicit minimum, a heavy chase
+  // battery far beyond the brig's pair. They are stacked across the THREE gun-deck heights
+  // and spread in z, fired apart from the broadsides. Every pair straddles the centerline
+  // (z sums to 2·czi → exact mirror); all seat in solid bow/stern timber below the weather
+  // deck (sim/cannonMount.ts samples a box around each port). The bow is a finer wedge than
+  // the broad transom, so the bow chasers hug the centerline while the stern guns fan wider.
+  const cz0 = Math.floor(cz),
+    cz1 = Math.ceil(cz); // centre cells; cz0 + cz1 === nz − 1, so spreading both by k mirrors
+  // ---- 6 bow chasers: three mirror pairs stepping down the stem, near the centerline ----
+  // The bow is a fine wedge, so seats stay close to the centerline and step aft+down into the
+  // solid forecastle timber (verified: each has a real hull mount, sim/cannonMount.ts).
+  cannonPorts.push({ x: x0 + L - 7, y: deckY - 5, z: cz0, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 7, y: deckY - 5, z: cz1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 15, y: deckY - 7, z: cz0 - 1, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 15, y: deckY - 7, z: cz1 + 1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 17, y: deckY - 9, z: cz0, side: -1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 17, y: deckY - 9, z: cz1, side: 1, facing: "fore" });
+  // ---- 8 stern chasers: four mirror pairs fanning across the broad transom ----
+  // The transom is full and wide up at the cabin deck, so the eight guns fan out in z across
+  // the great cabin (each pair straddles the centerline → port/starboard symmetry).
+  const sternX = x0 + 6;
+  cannonPorts.push({ x: sternX, y: deckY - 1, z: cz0, side: -1, facing: "aft" });
+  cannonPorts.push({ x: sternX, y: deckY - 1, z: cz1, side: 1, facing: "aft" });
+  cannonPorts.push({ x: sternX + 1, y: deckY - 3, z: cz0 - 3, side: -1, facing: "aft" });
+  cannonPorts.push({ x: sternX + 1, y: deckY - 3, z: cz1 + 3, side: 1, facing: "aft" });
+  cannonPorts.push({ x: sternX + 2, y: deckY - 5, z: cz0 - 6, side: -1, facing: "aft" });
+  cannonPorts.push({ x: sternX + 2, y: deckY - 5, z: cz1 + 6, side: 1, facing: "aft" });
+  cannonPorts.push({ x: sternX + 3, y: deckY - 5, z: cz0 - 9, side: -1, facing: "aft" });
+  cannonPorts.push({ x: sternX + 3, y: deckY - 5, z: cz1 + 9, side: 1, facing: "aft" });
 
   // three masts: mizzen (aft), main (tallest, amidships), fore (forward)
   const masts = [
