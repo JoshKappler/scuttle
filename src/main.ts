@@ -148,6 +148,7 @@ async function main() {
     onResume: () => {
       gs.resume();
       menu.hide();
+      controls.requestLock(); // re-capture the mouse so the voyage continues pointer-locked
     },
     onQuitToMenu: () => {
       saveCurrent();
@@ -920,12 +921,21 @@ async function main() {
     if (e.code === "Escape") {
       // Esc pauses mid-voyage and resumes from the pause screen. Ignored at the
       // title screen and while the port is open (close the port with its own button).
+      //
+      // ONE-PRESS Esc → pause: while pointer-locked the browser RESERVES Esc to exit
+      // the lock and SWALLOWS the keydown (no event reaches us on that press) — so the
+      // pause for locked gameplay is opened from the `pointerlockchange` handler below,
+      // not here. This keydown still fires for: (a) closing the menu (Esc while paused,
+      // cursor already free), and (b) pausing from gameplay that ISN'T locked (e.g. the
+      // mouse was freed by the dev panel). The pointerlockchange path won't double-open
+      // because pausing flips the phase off "playing".
       if (gs.phase === "playing") {
         gs.pause();
         menu.showPause();
       } else if (gs.phase === "paused") {
         gs.resume();
         menu.hide();
+        controls.requestLock(); // re-capture the mouse so the voyage continues pointer-locked
       }
     }
     if (e.code === "KeyV" && character.player) {
@@ -1722,6 +1732,23 @@ async function main() {
       ],
     },
   ]);
+  // ONE-PRESS Esc → pause menu. The camera captures the mouse via the Pointer Lock
+  // API; the browser reserves Esc to EXIT that lock and swallows the keydown, so the
+  // first Esc during locked gameplay never reaches the keydown handler above — it only
+  // fires this `pointerlockchange`. When we LOSE the lock while actively playing, open
+  // the pause menu right away, turning that single press into release-cursor → menu.
+  // Guards against false pops: only when phase is "playing" (the port/menu set phase
+  // OFF "playing" BEFORE they exitPointerLock, so those are excluded), and not when the
+  // dev panel did the unlock (it stays in "playing" — devPanel.open is set true before
+  // its exitPointerLock, so it's true by the time this fires).
+  document.addEventListener("pointerlockchange", () => {
+    const lost = document.pointerLockElement === null;
+    if (lost && gs.phase === "playing" && !devPanel.open) {
+      gs.pause();
+      menu.showPause();
+    }
+  });
+
   const _roQ = new THREE.Quaternion();
   const _roF = new THREE.Vector3();
   const _roR = new THREE.Vector3();

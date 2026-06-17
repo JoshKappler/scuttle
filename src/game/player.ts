@@ -71,7 +71,12 @@ export class PlayerControls {
     this.firstPersonMode = on;
   }
 
+  /** The canvas the camera captures the mouse over — kept so the game can
+   *  re-request pointer-lock on resume (one-press Esc → menu, see {@link requestLock}). */
+  private readonly dom: HTMLElement;
+
   constructor(dom: HTMLElement) {
+    this.dom = dom;
     window.addEventListener("keydown", (e) => {
       this.keys.add(e.code);
       if (e.repeat) return; // OS key auto-repeat must not re-trigger actions
@@ -146,6 +151,13 @@ export class PlayerControls {
         this.dist = Math.min(Math.max(this.dist * (1 + Math.sign(e.deltaY) * 0.12), 8), 130);
       }
     });
+  }
+
+  /** Re-capture the mouse for camera/look control. Called when play RESUMES from
+   *  the pause menu so the voyage continues pointer-locked (the browser only grants
+   *  the request inside a user gesture, e.g. the Resume button click). */
+  requestLock(): void {
+    if (!this.locked && document.pointerLockElement !== this.dom) this.dom.requestPointerLock();
   }
 
   /** Apply held keys to the sailing controller. Call once per fixed step.
