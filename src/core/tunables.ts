@@ -195,6 +195,27 @@ export const TUN = {
     fling: 1,
   },
 
+  /** Voxel RIG (masts, yards, bowsprit, sails as ONE breakable point-mass lattice —
+   *  sim/rigLattice.ts + sim/rigBuild.ts, driven by game/rig.ts). Built incrementally:
+   *  Phase 2 wires the BOWSPRIT into the existing ½·μ·v² crush so the forward ram spar
+   *  bores an enemy hull instead of phasing through. Like every TUN knob, NOT read by the
+   *  deterministic vitest oracle. */
+  rig: {
+    /** master enable — off → the rig is inert decoration (old behaviour). */
+    enabled: true,
+    /** the bowsprit/ram spar participates in ship-vs-ship destruction (game/rig.ts bore).
+     *  It feeds the SAME crush rule as a hull ram, just sourced from the spar's reach, so it
+     *  obeys all the crush.* knobs (vBreak gate, toughness, biteDvCap, transferFrac, …). */
+    bowsprit: true,
+    /** bore tunnel half-width in VOXELS perpendicular to the spar (0 = 1-wide, 1 = 3-wide).
+     *  The spar has girth, so a hit punches a real gash, not a needle hole (like the cannon's
+     *  boreRadiusVox). */
+    boreRadiusVox: 1,
+    /** spar sampling spacing in VOXELS along its length — how finely the polyline is walked to
+     *  find the cells it occupies. 0.5 = two samples per voxel (no gaps in the tunnel). */
+    boreStep: 0.5,
+  },
+
   /** Navigational hazards (game/islandField.ts) — extra terrain scattered at world generation.
    *  Read ONCE when the archipelago is built (changing it needs a reload, not a live tweak). */
   hazard: {

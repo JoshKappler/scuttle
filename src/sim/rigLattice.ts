@@ -18,6 +18,7 @@ export const NodeFlag = {
   CLOTH: 2,
   FOOT: 4, // a hull anchor (mast foot / bowsprit heel); pinned to the deck
   WET: 8,
+  SPRIT: 16, // a bowsprit node — the forward ram spar (game/rig.ts bores with these)
 } as const;
 
 /** Link material: WOOD is rigid (resists stretch AND compression); CLOTH only

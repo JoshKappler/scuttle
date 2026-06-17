@@ -4,6 +4,7 @@ import { physicsWaves, type Wave } from "../sim/gerstner";
 import type { Physics } from "./physics";
 import { Ship } from "./ship";
 import { VoxelContact, type ContactTarget } from "./voxelContact";
+import { RigManager } from "./rig";
 
 /**
  * Game orchestration: owns ships, runs the fixed-step physics loop with an
@@ -22,6 +23,9 @@ export class GameWorld {
    *  overlap, then resolves non-penetration + inelastic momentum itself (ship-ship is out of
    *  Rapier's solver, see physics.ts). main.ts may attach `.effects` for dust + read `.debug`. */
   readonly contact = new VoxelContact();
+  /** Voxel-rig runtime (game/rig.ts): the bowsprit/ram spar borings + (later) mast/sail physics.
+   *  Feeds the SAME crush rule as the hull contact. main.ts may attach `.effects`. */
+  readonly rig = new RigManager();
   /** Static terrain (islands, cliffs, sea stacks) as crush hull-B; populated by main.ts after the
    *  IslandField is built. Empty in headless tests (ship-vs-ship still runs). */
   terrain: ContactTarget[] = [];
@@ -109,6 +113,9 @@ export class GameWorld {
       // BEFORE the Rapier step so its velocity + position fixes integrate this step. Sets damageDirty.
       a = performance.now();
       this.contact.stepAll(this.ships, this.terrain, FIXED_DT);
+      // rig contributions (Phase 2: bowsprit boring) feed the SAME crush; run right after the
+      // hull contact and before the Rapier step so their impulses + carves land this step.
+      this.rig.stepAll(this.ships, FIXED_DT);
       tm.contact += performance.now() - a;
       a = performance.now();
       for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute

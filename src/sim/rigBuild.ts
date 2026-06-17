@@ -142,7 +142,7 @@ export function buildRig(spec: RigSpec): Rig {
       const f = i / (count - 1);
       const pos = { x: heel.x + (tip.x - heel.x) * f, y: heel.y + (tip.y - heel.y) * f, z: heel.z + (tip.z - heel.z) * f };
       const isHeel = i === 0;
-      const idx = addNode(pos, WOOD_MASS, NodeFlag.WOOD | (isHeel ? NodeFlag.FOOT : 0), isHeel);
+      const idx = addNode(pos, WOOD_MASS, NodeFlag.WOOD | NodeFlag.SPRIT | (isHeel ? NodeFlag.FOOT : 0), isHeel);
       if (prevIdx >= 0) addLink(prevIdx, idx, LinkKind.WOOD, WOOD_BREAK);
       prevIdx = idx;
     }

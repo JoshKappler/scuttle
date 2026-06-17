@@ -621,6 +621,7 @@ async function main() {
   // driven each fixed step inside world.step — give it the effects sink so carved
   // voxels throw pulverization dust at the contact.
   world.contact.effects = effects;
+  world.rig.effects = effects; // bowsprit bore throws the same pulverization dust
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
   // Steering only happens at the wheel (E to take/leave it). V cycles the view:
   // character 3rd-person (default) → character 1st-person → bird's-eye ship orbit.
@@ -963,6 +964,7 @@ async function main() {
     audio,
     sailing,
     contact: world.contact,
+    rig: world.rig, // RigManager — bowsprit bore (Phase 2); inspect DEBUG.rig
     debris,
     ocean, // ocean surface (setFogColor / setWaterDepth / setReflStrength) — live shader tuning
     sky: skySetup, // gradient dome (sky.material.uniforms uZenith/uHorizon/uSunColor) — live sky tuning
