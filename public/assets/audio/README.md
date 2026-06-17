@@ -47,6 +47,11 @@ the loader decodes whatever the browser supports (`.ogg`, `.wav`, `.mp3`).
 > **Music auto-play is currently disabled** — the procedural pads read as a "stuck hum"
 > in play-test. The crossfade system in `audio.ts` is intact; drop real tracks into
 > `music/` and re-enable the `audio.music(...)` calls in `main.ts` to turn it back on.
+>
+> **`gull`, `creak`, and `rope` are currently MUTED** — the synthetic versions sounded wrong
+> (the seagull was unpleasant; the noise-based creak/rope read as bubbling). They're listed in
+> `PLACEHOLDER_MUTED` in `audio.ts`. Drop a real recording in at the path below, then delete that
+> id from the set and it plays again — the in-game triggers are already wired.
 
 ## Licensing when you drop in premium audio (Steam endgame)
 

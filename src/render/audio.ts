@@ -52,6 +52,12 @@ const MUSIC_GAIN = 0.4;
 const OCEAN_GAIN = 0.28;
 const WIND_BASE = 0.4;
 
+// Procedural placeholders that read poorly in play-test (the synthetic "seagull" was ungodly;
+// the noise-based "creak"/"rope" came across as bubbling on rudder/tilt). They stay MUTED until a
+// real recording is dropped into public/assets/audio/ — DELETE an id here the moment its real file
+// lands and it springs back to life (the trigger logic in main.ts is untouched). See that README.
+const PLACEHOLDER_MUTED = new Set<string>(["gull", "creak", "rope"]);
+
 export class AudioManager {
   readonly listener: THREE.AudioListener;
   private ctx: AudioContext;
@@ -139,6 +145,7 @@ export class AudioManager {
 
   /** Pooled positional one-shot at a world point. */
   playAt(id: string, pos: Vec, opts: PlayOpts = {}): void {
+    if (PLACEHOLDER_MUTED.has(id)) return; // muted bad placeholder — re-enabled by deleting it from the set
     const buf = this.buffers.get(id);
     if (!buf) return;
     const now = this.ctx.currentTime;
