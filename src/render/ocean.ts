@@ -28,6 +28,10 @@ const R_NEAR = 0.8; // m — innermost ring
 const R_FAR = 2400; // m — horizon ring
 const RINGS = 156;
 const SECTORS = 160;
+// The underwater-backdrop bowl's rim depth (world Y). A few metres below the surface so it never pokes
+// up into a horizontal sightline as a horizon wall, yet shallow enough to back the sea the instant it
+// closes over a barely-submerged deck. Below the island sand-shelves so shallows still read through.
+const BOWL_RIM_Y = -6;
 
 export interface Ocean {
   mesh: THREE.Mesh;
@@ -886,18 +890,31 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
   // Underwater backdrop — the fix for "the ocean is just a sheet over the void". The surface mesh is
   // transparent (its alpha fades from ~opaque in deep water to see-through over a shallow floor); in
   // open water it's fully opaque so this never shows, but where the sea goes translucent — the sea
-  // closing over a submerged deck, the shallows near an island — what used to show THROUGH was the sky
-  // dome in the background scene (the black "void beneath the water"). This big opaque dark-navy disc
-  // sits just under the surface so what shows through is DEEP WATER instead: the sea genuinely closes
-  // over the sinking deck. A dark navy (not the near-black uDeepColor) so it reads as water, not void.
-  // Radius < the ocean's R_FAR so it can never poke past the horizon; y below the island sand-shelves
-  // so those still read through the shallows. Unlit + fog so it melts into the horizon haze like the sea.
+  // closing over a submerged deck, looking through a holed bow as it tilts under — what used to show
+  // THROUGH was the sky dome in the background scene, whose below-horizon band reads near-WHITE after
+  // tonemap (the "bright white void beneath the sea"). The backdrop fills that with DEEP NAVY instead.
+  //
+  // It used to be a single FLAT disc at y=-8 — but a flat plane only seals view rays that point
+  // straight DOWN. An ANGLED sightline (a holed bow tilting forward as it sinks → you look down-and-
+  // forward through the gap) passes OVER the rim of a flat disc and escapes to the sky haze → white.
+  // So the backdrop is now a downward BOWL (the lower hemisphere of a big sphere, BackSide so we see
+  // its inner wall) centred under the camera: ANY ray crossing below the surface — straight down OR
+  // angled — terminates on the bowl's navy inner wall, never on the sky. The bowl's RIM is held a few
+  // metres below the surface (clamped per-frame in update()), and the opaque far ocean fills every
+  // near-horizontal sightline, so the bowl is only ever seen DOWN through a transparent patch of sea
+  // and never pokes up as a horizon wall/ring. Dark navy (not the near-black uDeepColor) so it reads
+  // as deep water, not void; fog:true so the far rim melts into the same horizon haze as the sea.
+  //
+  // Geometry: a sphere with thetaStart=π/2, thetaLength=π/2 gives only the lower cap (y ≤ 0 in object
+  // space), an upward-opening bowl. Radius < the ocean's R_FAR (2400) so it can never poke past the
+  // horizon. Centre is offset so the rim (object-space y=0) sits at BOWL_RIM_Y world; the bowl bulges
+  // down to (rim − radius), well below any island sand-shelf, so the deep navy backs every gap.
+  const BOWL_RADIUS = 2350;
   const backdrop = new THREE.Mesh(
-    new THREE.CircleGeometry(2350, 96),
-    new THREE.MeshBasicMaterial({ color: 0x08182b, fog: true, side: THREE.DoubleSide }),
+    new THREE.SphereGeometry(BOWL_RADIUS, 64, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x08182b, fog: true, side: THREE.BackSide }),
   );
-  backdrop.rotation.x = -Math.PI / 2; // lie flat in the XZ plane
-  backdrop.position.y = -8;
+  backdrop.position.y = BOWL_RIM_Y; // rim just under the surface; update() keeps it clamped there
   backdrop.renderOrder = -1; // draw before the transparent surface composites over it
   backdrop.frustumCulled = false;
 
@@ -1019,9 +1036,14 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       // grid — the round-8 "stuttering".
       mesh.position.x = cameraPos.x;
       mesh.position.z = cameraPos.z;
-      // the underwater backdrop follows too, so deep water is always under the player (its Y is fixed).
+      // The underwater-backdrop bowl follows in XZ so deep navy is always under the player. Its rim is
+      // normally pinned at BOWL_RIM_Y (just below the surface), so the camera sits ABOVE the rim and
+      // looks DOWN into the bowl through any transparent patch of sea. If the camera dips UNDERWATER,
+      // keep the rim above the camera (so the camera is inside the bowl, surrounded by navy, never
+      // outside looking at the bowl's far convex back or escaping past the rim to the sky).
       backdrop.position.x = cameraPos.x;
       backdrop.position.z = cameraPos.z;
+      backdrop.position.y = Math.min(BOWL_RIM_Y, cameraPos.y - 2);
     },
   };
 }
