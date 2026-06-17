@@ -450,6 +450,7 @@ async function main() {
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
     ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
     ship.onMastFelled = () => gs.msg.post("her mast goes by the board!");
+    ship.onSailHit = (rec, y, z) => world.rig.tearSail(ship, rec, y, z);
     ship.onRudderHit = (hp) => {
       visual.chipRudder(hp / 3);
       gs.msg.post(hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!");
@@ -565,6 +566,7 @@ async function main() {
     fresh.body.setRotation(rot, true);
     fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
     fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
+    fresh.onSailHit = (rec, y, z) => world.rig.tearSail(fresh, rec, y, z);
     fresh.onRudderHit = (hp) => {
       visual.chipRudder(hp / 3);
       gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
@@ -608,6 +610,7 @@ async function main() {
   // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
   // equivalents are wired per-spawn in the fleet factory above.
   sloop.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
+  sloop.onSailHit = (rec, y, z) => world.rig.tearSail(sloop, rec, y, z);
   sloop.onRudderHit = (hp) => {
     sloopVisual.chipRudder(hp / 3);
     gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");

@@ -27,16 +27,17 @@ export class RigPieceVisual {
   private wood: THREE.InstancedMesh;
   private cloth: THREE.InstancedMesh;
 
-  constructor(private rig: Rig) {
+  constructor(private rig: Rig, clothTile = 0.55) {
     for (let i = 0; i < rig.links.length; i++) if (rig.links[i].kind === LinkKind.WOOD) this.woodLinks.push(i);
     for (let i = 0; i < rig.nodes.length; i++) if (rig.nodes[i].flags & NodeFlag.CLOTH) this.clothNodes.push(i);
 
     const woodMat = new THREE.MeshStandardMaterial({ color: 0x5a4128, roughness: 0.85 });
     const clothMat = new THREE.MeshStandardMaterial({ color: 0xe8dfc8, roughness: 0.95, side: THREE.DoubleSide });
     // unit box on +Z so a beam scales along its length in Z (see setFromUnitVectors(_up→dir) below
-    // uses Z as the beam axis); cloth is a thin flat tile.
+    // uses Z as the beam axis); cloth is a thin flat tile sized to the lattice spacing so the voxels
+    // tile into a sheet (a felled mast uses the small default; a sail passes its grid spacing).
     const beamGeo = new THREE.BoxGeometry(0.18, 0.18, 1);
-    const tileGeo = new THREE.BoxGeometry(0.55, 0.55, 0.06);
+    const tileGeo = new THREE.BoxGeometry(clothTile, clothTile, 0.06);
     this.wood = new THREE.InstancedMesh(beamGeo, woodMat, Math.max(1, this.woodLinks.length));
     this.cloth = new THREE.InstancedMesh(tileGeo, clothMat, Math.max(1, this.clothNodes.length));
     this.wood.castShadow = this.cloth.castShadow = true;
@@ -94,16 +95,17 @@ const _one = new THREE.Vector3(1, 1, 1);
 // rotate +Y onto +Z so a unit box (long axis Z) aligns after setFromUnitVectors(up, dir)
 const _zRot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
 
-/** Connectivity over alive links from anchor nodes — but a felled mast has NO pinned anchors, so
- *  for the falling piece "attached" means reachable from any WOOD node (the spar holds the cloth).
- *  A cloth island cut off from all wood has blown free. */
+/** Connectivity over alive links from anchor nodes. "Attached" = reachable from any WOOD node OR any
+ *  pinned node: a felled mast's cloth hangs off its WOOD spars (no pins); a torn standing sail hangs
+ *  off its PINNED head row (no wood). A cloth island cut off from all anchors has blown free → its
+ *  tiles collapse to nothing. */
 function rigAttached(rig: Rig): boolean[] {
   const n = rig.nodes.length;
   const seen = new Array<boolean>(n).fill(false);
   const adj: number[][] = Array.from({ length: n }, () => []);
   for (const lk of rig.links) { if (!lk.alive) continue; adj[lk.a].push(lk.b); adj[lk.b].push(lk.a); }
   const stack: number[] = [];
-  for (let i = 0; i < n; i++) if (rig.nodes[i].flags & NodeFlag.WOOD) { seen[i] = true; stack.push(i); }
+  for (let i = 0; i < n; i++) if (rig.nodes[i].pinned || (rig.nodes[i].flags & NodeFlag.WOOD)) { seen[i] = true; stack.push(i); }
   while (stack.length) { const i = stack.pop()!; for (const j of adj[i]) if (!seen[j]) { seen[j] = true; stack.push(j); } }
   return seen;
 }

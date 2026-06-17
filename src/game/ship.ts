@@ -72,6 +72,9 @@ export class Ship implements ContactTarget {
   onSevered?: (islands: Island[]) => void;
   /** Fired when a mast goes by the board (foot shot out or trunk smashed). */
   onMastFelled?: (mi: number) => void;
+  /** Fired when a cannonball passes through a sail — the rig layer tears the voxel cloth there
+   *  (game/rig.ts RigManager.tearSail). y/z are ship-local meters on the sail plane. */
+  onSailHit?: (rec: SailRecord, yLocal: number, zLocal: number) => void;
   /** Fired when the rudder takes a ball. */
   onRudderHit?: (hpLeft: number) => void;
 

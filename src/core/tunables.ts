@@ -231,6 +231,20 @@ export const TUN = {
     fallMass: 800,
     /** seconds before a falling-mast wreck is despawned (also goes early once fully sunk). */
     fallLifetime: 40,
+
+    // --- Phase 4: standing sails tear into a voxel cloth when shot (game/rig.ts tearSail/stepTears) ---
+    /** master switch: a cannon-holed sail hands off to a live cloth lattice that tears + luffs.
+     *  Off → the old alphaMap puncture path (game/cannons.ts) should be used instead. */
+    sails: true,
+    /** wind acceleration (m/s²) on the free cloth so tatters luff instead of hanging limp. Kept low
+     *  (1.2) so the torn canvas hangs from its yard and flutters — too high (≈5) stretches the cloth
+     *  past its break strain and rips the whole sail clean off its head pins. */
+    windForce: 1.2,
+    /** cloth link break strain — lower = tears more easily as it flaps (separate from the spar's). */
+    clothBreak: 0.5,
+    /** radius (m) around a ball's sail-crossing point within which cloth links are severed → the
+     *  size of the hole each shot opens. */
+    severRadius: 1.6,
   },
 
   /** Navigational hazards (game/islandField.ts) — extra terrain scattered at world generation.
