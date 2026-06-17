@@ -22,6 +22,10 @@ export class AICaptain {
   private tmpRel = new THREE.Vector3();
   private tmpWind = new THREE.Vector3();
   private accuracyJitter: number;
+  // the broadside the brain is currently committed to presenting (-1 port,
+  // +1 starboard, 0 = not yet engaged). Carried across ticks so the beam
+  // choice has hysteresis and doesn't thrash side to side.
+  private committedBeam: -1 | 0 | 1 = 0;
 
   constructor(
     public readonly ship: Ship,
@@ -63,9 +67,12 @@ export class AICaptain {
       angleOffWindDeg: this.sailing.angleOffWind,
       windBearingDeg,
       floodFrac: worstFlood,
-      // ready when the likelier broadside (target's side) is mostly loaded
+      // ready when the broadside that's actually pointing at the target (its
+      // side in ship frame) is mostly loaded
       reloadReady: this.cannons.sideReadiness(this.ship, rel.z >= 0 ? 1 : -1, t) >= 0.99,
+      committedBeam: this.committedBeam,
     });
+    this.committedBeam = d.committedBeam; // carry the beam commitment forward
 
     this.sailing.sailSet = d.sailSet;
     const rudderTarget = -d.rudderSign; // convention flip (see header)
