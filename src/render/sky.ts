@@ -21,9 +21,11 @@ import * as THREE from "three";
 // LINEAR working-space values (setRGB defaults to the linear working space), tuned in-browser on
 // the real GPU through ACES + the 0.76 exposure — a luminous late-afternoon haze, not the dark
 // stormy first guess.
-export const HORIZON_COLOR = new THREE.Color().setRGB(0.64, 0.74, 0.81);
+// 2026-06-16: dialled the sky down ~12% — the player read the dome+sun as "too bright" against
+// the dark ships. This also calms the water's sky reflection and the shared distance fog.
+export const HORIZON_COLOR = new THREE.Color().setRGB(0.56, 0.65, 0.72);
 /** Zenith blue overhead. */
-const ZENITH_COLOR = new THREE.Color().setRGB(0.2, 0.4, 0.66);
+const ZENITH_COLOR = new THREE.Color().setRGB(0.17, 0.35, 0.58);
 
 export interface SkySetup {
   /** The gradient sky dome mesh (lives in the background scene). */
@@ -103,10 +105,10 @@ void main() {
   // sun: a warm disc with a soft halo. The disc is HDR (core ~12) so it still blooms and can
   // seed the god-rays; the pre-bloom clamp (TUN.gfx.bloom.clamp) caps it from white-washing.
   float md = max(dot(d, normalize(uSunDir)), 0.0);
-  float halo = pow(md, 230.0) * 0.55 + pow(md, 22.0) * 0.16;
+  float halo = pow(md, 230.0) * 0.40 + pow(md, 22.0) * 0.11;
   float disc = smoothstep(0.9972, 0.9990, md);
   col += uSunColor * halo;
-  col += uSunColor * disc * 12.0;
+  col += uSunColor * disc * 8.0;
 
   gl_FragColor = vec4(col, 1.0);
 }
@@ -138,7 +140,7 @@ export function createSky(): SkySetup {
   sky.frustumCulled = false;
   sky.renderOrder = -1000;
 
-  const sunLight = new THREE.DirectionalLight(sunColor.getHex(), 2.6);
+  const sunLight = new THREE.DirectionalLight(sunColor.getHex(), 2.1);
   sunLight.position.copy(sunDir.clone().multiplyScalar(120));
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(2048, 2048);
@@ -155,7 +157,7 @@ export function createSky(): SkySetup {
   // This (plus the hemisphere fill) lifts the dark side WITHOUT the IBL env
   // that bleached the oak — shadow.intensity only touches shadowed pixels,
   // so the lit wood keeps m10's tone (round 8 v2: "same wood, was fine before").
-  sunLight.shadow.intensity = 0.7;
+  sunLight.shadow.intensity = 0.55;
   // The sun is a FIXED direction (SUN_DIR), so the shadow map only needs re-rendering as ships
   // move under it — not 60×/s. autoUpdate off + a ~15 Hz needsUpdate poke (main loop) turns a full
   // per-frame depth pass over every hull into ~4× fewer. The shadow frustum still follows the
@@ -165,11 +167,13 @@ export function createSky(): SkySetup {
 
   // sky bounce carries the shade: at 0.55 anything out of the sun read as pitch black (round 7); 1.3 +
   // a strong IBL env then over-lit it and bleached the dark oak hull to "a light birch" (round 8 v2).
-  // The user's standing note is that shade still goes near-black, so lift the hemisphere HARD (1.5) and
-  // warm/brighten its ground term — this is the safe shade-lift (hemisphere is normal-based fill, it
+  // The user's standing note is that shade STILL goes near-black (2026-06-16: an enemy hull's shaded
+  // flank read as a pure-black silhouette), so lift the hemisphere harder (1.7→2.4) and brighten the
+  // ground term (0x46656f→0x586f78) — this is the safe shade-lift (hemisphere is normal-based fill, it
   // doesn't wash albedo the way the IBL env did), so down/away-facing faces read instead of crushing to
-  // black while the lit wood keeps its tone.
-  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x46656f, 1.7);
+  // black while the lit wood keeps its tone. Paired with a calmer sun (2.1) this narrows the lit↔shade
+  // range from both ends rather than just dropping exposure (which would darken the shade further).
+  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x586f78, 2.4);
 
   // Live sky+cloud reflection cube for the ocean. 128² — round 2 tried 512 for a sharper
   // reflection, but baking 6 faces of the FBM cloud scene is a periodic main-thread STALL
@@ -222,7 +226,7 @@ export function createSky(): SkySetup {
       // the env stays modest — a gentle 0.12 lifts metals/shade a touch and keeps the guns off dead-
       // flat without washing the wood. The heavy shade-lift is the hemisphere above; this just rounds
       // the corners. (IBL is baked ONCE here: only a full page reload re-bakes it.)
-      mainScene.environmentIntensity = 0.12;
+      mainScene.environmentIntensity = 0.17;
       pmrem.dispose();
     },
   };

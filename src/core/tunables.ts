@@ -312,7 +312,7 @@ export const TUN = {
     godrays: { enabled: true, strength: 0.07, decay: 0.95, density: 0.9, weight: 0.5, threshold: 8, samples: 16 },
     /** final color grade (render/post.ts GradePass): contrast + saturation +
      *  a subtle vignette for the cinematic punch. */
-    grade: { contrast: 1.06, saturation: 1.08, vignette: 0.22 },
+    grade: { contrast: 1.03, saturation: 1.08, vignette: 0.14 },
     /** water reflection of the sky env cube (render/ocean.ts): strength scales the
      *  Fresnel-weighted reflection (high = chrome mirror; the sea should mostly read
      *  as its own teal body with a sky SHEEN, not liquid metal). clamp caps the

@@ -827,8 +827,13 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uSunColor: { value: new THREE.Color(1.0, 0.78, 0.55) },
       // a DARKER teal→navy body (round-2 tune: "the water needs to be a bit darker
       // and slightly more matte"); the (now weaker) sky reflection only adds a sheen.
-      uDeepColor: { value: new THREE.Color(0x02060e) },   // near-black navy — the "descends to black" deep end
-      uShallowColor: { value: new THREE.Color(0x07223a) }, // navy (was teal) so the body reads navy, not teal
+      // The body color is a baked gradient (shallow→deep by view angle) with NO ambient/sky
+      // light term, so whatever sits here IS the water's brightness. uDeepColor shows when you
+      // look STRAIGHT DOWN (facing→1, Fresnel→0, so no sky reflection lifts it) — at near-black
+      // 0x02060e the whole sea went pitch-black from above. Lifted to a real lit deep-navy so a
+      // top-down view reads as dark water, not a void, while still clearly "deep" vs the shallows.
+      uDeepColor: { value: new THREE.Color(0x0a1a2e) },   // lit deep navy (was near-black 0x02060e)
+      uShallowColor: { value: new THREE.Color(0x0c2a45) }, // navy body at grazing angles (lifted a touch)
       uSkyColor: { value: new THREE.Color(0x9fc4d4) }, // fresnel fallback only
       uSkyEnv: { value: dummyCube },
       uHasEnv: { value: 0 },
