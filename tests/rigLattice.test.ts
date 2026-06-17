@@ -95,3 +95,31 @@ describe("rigLattice stepRig + sleep", () => {
     expect(rig.sleepTimer).toBe(0);
   });
 });
+
+describe("rigLattice attachedToPin", () => {
+  it("all nodes reachable from a pinned anchor over alive links are attached", () => {
+    const rig: Rig = {
+      nodes: [node(0, 0, 0, true), node(1, 0, 0), node(2, 0, 0), node(3, 0, 0)],
+      links: [
+        { a: 0, b: 1, rest: 1, breakStrain: 10, kind: LinkKind.CLOTH, alive: true },
+        { a: 1, b: 2, rest: 1, breakStrain: 10, kind: LinkKind.CLOTH, alive: true },
+        { a: 2, b: 3, rest: 1, breakStrain: 10, kind: LinkKind.CLOTH, alive: true },
+      ],
+      awake: true, sleepTimer: 0,
+    };
+    expect(attachedToPin(rig)).toEqual([true, true, true, true]);
+  });
+
+  it("a severed link cuts the far nodes loose (detached strip)", () => {
+    const rig: Rig = {
+      nodes: [node(0, 0, 0, true), node(1, 0, 0), node(2, 0, 0), node(3, 0, 0)],
+      links: [
+        { a: 0, b: 1, rest: 1, breakStrain: 10, kind: LinkKind.CLOTH, alive: true },
+        { a: 1, b: 2, rest: 1, breakStrain: 10, kind: LinkKind.CLOTH, alive: false },
+        { a: 2, b: 3, rest: 1, breakStrain: 10, kind: LinkKind.CLOTH, alive: true },
+      ],
+      awake: true, sleepTimer: 0,
+    };
+    expect(attachedToPin(rig)).toEqual([true, true, false, false]);
+  });
+});

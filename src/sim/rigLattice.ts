@@ -144,3 +144,30 @@ export function stepRig(rig: Rig, opts: StepOpts): void {
   if (kineticEnergy(rig, opts.dt) < opts.sleepKE) rig.sleepTimer += opts.dt;
   else rig.sleepTimer = 0;
 }
+
+/**
+ * Flood from every pinned (anchored) node over ALIVE links. A node that cannot
+ * reach any anchor is detached — a torn-off cloth strip or a felled spar that
+ * has left the ship. The runtime uses this to drop / float-away loose pieces.
+ */
+export function attachedToPin(rig: Rig): boolean[] {
+  const n = rig.nodes.length;
+  const attached = new Array<boolean>(n).fill(false);
+  const adj: number[][] = Array.from({ length: n }, () => []);
+  for (const lk of rig.links) {
+    if (!lk.alive) continue;
+    adj[lk.a].push(lk.b);
+    adj[lk.b].push(lk.a);
+  }
+  const stack: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (rig.nodes[i].pinned) { attached[i] = true; stack.push(i); }
+  }
+  while (stack.length) {
+    const i = stack.pop()!;
+    for (const j of adj[i]) {
+      if (!attached[j]) { attached[j] = true; stack.push(j); }
+    }
+  }
+  return attached;
+}
