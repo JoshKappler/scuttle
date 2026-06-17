@@ -187,16 +187,18 @@ export const TUN = {
   crush: {
     /** master enable — off → ship-vs-ship does nothing (hulls would ghost; see physics.ts hook). */
     enabled: true,
-    /** closing speed (m/s) below which NOTHING breaks — the wood's "give" before it fractures
-     *  ("more than say 4 knots"; 2.0 m/s ≈ 3.9 kn). Under it a slow bump just cancels + de-penetrates
-     *  with no damage; over it the contact face crushes. The single velocity gate of the whole rule. */
-    vBreak: 2.0,
+    /** closing speed (m/s) below which NOTHING breaks — the wood's "give" before it fractures.
+     *  4.0 m/s ≈ 7.8 kn (raised from 2.0 on playtest: two hulls drifting/pressed side-by-side at a
+     *  knot or two were tearing each other's sides off — that must just REST + de-penetrate now; only
+     *  a deliberate ram at speed crushes). Under it a slow bump cancels + de-penetrates with no
+     *  damage; over it the contact face crushes. The single velocity gate of the whole rule. */
+    vBreak: 4.0,
     /** ×break-energy: how hard the wood is. Higher → a ram bites fewer voxels per joule AND sheds
      *  more speed per layer, so it penetrates LESS and resists more (a weightier, less explosive
      *  crash); lower → softer hulls that rip deep. The main "rip into each other" feel knob (was
-     *  `yield`, inverted sense). 1.5 = ~50% tougher than the round-3 baseline (playtest: "tougher
-     *  voxels"). */
-    toughness: 1.5,
+     *  `yield`, inverted sense). 2.5 (was 1.5): stronger hulls so a glancing contact between two big
+     *  ships no longer guts a whole side — a ram still bites, but takes real speed to chew deep. */
+    toughness: 2.5,
     /** how much of a BREAK hit's closing-Δv is handed to the struck hull as momentum (0..1) vs. spent
      *  slowing only the aggressor. 0 = a dead-in-the-water victim is NOT shoved at all (it just gets
      *  chewed); 1 = the full equal-and-opposite kick that drives both to a common velocity (the old
