@@ -238,10 +238,12 @@ export class ShipVisual {
     rec.tex.needsUpdate = true;
   }
 
-  /** Start the fall of a mast's whole rig (idempotent). */
+  /** A mast goes by the board: HIDE the static standing rig — the physical fall is now a live
+   *  voxel lattice spawned by game/rig.ts (RigManager.spawnFallingMast), which topples, breaks and
+   *  crushes for real. (The old canned t² topple below is retained but dormant: fallT stays <0.) */
   fellMast(mi: number): void {
     const rig = this.mastRigs[mi];
-    if (rig && rig.fallT < 0) rig.fallT = 0;
+    if (rig) rig.group.visible = false;
   }
 
   /** Shrink the rudder blade as it's shot away (1 = whole, 0 = stump). */

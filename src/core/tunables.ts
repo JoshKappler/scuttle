@@ -214,6 +214,23 @@ export const TUN = {
     /** spar sampling spacing in VOXELS along its length — how finely the polyline is walked to
      *  find the cells it occupies. 0.5 = two samples per voxel (no gaps in the tunnel). */
     boreStep: 0.5,
+
+    // --- Phase 3: felled masts get their own physics (game/rig.ts spawnFallingMast/stepFalling) ---
+    /** master switch for lattice mast-fall. Off → a felled mast just vanishes (shipVisual hides it). */
+    masts: true,
+    /** sideways shove (m/s) given the felled mast so a vertical spar topples OVER the side instead of
+     *  dropping straight down. The "goes by the board" lean. */
+    toppleKick: 2.0,
+    /** seconds the foot stays a hinge (pivot) before it's released so the wreck can slide off + sink. */
+    hingeTime: 1.2,
+    /** buoyancy lift decay per second — a downed mast floats on entrained air, then waterlogs and
+     *  founders (cf. debris.wreckLift). */
+    waterlog: 0.06,
+    /** effective mass (kg) of one falling spar/cloth node when it crushes a deck (½·m·v² budget) —
+     *  high enough that a toppling mast actually staves in what it lands on. */
+    fallMass: 800,
+    /** seconds before a falling-mast wreck is despawned (also goes early once fully sunk). */
+    fallLifetime: 40,
   },
 
   /** Navigational hazards (game/islandField.ts) — extra terrain scattered at world generation.

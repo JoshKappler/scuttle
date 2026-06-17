@@ -49,6 +49,8 @@ export class GameWorld {
     readonly scene: THREE.Scene,
   ) {
     this.physWaves = physicsWaves(waves);
+    this.rig.scene = scene;            // falling-mast pieces are added here
+    this.rig.waves = this.physWaves;   // they ride the same long swell as the hulls (THE LAW #1)
   }
 
   addShip(ship: Ship): void {
@@ -115,7 +117,7 @@ export class GameWorld {
       this.contact.stepAll(this.ships, this.terrain, FIXED_DT);
       // rig contributions (Phase 2: bowsprit boring) feed the SAME crush; run right after the
       // hull contact and before the Rapier step so their impulses + carves land this step.
-      this.rig.stepAll(this.ships, FIXED_DT);
+      this.rig.stepAll(this.ships, this.simTime, FIXED_DT);
       tm.contact += performance.now() - a;
       a = performance.now();
       for (const ship of this.ships) ship.flushDamage(); // throttled heavy damage recompute
@@ -137,6 +139,7 @@ export class GameWorld {
       ship.syncVisual();
       ship.visual.updateWater(ship.build.compartments, undefined, dt);
     }
+    this.rig.refresh(); // re-pose falling-mast wreckage smoothly between fixed steps
     tm.visual = performance.now() - v;
     tm.total = performance.now() - tStart;
   }
