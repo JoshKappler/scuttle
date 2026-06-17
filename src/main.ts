@@ -157,6 +157,9 @@ async function main() {
     renderer.clear();
   });
   menu.showStart(saves.hasSave("career"));
+  audio.ready.then(() => {
+    if (gs.phase === "menu") audio.music("menu"); // sings once buffers load (after the first gesture)
+  });
 
   // BLOCK here until the player picks a mode — only then does the world build below run.
   const startChoice = await choicePromise;
@@ -1737,9 +1740,24 @@ async function main() {
   applyChoice(startChoice); // apply the choice that opened the gate
   loadingEl.remove();
 
+  let lastAudioPhase = "";
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1);
     perf.tick(dt); // measure real frame time → HUD + adaptive-quality governor
+
+    // ---- audio: music + ambience crossfade on phase changes; wind + underwater per frame ----
+    if (gs.phase !== lastAudioPhase) {
+      lastAudioPhase = gs.phase;
+      audio.music(gs.phase); // menu_theme / sea_ambient / harbor (crossfaded)
+      const atSea = gs.phase === "playing" || gs.phase === "port";
+      audio.ambient("ocean", atSea);
+      audio.ambient("wind", atSea);
+    }
+    {
+      const pv = sloop.body.linvel();
+      audio.setWind(Math.hypot(pv.x, pv.z)); // louder under way
+      audio.setUnderwater(camera.position.y < 0.2); // the listener (camera) dips below the sea
+    }
     // Quit-to-Menu returns here with the world still built — show a clean screen instead
     // of drawing the frozen world behind the menu. (Pause/port still render the freeze.)
     if (gs.phase === "menu") {
