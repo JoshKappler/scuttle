@@ -52,6 +52,108 @@ function armorBow(grid: VoxelGrid, forwardFrac = 0.7): void {
 }
 
 /**
+ * Lower the ballast centroid at CONSTANT mass — the ship-feel pass's "heavier bottom,
+ * same waterline" lever (Task 3). After a hull's iron bands are laid, this moves the
+ * HIGHEST `frac` of iron cells DOWN into the LOWEST still-empty interior cells. Because
+ * it removes exactly as many iron voxels as it re-adds (a pure relocation, IRON→IRON of
+ * the same density), the TOTAL mass — and therefore the buoyancy-equilibrium draft /
+ * resting waterline — is unchanged to the cell, while the centre of mass drops. A lower
+ * COM stiffens the buoyant righting (less idle/straight-line roll) WITHOUT sinking her
+ * any deeper. Applied uniformly across every tier so the whole fleet gets the same
+ * bottom-heavy feel. Only moves a cell when a strictly-lower empty slot exists, so it can
+ * never raise the centroid and self-limits once the bilges are packed.
+ *
+ * An "interior empty" slot is an EMPTY cell with a solid cell directly beneath it (it sits
+ * on the hold floor / on the ballast already there) — this keeps the new iron inside the
+ * hull, resting on structure, and the later weldToSingleComponent() ties it into the one
+ * 6-connected solid. `frac` 0.25 was tuned live: ~0.2–0.3 m of COM drop on the big hulls
+ * (less on the already-tight cutter), draft Δ = 0 measured.
+ */
+function lowerBallast(grid: VoxelGrid, deckY: number, frac = 0.5): void {
+  const [nx, ny, nz] = grid.dims;
+  // Work in MIRROR PAIRS (z, nz−1−z) so the relocation stays port/starboard symmetric — the
+  // hull's defining invariant (a lopsided ballast move would list her AND fail the symmetry test).
+  // A "unit" is one such pair (the centre column on an odd beam is its own pair).
+  type Unit = { x: number; y: number; zs: number[]; comp: number };
+  const ironUnits: Unit[] = [];
+  const emptyUnits: Unit[] = [];
+
+  // PRESERVE THE WATERTIGHT COMPARTMENTS: the low bilge air we'd fill IS each hold's air, and
+  // filling a hold's last cells makes the compartment vanish (10 holds → 2). So pre-map every
+  // below-deck air cell to its compartment and cap how much of each hold's air may be consumed,
+  // guaranteeing every hold keeps a healthy air budget (count + seepage chain unchanged).
+  const comps = findCompartments(grid, deckY);
+  const cellComp = new Map<number, number>(); // packed idx → compartment id
+  const compAir = new Map<number, number>(); // id → original air-cell count
+  const idx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
+  for (const c of comps) {
+    compAir.set(c.id, c.cells.size); // c.cells is a Set
+    for (const cell of c.cells) cellComp.set(cell, c.id);
+  }
+  const KEEP_AIR = 0.5; // never fill a hold below this fraction of its original air → it survives
+  const filledPerComp = new Map<number, number>();
+
+  for (let x = 0; x < nx; x++) {
+    for (let y = 0; y < ny; y++) {
+      for (let z = 0; z <= nz - 1 - z; z++) {
+        const zm = nz - 1 - z;
+        const m = grid.get(x, y, z);
+        const mm = grid.get(x, y, zm);
+        const zs = z === zm ? [z] : [z, zm];
+        // A symmetric IRON pair is eligible to come DOWN only if the cell directly ABOVE each side is
+        // air — i.e. it's the EXPOSED TOP of an iron ballast column. This is the crucial guard: iron
+        // buried inside a transverse BULKHEAD station (solid above it, the wall continuing to the deck)
+        // must NOT be pulled — removing it would punch a hole through the watertight wall and merge two
+        // holds (10 compartments → a few). Top-of-column iron only opens to the air already above it.
+        if (
+          m === IRON && mm === IRON &&
+          grid.get(x, y + 1, z) === EMPTY && grid.get(x, y + 1, zm) === EMPTY
+        )
+          ironUnits.push({ x, y, zs, comp: -1 });
+        // a symmetric EMPTY pair, each a known compartment air cell resting on solid, is a destination
+        else if (
+          m === EMPTY && mm === EMPTY &&
+          grid.isSolid(x, y - 1, z) && grid.isSolid(x, y - 1, zm)
+        ) {
+          const c = cellComp.get(idx(x, y, z));
+          const cm = cellComp.get(idx(x, y, zm));
+          if (c !== undefined && c === cm) emptyUnits.push({ x, y, zs, comp: c });
+        }
+      }
+    }
+  }
+
+  // Match like-for-like by cell count (2-cell side pairs vs 1-cell centre columns) so each move is
+  // exactly mass-conserving — moving a centre cell into a side pair would ADD a cell (sink her deeper).
+  const moveBucket = (width: 1 | 2) => {
+    const iron = ironUnits.filter((u) => u.zs.length === width).sort((a, b) => b.y - a.y); // highest first
+    const empty = emptyUnits.filter((u) => u.zs.length === width).sort((a, b) => a.y - b.y); // lowest first
+    const K = Math.floor(iron.length * frac);
+    let dst = 0;
+    for (let i = 0; i < K; i++) {
+      const src = iron[i];
+      // advance to the next destination that still has compartment-air headroom
+      while (dst < empty.length) {
+        const tgt = empty[dst];
+        const used = filledPerComp.get(tgt.comp) ?? 0;
+        const cap = Math.floor((compAir.get(tgt.comp) ?? 0) * (1 - KEEP_AIR));
+        if (used + tgt.zs.length > cap) { dst++; continue; } // this hold is at its fill cap — skip it
+        break;
+      }
+      if (dst >= empty.length) break;
+      const tgt = empty[dst];
+      if (tgt.y >= src.y) break; // no strictly-lower slot remains → done (never raise COM)
+      for (const z of src.zs) grid.remove(src.x, src.y, z);
+      for (const z of tgt.zs) grid.set(tgt.x, tgt.y, z, IRON);
+      filledPerComp.set(tgt.comp, (filledPerComp.get(tgt.comp) ?? 0) + tgt.zs.length);
+      dst++;
+    }
+  };
+  moveBucket(2); // side pairs
+  moveBucket(1); // centre columns (odd beams)
+}
+
+/**
  * Evenly-spaced transverse-bulkhead stations (voxel x) for `comps` watertight holds.
  * `comps` holds need `comps − 1` interior bulkheads, dropped at the fractional stations
  * k/comps for k = 1..comps−1. Computed from L so the layout scales with the hull and
@@ -287,6 +389,7 @@ export function buildSloop(): ShipBuild {
 
   // weld floating internals (diagonal-only ballast tiers etc.) to the main mass so the
   // hull is ONE 6-connected solid — otherwise findSevered sheds them all on the first hit.
+  lowerBallast(grid, deckY); // ship-feel pass: drop the COM at constant mass (heavier bottom, same waterline)
   weldToSingleComponent(grid);
 
   // compartments + leak audit
@@ -578,6 +681,7 @@ export function buildBrig(): ShipBuild {
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
 
   // weld floating internals to the main mass — ONE 6-connected solid (see weld.ts / buildSloop).
+  lowerBallast(grid, deckY); // ship-feel pass: drop the COM at constant mass (heavier bottom, same waterline)
   weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);
@@ -777,6 +881,7 @@ export function buildCutter(): ShipBuild {
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
 
+  lowerBallast(grid, deckY); // ship-feel pass: drop the COM at constant mass (heavier bottom, same waterline)
   weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);
@@ -1005,6 +1110,7 @@ export function buildFrigate(): ShipBuild {
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
 
+  lowerBallast(grid, deckY); // ship-feel pass: drop the COM at constant mass (heavier bottom, same waterline)
   weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);
@@ -1257,6 +1363,7 @@ export function buildManOfWar(): ShipBuild {
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
 
   // weld floating internals (diagonal ballast tiers) to the main mass — ONE 6-connected solid.
+  lowerBallast(grid, deckY); // ship-feel pass: drop the COM at constant mass (heavier bottom, same waterline)
   weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);

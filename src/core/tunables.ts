@@ -35,13 +35,45 @@ export const TUN = {
      *  damped so she rides the swell with life but never builds a resonant hobby-horse. */
     heaveDamp: 0.2,
     /** yaw angular damping (×yaw inertia) — the water + rudder resisting a spin. The one
-     *  rotational axis with no buoyant restoring of its own, so it keeps a light damper. */
-    yawDamp: 0.7,
+     *  rotational axis with no buoyant restoring of its own, so it keeps a light damper. SHIP-FEEL
+     *  pass: eased 0.7→0.6 so the stronger rudder (phys.rudderGain) settles at a higher steady yaw
+     *  rate → a tighter turning circle, while still damping enough that she doesn't free-spin. */
+    yawDamp: 0.6,
     /** hydrodynamic lateral (leeway) resistance — the keel's grip on the water
      *  (×mass·vLat·submergedFrac). A REAL force (without it she slides sideways forever);
-     *  applied at the COM so it supplies the turn's centripetal pull without itself
-     *  heeling her — the bank is the separate emergent G-couple. The one lateral knob. */
+     *  applied at the centre of buoyancy so it supplies the turn's centripetal pull AND, sitting
+     *  below the COM, rights her against sail heel — the bank is the separate emergent G-couple
+     *  (phys.turnHeel below). The one lateral knob. */
     lateralDrag: 1.7,
+    /** SHIP-FEEL pass — rudder authority multiplier on the yaw torque (game/sailing.ts). The base
+     *  yaw coefficient was 0.5; this replaces it so the turning circle is live-tunable. 1.0 (2× the old
+     *  0.5), with yawDamp eased 0.7→0.6, roughly halves the turning circle (measured brig ≈327 m → ≈150 m).
+     *  Bigger = tighter turn; too big spins her uncontrollably. (The "Sharper Rudder" UPGRADE —
+     *  ship.rudderPower — still stacks ON TOP of this for the player.) */
+    rudderGain: 1.0,
+    /** SHIP-FEEL pass — EXTRA roll damping about the ship's FORE-AFT axis only (×roll inertia·wet),
+     *  on top of the shared heaveDamp ζ. This stiffens the side-to-side ROLL (less idle wallow and
+     *  straight-line sway) WITHOUT over-damping heave/pitch (which the playtest liked light at 0.2).
+     *  Higher = a stiffer, drier-rolling hull; 0 = old behaviour (roll damped only by heaveDamp). */
+    rollDamp: 2.0,
+    /** SHIP-FEEL pass — TURN-HEEL couple gain. A turning ship feels a lateral-G reaction m·(v·ω)
+     *  acting at the COM above the keel's grip → a pure torque about the fore-aft axis that banks her
+     *  OUTWARD of the turn (the separate emergent G-couple THE LAW #3 names). Applied as a couple
+     *  (no net force → no translation artefact), scaled by the COM height above the keel (this.comLocal[1],
+     *  NOT the COM−CB heelArm, which Task 3's lower COM collapsed), faded out near turnHeelCap, and
+     *  ultimately BOUNDED by the buoyant ρgV·GM·sinθ righting — so this gain sets the steady lean in a
+     *  hard turn (tuned so a full-rudder brig/cutter turn peaks ~40–45° without capsizing; the heavy,
+     *  wide-turning Man-o'-War leans a stately ~20°). 0 = no turn heel; she can never turtle from this. */
+    turnHeel: 4.0,
+    /** SHIP-FEEL pass — clamp (m/s²) on the v·ω lateral acceleration feeding the turn-heel couple, so
+     *  a collision spin or a momentary huge yaw rate can't slam her flat past the righting. */
+    turnHeelMaxG: 3.0,
+    /** SHIP-FEEL pass — soft KNOCKDOWN cap (degrees): the turn-heel couple fades from full at 60% of
+     *  this angle down to ZERO at the cap, so a hard turn leans to ~this on EVERY hull but the couple
+     *  can never push her past it into a capsize — the buoyant righting then wins. This is what makes
+     *  one turnHeel gain safe across the light Cutter (which turns very tight) and the heavy Man-o'-War
+     *  alike. 45 = the requested "almost 45° at peak turn". */
+    turnHeelCap: 45,
   },
 
   /** Dynamic-wave interaction field (Crest/Atlas FDTD) — read in main.ts each frame

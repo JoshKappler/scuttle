@@ -392,9 +392,12 @@ export class Ship implements ContactTarget {
       const sternX = 4 * VOXEL_SIZE;
       const bladeW = 0.9 + this.build.lengthM * 0.022;
       const bladeH = this.build.deckY * VOXEL_SIZE * 0.95;
+      const belowKeel = 1.2; // matches shipVisual: the blade now hangs this far below the old foot
       const zC = (this.build.grid.dims[2] / 2) * VOXEL_SIZE;
       const box = {
-        min: { x: sternX - bladeW - 0.4, y: 0.1, z: zC - 0.45 },
+        // bottom lowered by belowKeel to match the blade poking below the keel; TOP unchanged so the
+        // rudder-damage scale (1.8 + bladeH·0.55) is untouched.
+        min: { x: sternX - bladeW - 0.4, y: 0.1 - belowKeel, z: zC - 0.45 },
         max: { x: sternX + 0.3, y: 1.8 + bladeH * 0.55, z: zC + 0.45 },
       };
       if (segmentBoxHit(p0, p1, box)) stop = { kind: "rudder" };
@@ -869,6 +872,43 @@ export class Ship implements ContactTarget {
       // yaw damping: the one rotational axis with no buoyant restoring of its own.
       const yawT = -om.y * wet * TUN.phys.yawDamp * this.inertia[1];
       body.addTorque({ x: dampTX, y: yawT, z: dampTZ }, true);
+
+      // ---- SHIP-FEEL pass: roll stiffening + turn-heel couple, about the FORE-AFT axis ----------
+      // Two effects that BOTH act purely about the ship's forward axis (a couple → no net force, so
+      // no translation artefact, and the buoyant ρgV·GM·sinθ righting still bounds the steady angle).
+      //   (a) rollDamp — EXTRA damping of the side-to-side roll only, so she stops wallowing at idle
+      //       and rolling on a straight run, WITHOUT adding heave/pitch damping (kept light at 0.2).
+      //   (b) turnHeel — the lateral-G reaction m·(v·ω) of a turn, leaning her OUTWARD of the turn
+      //       (THE LAW #3's "separate emergent G-couple"), applied about the fore-aft axis; the
+      //       v·ω is clamped (turnHeelMaxG) so a collision spin can't slam her flat, and the couple
+      //       is faded out near turnHeelCap° so it can never drive her into a capsize.
+      const omFwd = om.x * fwd.x + om.y * 0 + om.z * fwd.z; // roll rate about the (flat) fore-aft axis
+      const rollDampT = -omFwd * wet * TUN.phys.rollDamp * this.inertia[0];
+      const aLat = Math.min(Math.max(vF * om.y, -TUN.phys.turnHeelMaxG), TUN.phys.turnHeelMaxG);
+      // arm = COM height above the keel datum (~2 m) — the lever from the keel's lateral grip up to
+      // the COM where the inertial reaction acts. (NOT heelArm = COM−CB: lowering the COM for stiffer
+      // righting in Task 3 collapsed that to ~0.1 m, killing the turn heel; the G-couple arm is the
+      // whole COM height, and the now-stiffer buoyant righting still bounds the steady angle.)
+      // SOFT KNOCKDOWN LIMITER: a small, light hull (cutter) turns far tighter than a big one, so the
+      // SAME gain that lands the brig at ~45° would drive the cutter past capsize. So fade the heeling
+      // couple from full at 60%·turnHeelCap down to ZERO at the cap, and only damp it on the side that
+      // would deepen the existing lean: the lean builds to ~the cap on every class, but the couple can
+      // never PUSH her past it into a knockdown (the buoyant righting then always wins). The light,
+      // tight-turning Cutter no longer overshoots. Class-independent, emergent — no per-ship gain table.
+      const heelSin = -(2 * (rot.y * rot.z - rot.x * rot.w)); // starboard rail's vertical drop = sin(heel)
+      const heelDeg = (Math.abs(Math.asin(Math.min(Math.max(heelSin, -1), 1))) * 180) / Math.PI;
+      const cap = TUN.phys.turnHeelCap;
+      // Fade the heeling couple to ZERO as the lean climbs from 60%·cap up TO the cap, and only ADD
+      // it on the side that would push her FURTHER over (heelT and the current lean share a sign).
+      // So the steady lean parks at ~cap on every hull and the couple physically cannot drive her
+      // past it — the light, tight-turning Cutter no longer overshoots into a knockdown.
+      const fade = Math.min(Math.max((cap - heelDeg) / (cap * 0.4), 0), 1); // 1 below 0.6·cap → 0 at cap
+      // aLat>0 ⇒ couple leans the +Z rail down (heelSin>0). Only damp the couple when it would deepen
+      // the existing lean; if she's already heeled the other way it's free to right her toward centre.
+      const deepening = aLat * heelSin >= 0 ? fade : 1;
+      const heelT = mass * aLat * this.comLocal[1] * TUN.phys.turnHeel * wet * deepening;
+      const tAxial = rollDampT + heelT; // total torque magnitude about +fwd (right-hand → leans outward)
+      body.addTorque({ x: fwd.x * tAxial, y: 0, z: fwd.z * tAxial }, true);
     }
   }
 

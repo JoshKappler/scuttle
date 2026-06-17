@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { TUN } from "../core/tunables";
 import type { Ship } from "./ship";
 
 /**
@@ -135,7 +136,10 @@ export class SailingController {
     // up their maneuverability")
     const flow = Math.sign(this.speed || 1) * (1.5 + Math.abs(this.speed));
     // rudderEff = damage state (0.15..1); rudderPower = the "Sharper Rudder" upgrade (≥1).
-    const yaw = this.rudder * flow * mass * 0.5 * ship.rudderEff * ship.rudderPower;
+    // SHIP-FEEL pass: the old fixed 0.5 base coefficient is now the live TUN.phys.rudderGain knob
+    // (default 2.0 ≈ 4× the old authority → about half the turning circle, paired with a lighter
+    // yawDamp). The upgrade multiplier still stacks on top.
+    const yaw = this.rudder * flow * mass * TUN.phys.rudderGain * ship.rudderEff * ship.rudderPower;
     body.addTorque({ x: 0, y: yaw, z: 0 }, true);
   }
 }

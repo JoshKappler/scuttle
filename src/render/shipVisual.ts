@@ -690,7 +690,12 @@ export class ShipVisual {
     // helm (round 6: "the rudder should extend further upwards so that you
     // can actually see it turning when maneuvering")
     const sternX = 4 * VOXEL_SIZE;
-    const bladeH = this.build.deckY * VOXEL_SIZE * 0.95;
+    // SHIP-FEEL pass (Task 4): drop the blade ~1.2 m FARTHER DOWN so it clearly pokes BELOW the keel,
+    // like a real stern rudder hung off the sternpost (the heel of a rudder hangs below the keel line
+    // for clean flow). The blade is grown by this much and its centre dropped by half of it, so the
+    // TOP stays where it was (still visible answering the helm) and only the BOTTOM reaches lower.
+    const belowKeel = 1.2;
+    const bladeH = this.build.deckY * VOXEL_SIZE * 0.95 + belowKeel;
     const bladeW = 0.9 + this.build.lengthM * 0.022; // chord grows with the ship
     this.rudderPivot = new THREE.Group();
     this.rudderPivot.position.set(sternX + 0.1, 1.8, (this.build.grid.dims[2] / 2) * VOXEL_SIZE);
@@ -724,9 +729,12 @@ export class ShipVisual {
       return g;
     };
     const blade = new THREE.Mesh(makeBlade(bladeW, bladeH, 0.17), woodMat);
-    blade.position.set(-bladeW / 2 - 0.05, bladeH / 2 - 2.4, 0);
+    // centre dropped by belowKeel/2 vs the old (bladeH/2 − 2.4) so the bottom reaches `belowKeel`
+    // lower while the top is unchanged (bladeH also grew by belowKeel → top net-unchanged).
+    blade.position.set(-bladeW / 2 - 0.05, bladeH / 2 - 2.4 - belowKeel, 0);
+    // the heel (the bottom gudgeon block) follows the blade's new lower foot, hung below the keel line.
     const heel = new THREE.Mesh(makeBlade(bladeW + 0.6, 1.25, 0.17), woodMat);
-    heel.position.set(-bladeW / 2 - 0.28, -1.7, 0);
+    heel.position.set(-bladeW / 2 - 0.28, -1.7 - belowKeel, 0);
     this.rudderPivot.add(blade, heel);
     this.rudderBlade = blade;
     this.group.add(this.rudderPivot);
