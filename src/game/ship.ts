@@ -3,7 +3,7 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import { G, MAX_CARVE_CELLS, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
 import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
-import { makeVoxelColumns, type VoxelColumn } from "../sim/buoyancy";
+import { makeVoxelColumns, updateVoxelColumns, enclosedCellSet, type VoxelColumn } from "../sim/buoyancy";
 import { planCarve } from "../sim/carve";
 import { planCrush } from "../sim/crush";
 import { computeSurface, updateSurfaceAfterRemoval, unpackCell } from "../sim/surfaceSet";
@@ -154,11 +154,21 @@ export class Ship implements ContactTarget {
   /** Lazily-materialized packed [x,y,z,...] view of `surface`, rebuilt when the set changes. */
   private surfaceCache: Int32Array | null = null;
 
+  /** The static compartment-air cell set, cached once (compartments never change after build), so the
+   *  per-carve column rebuild doesn't re-walk ~10^5 compartment cells each flush. */
+  private enclosed!: Set<number>;
+  /** Packed (x*nz+z) keys of every column a carve has touched since the last column rebuild. Lets
+   *  recomputeMassProperties rebuild ONLY changed columns (updateVoxelColumns) instead of all ~2,500
+   *  over the full grid — the dominant flush cost during a sustained ram/island grind. INVARIANT: every
+   *  live grid mutation (carveCells + the flushDamage sever-shed) must record its (x,z) here. */
+  private dirtyColumns = new Set<number>();
+
   constructor(phys: Physics, build: ShipBuild, visual: ShipVisual, spawn: { x: number; y: number; z: number }, walkable = true) {
     this.phys = phys;
     this.build = build;
     this.visual = visual;
     this.walkable = walkable;
+    this.enclosed = enclosedCellSet(build.compartments);
     this.columns = makeVoxelColumns(build.grid, build.compartments);
     this.totalCellVolume = this.sumColumnVolume();
     this.surface = computeSurface(build.grid);
@@ -441,11 +451,11 @@ export class Ship implements ContactTarget {
     // this is behaviour-preserving; the guard itself is a cheap O(compartments) scan.
     if (!this.pumpOn && this.waterlog <= 0 && !this.hasFloodActivity()) return;
 
-    // Pool surfaces + wet centroids drift slowly, but this recompute runs an O(n·log n) per-cell
-    // world-Y sort over every WET compartment — the dominant CPU cost (~60 ms/frame with a fleet).
-    // Throttle it to ~20 Hz instead of every substep; the inflow calc below reuses the cached poolY
-    // between recomputes (imperceptible — the pool surface barely moves in 50 ms).
-    if (this.floodGeomTick++ % 3 === 0) this.updateFloodGeom();
+    // The pool surface drifts slowly, but updateFloodGeom ranks every cell of every WET compartment by
+    // world-Y — still the dominant flood cost on a badly-holed big hull even after the native-sort fix
+    // (a Man-o'-War compartment is ~60k cells). Throttle it to ~10 Hz (every 6th substep); the inflow
+    // calc reuses the cached poolY between recomputes (imperceptible — the pool barely moves in 100 ms).
+    if (this.floodGeomTick++ % 6 === 0) this.updateFloodGeom();
 
     const breaches: BreachInput[] = [];
     const p = this.tmpV;
@@ -522,11 +532,11 @@ export class Ship implements ContactTarget {
     return false;
   }
 
-  /** Recompute pool surfaces + wet centroids for compartments that hold water or are breached. The
-   *  pool is a world-horizontal plane: rank the interior cells by world-Y and wet the lowest
-   *  `fill·n` (volume-exact, since cells are equal). `poolY` is that pool's surface; the wet-cell
-   *  local centroid is where the floodwater weight bears (low side when heeled). Dry, unbreached
-   *  compartments are skipped — normally that's all of them, so this is ~free while afloat. */
+  /** Recompute the pool SURFACE height for compartments that hold water or are breached. The pool is a
+   *  world-horizontal plane: rank the interior cells by world-Y and wet the lowest `fill·n` (volume-exact,
+   *  since cells are equal); `poolY` is that pool's surface, fed to the two-reservoir breach heads. (The
+   *  floodwater weight now bears via floodBallastLocal, so no wet centroid is computed here.) Dry,
+   *  unbreached compartments are skipped — normally that's all of them, so this is ~free while afloat. */
   private updateFloodGeom(): void {
     const tr = this.body.translation();
     const rot = this.body.rotation();
@@ -541,7 +551,7 @@ export class Ship implements ContactTarget {
       const g = this.floodCellArrays(c);
       const n = g.lx.length;
       if (n === 0) { g.hasWater = false; g.poolY = -Infinity; continue; }
-      const wy = g.worldY, ord = g.order;
+      const wy = g.worldY;
       for (let i = 0; i < n; i++) {
         const vx = g.lx[i], vy = g.ly[i], vz = g.lz[i];
         // quaternion-rotate the cell centre, y-component only, + translation → absolute world-Y
@@ -549,20 +559,19 @@ export class Ship implements ContactTarget {
         const ty = 2 * (qz * vx - qx * vz);
         const tz = 2 * (qx * vy - qy * vx);
         wy[i] = vy + qw * ty + (qz * tx - qx * tz) + tr.y;
-        ord[i] = i;
       }
-      (ord as unknown as { sort(cmp: (a: number, b: number) => number): void }).sort((a, b) => wy[a] - wy[b]);
+      // We only need the wetCount-th lowest world-Y (the pool surface), not WHICH cell it is — so sort
+      // the VALUES in place with the NATIVE numeric Float32Array.sort() (ascending, no comparator). The
+      // old code sorted an INDEX array with a `(a,b)=>wy[a]-wy[b]` JS callback — V8's slowest sort path —
+      // which cost ~15 ms on a 60k-cell compartment and dominated the ENTIRE flood phase during a
+      // flooding grind. Bit-identical result; just the fast primitive. (g.worldY is exactly length n.)
+      wy.sort();
       const fill = c.volume > 0 ? c.waterVolume / c.volume : 0;
       const wetCount = Math.min(n, Math.max(0, Math.round(fill * n)));
       // pool surface = top of the highest wet cell; empty → just under the lowest cell (a dry floor)
-      g.poolY = wetCount > 0 ? wy[ord[wetCount - 1]] + VOXEL_SIZE * 0.5 : wy[ord[0]] - VOXEL_SIZE * 0.5;
-      let sx = 0, sy = 0, sz = 0;
-      for (let k = 0; k < wetCount; k++) {
-        const i = ord[k];
-        sx += g.lx[i]; sy += g.ly[i]; sz += g.lz[i];
-      }
-      const m = Math.max(wetCount, 1);
-      g.cx = sx / m; g.cy = sy / m; g.cz = sz / m;
+      g.poolY = wetCount > 0 ? wy[wetCount - 1] + VOXEL_SIZE * 0.5 : wy[0] - VOXEL_SIZE * 0.5;
+      // (The wet-cell centroid g.cx/cy/cz that used to be summed here is GONE — floodBallastLocal now
+      //  bears the floodwater weight low + heel-independent, so the per-step centroid sum was dead work.)
       g.hasWater = wetCount > 0;
     }
   }
@@ -861,18 +870,21 @@ export class Ship implements ContactTarget {
    *  the count actually removed (already-empty cells are skipped). */
   carveCells(cells: [number, number, number][]): number {
     const grid = this.build.grid;
+    const nz = grid.dims[2];
     const gone: [number, number, number][] = [];
     for (const [x, y, z] of cells) {
       if (!grid.isSolid(x, y, z)) continue;
       grid.remove(x, y, z);
       this.hull.removeVoxel(x, y, z);
       gone.push([x, y, z]);
+      this.dirtyColumns.add(x * nz + z); // this column changed → rebuild only it next flush
     }
     if (gone.length === 0) return 0;
     updateSurfaceAfterRemoval(grid, this.surface, gone); // keep the boundary set fresh
     this.surfaceCache = null;
     this.registerBreaches(cells);
-    this.damageDirty = true; // sever/mass recompute is deferred + throttled (flushDamage)
+    this.damageDirty = true; // mass/column recompute is deferred + throttled (flushDamage)
+    this.severDirty = true;  // a full-grid sever scan is pending, debounced to carving-pause
     this.colliderDirty = true; this.framesSinceCarve = 0; // debounce the heavy deck-collider rebuild
     return gone.length;
   }
@@ -952,9 +964,14 @@ export class Ship implements ContactTarget {
   private colliderDirty = false;
   private framesSinceCarve = 0;
   private stepsSinceColliderBuild = 0;
+  /** The full-grid sever BFS (findSevered) is ALSO debounced to carving-pause — see flushDamage. */
+  private severDirty = false;
+  private stepsSinceSever = 0;
   flushDamage(): void {
     const COLLIDER_QUIET = 18;      // ~0.3 s of no carving before the deck collider refreshes
     const COLLIDER_MAX_STALE = 300; // ...but a very long continuous grind still refreshes by ~5 s
+    const SEVER_QUIET = 12;         // ~0.2 s of no carving before the full-grid sever scan runs
+    const SEVER_MAX_STALE = 180;    // ...but a long continuous grind still sheds by ~3 s
     this.framesSinceCarve++;
     this.stepsSinceColliderBuild++;
     if (this.colliderDirty && (this.framesSinceCarve >= COLLIDER_QUIET || this.stepsSinceColliderBuild >= COLLIDER_MAX_STALE)) {
@@ -968,25 +985,37 @@ export class Ship implements ContactTarget {
     this.framesSinceFlush = 0;
     this.damageDirty = false;
     const grid = this.build.grid;
-    // anything no longer connected to the anchor breaks off as debris; its removed
-    // cells are fresh holes too — register them so the stump floods from the cut.
-    const islands = findSevered(grid, this.keelAnchor);
-    if (islands.length > 0) {
-      const islandCells: [number, number, number][] = [];
-      for (const island of islands) {
-        for (const c of island.cells) {
-          grid.remove(c.x, c.y, c.z);
-          this.hull.removeVoxel(c.x, c.y, c.z);
-          islandCells.push([c.x, c.y, c.z]);
+
+    // findSevered is a FULL-GRID connectivity BFS (~3 ms on a big hull) — DEBOUNCE it to carving-pause
+    // (like the deck collider) with a max-stale backstop. During a sustained grind a chunk breaking off
+    // can wait a beat; this keeps the per-6-step flush from paying the whole-grid scan every time. The
+    // cheap mass + incremental-column recompute below stays at 10 Hz, so buoyancy keeps tracking the carve.
+    this.stepsSinceSever++;
+    if (this.severDirty && (this.framesSinceCarve >= SEVER_QUIET || this.stepsSinceSever >= SEVER_MAX_STALE)) {
+      this.severDirty = false;
+      this.stepsSinceSever = 0;
+      // anything no longer connected to the anchor breaks off as debris; its removed
+      // cells are fresh holes too — register them so the stump floods from the cut.
+      const islands = findSevered(grid, this.keelAnchor);
+      if (islands.length > 0) {
+        const nz = grid.dims[2];
+        const islandCells: [number, number, number][] = [];
+        for (const island of islands) {
+          for (const c of island.cells) {
+            grid.remove(c.x, c.y, c.z);
+            this.hull.removeVoxel(c.x, c.y, c.z);
+            islandCells.push([c.x, c.y, c.z]);
+            this.dirtyColumns.add(c.x * nz + c.z); // shed cells change their columns too
+          }
         }
+        updateSurfaceAfterRemoval(grid, this.surface, islandCells); // shed cells leave the boundary
+        this.surfaceCache = null;
+        this.registerBreaches(islandCells);
+        this.colliderDirty = true; this.framesSinceCarve = 0; // geometry changed → refresh (debounced)
+        this.onSevered?.(islands);
       }
-      updateSurfaceAfterRemoval(grid, this.surface, islandCells); // shed cells leave the boundary
-      this.surfaceCache = null;
-      this.registerBreaches(islandCells);
-      this.colliderDirty = true; this.framesSinceCarve = 0; // geometry changed → refresh (debounced)
-      this.onSevered?.(islands);
     }
-    // a mast whose step has been blown out goes by the board
+    // a mast whose step has been blown out goes by the board (cheap — kept at 10 Hz)
     this.build.masts.forEach((m, mi) => {
       if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) this.fellMast(mi);
     });
@@ -1038,7 +1067,12 @@ export class Ship implements ContactTarget {
       { x: 0, y: 0, z: 0, w: 1 },
       true,
     );
-    this.columns = makeVoxelColumns(grid, this.build.compartments);
+    // Rebuild ONLY the columns a carve touched since last time (recorded in dirtyColumns), not all
+    // ~2,500 over the full grid — a full makeVoxelColumns was ~7.6 ms and the dominant flush cost
+    // during a sustained ram/island grind. Set-identical to a full rebuild (tested); the only caller
+    // is flushDamage (post-carve, same grid), so dirtyColumns captures every change since the last call.
+    this.columns = updateVoxelColumns(grid, this.enclosed, this.columns, this.dirtyColumns, grid.dims[0], grid.dims[2]);
+    this.dirtyColumns.clear();
     this.totalCellVolume = this.sumColumnVolume();
   }
 

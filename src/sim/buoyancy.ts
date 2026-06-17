@@ -116,57 +116,121 @@ export interface VoxelColumn {
   edge: boolean;
 }
 
+/** The set of compartment-enclosed (trapped-air) cells, packed `x + nx*(y + ny*z)`. STATIC for a
+ *  hull — compartment cells never change once built (carving only adds breaches/openings) — so the
+ *  caller builds it ONCE and reuses it across every column rebuild instead of re-walking ~10^5
+ *  compartment cells each time. Shared by makeVoxelColumns and the incremental updateVoxelColumns. */
+export function enclosedCellSet(compartments: Compartment[]): Set<number> {
+  const enclosed = new Set<number>();
+  for (const c of compartments) for (const cell of c.cells) enclosed.add(cell);
+  return enclosed;
+}
+
+/** Build the ONE displacing column at grid (x,z), or null if it holds no displacing cell. The single
+ *  source of truth for a column's shape (solid-or-enclosed cells between the lowest and highest solid
+ *  cell). `edge` is left false here — it depends on neighbouring columns and is set by the edge pass. */
+function buildColumnAt(grid: VoxelGrid, enclosed: Set<number>, x: number, z: number): VoxelColumn | null {
+  const [nx, ny] = grid.dims;
+  const idx = (xx: number, yy: number, zz: number) => xx + nx * (yy + ny * zz);
+  let lo = -1;
+  let hi = -1;
+  for (let y = 0; y < ny; y++) {
+    if (grid.isSolid(x, y, z)) {
+      if (lo === -1) lo = y;
+      hi = y;
+    }
+  }
+  if (lo === -1) return null;
+  const cellY: number[] = [];
+  for (let y = lo; y <= hi; y++) {
+    if (grid.isSolid(x, y, z) || enclosed.has(idx(x, y, z))) cellY.push((y + 0.5) * VOXEL_SIZE);
+  }
+  if (cellY.length === 0) return null;
+  return { x: (x + 0.5) * VOXEL_SIZE, z: (z + 0.5) * VOXEL_SIZE, area: VOXEL_SIZE * VOXEL_SIZE, cellY, edge: false };
+}
+
+/** Recover the integer grid (x,z) a column sits on from its world-meter centre (exact: col.x = (x+½)·VS). */
+function colGridX(col: VoxelColumn): number {
+  return Math.round(col.x / VOXEL_SIZE - 0.5);
+}
+function colGridZ(col: VoxelColumn): number {
+  return Math.round(col.z / VOXEL_SIZE - 0.5);
+}
+
 /** Build per-(x,z) columns of displacing cells. A cell displaces if it is solid OR
  *  enclosed by a compartment (a sealed hull's trapped air still pushes water) — the
  *  same envelope makeProbes uses, so the resting draft is unchanged. */
 export function makeVoxelColumns(grid: VoxelGrid, compartments: Compartment[]): VoxelColumn[] {
-  const [nx, ny, nz] = grid.dims;
-  const enclosed = new Set<number>();
-  for (const c of compartments) for (const cell of c.cells) enclosed.add(cell);
-  const idx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
+  const [nx, , nz] = grid.dims;
+  const enclosed = enclosedCellSet(compartments);
 
   const cols: VoxelColumn[] = [];
-  const colXZ: number[] = []; // parallel to cols: x*nz+z, for edge detection below
   const present = new Set<number>();
   for (let x = 0; x < nx; x++) {
     for (let z = 0; z < nz; z++) {
-      let lo = -1;
-      let hi = -1;
-      for (let y = 0; y < ny; y++) {
-        if (grid.isSolid(x, y, z)) {
-          if (lo === -1) lo = y;
-          hi = y;
-        }
-      }
-      if (lo === -1) continue;
-      const cellY: number[] = [];
-      for (let y = lo; y <= hi; y++) {
-        if (grid.isSolid(x, y, z) || enclosed.has(idx(x, y, z))) {
-          cellY.push((y + 0.5) * VOXEL_SIZE);
-        }
-      }
-      if (cellY.length === 0) continue;
+      const col = buildColumnAt(grid, enclosed, x, z);
+      if (!col) continue;
+      cols.push(col);
       present.add(x * nz + z);
-      colXZ.push(x * nz + z);
-      cols.push({
-        x: (x + 0.5) * VOXEL_SIZE,
-        z: (z + 0.5) * VOXEL_SIZE,
-        area: VOXEL_SIZE * VOXEL_SIZE,
-        cellY,
-        edge: false,
-      });
     }
   }
   // r18: flag the footprint-boundary columns (the hull skin at the waterline). A column is an
   // edge if any 4-neighbour (x,z) has no column — including grid-edge neighbours (out of range
   // counts as absent). Keys are x*nz+z (unique within bounds, so no boundary aliasing).
   const has = (x: number, z: number) => x >= 0 && x < nx && z >= 0 && z < nz && present.has(x * nz + z);
-  for (let i = 0; i < cols.length; i++) {
-    const x = Math.floor(colXZ[i] / nz);
-    const z = colXZ[i] % nz;
-    cols[i].edge = !has(x + 1, z) || !has(x - 1, z) || !has(x, z + 1) || !has(x, z - 1);
+  for (const col of cols) {
+    const x = colGridX(col), z = colGridZ(col);
+    col.edge = !has(x + 1, z) || !has(x - 1, z) || !has(x, z + 1) || !has(x, z - 1);
   }
   return cols;
+}
+
+/**
+ * Incrementally rebuild ONLY the columns whose (x,z) changed, returning a list set-identical to a
+ * full makeVoxelColumns rebuild. A carve touches a handful of (x,z) stripes, so this is O(changed·ny)
+ * instead of O(nx·nz·ny) — the difference between updating ~10 columns and re-scanning all ~2,500
+ * over a 470k-cell hull every flush (the dominant cost of recomputeMassProperties during a grind).
+ *
+ * `changedKeys` are packed `x*nz + z`. Carving only ever REMOVES cells, so a column can shrink or
+ * vanish but never appear; a vanished column flips its surviving 4-neighbours to `edge`, so the edge
+ * pass re-runs over the changed columns AND their neighbours. `enclosed` is the cached static set.
+ * Column ORDER differs from a full rebuild (the consumers sum/maximise over columns — order-free).
+ */
+export function updateVoxelColumns(
+  grid: VoxelGrid,
+  enclosed: Set<number>,
+  prev: VoxelColumn[],
+  changedKeys: Iterable<number>,
+  nx: number,
+  nz: number,
+): VoxelColumn[] {
+  const byKey = new Map<number, VoxelColumn>();
+  for (const col of prev) byKey.set(colGridX(col) * nz + colGridZ(col), col);
+
+  // rebuild each changed column; collect it + its 4-neighbours as edge-dirty (a vanished column
+  // changes its neighbours' edge status, a shrunk one doesn't — recomputing both is correct).
+  const edgeDirty = new Set<number>();
+  for (const key of changedKeys) {
+    const x = Math.floor(key / nz), z = key % nz;
+    const col = buildColumnAt(grid, enclosed, x, z);
+    if (col) byKey.set(key, col);
+    else byKey.delete(key);
+    edgeDirty.add(key);
+    if (x + 1 < nx) edgeDirty.add((x + 1) * nz + z);
+    if (x - 1 >= 0) edgeDirty.add((x - 1) * nz + z);
+    if (z + 1 < nz) edgeDirty.add(x * nz + (z + 1));
+    if (z - 1 >= 0) edgeDirty.add(x * nz + (z - 1));
+  }
+
+  const has = (x: number, z: number) => x >= 0 && x < nx && z >= 0 && z < nz && byKey.has(x * nz + z);
+  for (const key of edgeDirty) {
+    const col = byKey.get(key);
+    if (!col) continue;
+    const x = Math.floor(key / nz), z = key % nz;
+    col.edge = !has(x + 1, z) || !has(x - 1, z) || !has(x, z + 1) || !has(x, z - 1);
+  }
+
+  return [...byKey.values()];
 }
 
 /** A per-column keel/deck height-field baked from the voxel grid, for the ocean's
