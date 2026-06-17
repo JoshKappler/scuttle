@@ -21,7 +21,8 @@ describe("rigLattice relax", () => {
       awake: true, sleepTimer: 0,
     };
     relax(rig, 1);
-    expect(dist(rig.nodes[0].pos, rig.nodes[1].pos)).toBeLessThan(3);
+    // equal-mass free pair: one pass closes a distance constraint EXACTLY to rest
+    expect(dist(rig.nodes[0].pos, rig.nodes[1].pos)).toBeCloseTo(1, 6);
     expect(rig.links[0].alive).toBe(true);
   });
 

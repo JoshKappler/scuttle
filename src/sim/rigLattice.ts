@@ -62,6 +62,10 @@ export function dist(a: Vec3, b: Vec3): number {
  * THE ONE RULE: a link whose tension strain exceeds breakStrain is deleted
  * (alive=false) instead of satisfied. WOOD resists both stretch and
  * compression; CLOTH only resists stretch (slack under compression).
+ *
+ * Break is TENSION-ONLY by design (a spar fails when over-stretched/bent, and
+ * the design spec defines strain as tension): compression is never a break
+ * condition, only a restoring push — so `delta < 0` is normal, not an error.
  */
 export function relax(rig: Rig, iterations: number): void {
   const { nodes, links } = rig;
@@ -73,6 +77,7 @@ export function relax(rig: Rig, iterations: number): void {
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (d < 1e-9) continue;
       const delta = d - lk.rest;
+      // tension-only break: `delta > 0` guards it so compression never snaps
       if (delta > 0 && delta / lk.rest > lk.breakStrain) { lk.alive = false; continue; }
       if (lk.kind === LinkKind.CLOTH && delta < 0) continue;
       const wa = a.pinned ? 0 : 1 / a.mass;
@@ -151,16 +156,16 @@ export function stepRig(rig: Rig, opts: StepOpts): void {
  * has left the ship. The runtime uses this to drop / float-away loose pieces.
  */
 export function attachedToPin(rig: Rig): boolean[] {
-  const n = rig.nodes.length;
-  const attached = new Array<boolean>(n).fill(false);
-  const adj: number[][] = Array.from({ length: n }, () => []);
+  const nodeCount = rig.nodes.length;
+  const attached = new Array<boolean>(nodeCount).fill(false);
+  const adj: number[][] = Array.from({ length: nodeCount }, () => []);
   for (const lk of rig.links) {
     if (!lk.alive) continue;
     adj[lk.a].push(lk.b);
     adj[lk.b].push(lk.a);
   }
   const stack: number[] = [];
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < nodeCount; i++) {
     if (rig.nodes[i].pinned) { attached[i] = true; stack.push(i); }
   }
   while (stack.length) {
