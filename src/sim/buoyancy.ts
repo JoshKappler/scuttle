@@ -235,25 +235,74 @@ export function updateVoxelColumns(
 
 /** A per-column keel/deck height-field baked from the voxel grid, for the ocean's
  *  VOXEL-ACCURATE, attitude-aware in-hull cut (round 14, P4). For every (x,z) grid
- *  column it stores the local-Y of the lowest solid cell (keel) and the top of the
- *  highest solid cell (deck). The ocean shader inverse-transforms each sea fragment
- *  into this same ship-local frame (the frame `Probe.local` lives in) and discards
- *  only sea genuinely between the column's keel and deck — so the cut follows the
- *  true hull plan (the pointed bow included) AND the live pose (no void when she
- *  bobs/pitches/rolls). Columns with no hull store deck < keel (a "no cut" sentinel). */
+ *  column it stores the local-Y of the lowest solid cell (keel), the top of the
+ *  highest solid cell (deck), and the SEAL TOP (see below). The ocean shader
+ *  inverse-transforms each sea fragment into this same ship-local frame (the frame
+ *  `Probe.local` lives in) and decides, per column, whether to cut the sea — so the
+ *  cut follows the true hull plan (the pointed bow included) AND the live pose (no
+ *  void when she bobs/pitches/rolls). Columns with no hull store deck < keel (a "no
+ *  cut" sentinel).
+ *
+ *  OPEN-BREACH signal (cutout task, 2026-06-16): the third channel `seal` flags whether
+ *  the column is still SEALED against the sea coming straight down. A column is SEALED
+ *  when it still has solid AT the ship's deck plane (the deck planking caps it); it is
+ *  OPEN when the deck-plane cell is gone (the deck/upper skin over that column has been
+ *  carved away, so the sea has a path straight in). Encoded as `seal = deckYLocal` for a
+ *  sealed column and `seal = OPEN_SENTINEL` (a large negative) for an open one. Note a
+ *  SIDE hole bored UNDER an intact deck plank leaves the column SEALED — that breach is
+ *  below the deck and shows the hull side / submerges, it does not warrant a sea cutout.
+ *
+ *  The shader cuts (discards) the sea over a SEALED, dry deck exactly as before, but over
+ *  an OPEN column it never cuts — it lets the sea render INTO the hole (closing over, with
+ *  the depth-fade). So a hole that is above water shows air, a hole at/under the waterline
+ *  shows the sea continuing in, and a sinking bow's U of open columns plus the intact deck
+ *  spanning their tips reads as one clean cutout (the dry deck cuts, the crater lets sea in). */
 export interface HullProfile {
   nx: number;
   nz: number;
-  /** nx*nz*2 floats, row-major idx = (z*nx + x)*2: [keelYLocal, deckYLocal] (m). */
+  /** nx*nz*3 floats, row-major idx = (z*nx + x)*3: [keelYLocal, deckYLocal, sealFlag] (m / sentinel). */
   data: Float32Array;
   /** local-space span the grid occupies (uv = localXZ / [sizeX,sizeZ]). */
   sizeX: number;
   sizeZ: number;
 }
 
-export function buildHullProfile(grid: VoxelGrid): HullProfile {
+/** Channel-2 value marking a column whose deck planking is GONE (an open breach). A large negative so
+ *  it can never collide with a real local deck-Y (which is ≥0). The shader treats seal < this/2 as open. */
+export const HULL_PROFILE_OPEN = -1000;
+
+/**
+ * Build the per-column keel/deck/seal profile.
+ *
+ * `deckPlaneVoxelY` is the voxel-Y of the ship's MAIN deck plane (ShipBuild.deckY): a column is
+ * "open" when it has no solid at this plane. When omitted, the reference is derived as the maximum
+ * top-solid over all columns (the intact deck silhouette) — a self-contained fallback for
+ * callers/tests without the build handy. A small tolerance below the plane still counts as sealed,
+ * so a single missing deck plank doesn't flip a column open spuriously.
+ */
+export function buildHullProfile(grid: VoxelGrid, deckPlaneVoxelY?: number): HullProfile {
   const [nx, ny, nz] = grid.dims;
-  const data = new Float32Array(nx * nz * 2);
+  const data = new Float32Array(nx * nz * 3);
+
+  // reference deck-plane voxel-Y. Use the supplied build deck plane (preferred — robust to
+  // quarterdeck/cap-rail height variation), else the tallest top-solid across all columns.
+  let planeY = deckPlaneVoxelY ?? -1;
+  if (planeY < 0) {
+    for (let z = 0; z < nz; z++) {
+      for (let x = 0; x < nx; x++) {
+        for (let y = ny - 1; y >= 0; y--) {
+          if (grid.isSolid(x, y, z)) { if (y > planeY) planeY = y; break; }
+        }
+      }
+    }
+    if (planeY < 0) planeY = ny - 1;
+  }
+  // a column counts as sealed if it has solid anywhere in this small band at/just below the deck
+  // plane (so a lone carved plank, or a deck a cell lower under a forecastle, isn't spuriously open).
+  const SEAL_BAND = 2; // voxels
+  const bandLo = Math.max(0, Math.min(planeY, ny - 1) - SEAL_BAND);
+  const bandHi = Math.min(ny - 1, Math.min(planeY, ny - 1) + 1); // +1 to also accept the plank ON the plane
+
   for (let z = 0; z < nz; z++) {
     for (let x = 0; x < nx; x++) {
       let lo = -1;
@@ -264,13 +313,23 @@ export function buildHullProfile(grid: VoxelGrid): HullProfile {
           hi = y;
         }
       }
-      const o = (z * nx + x) * 2;
+      const o = (z * nx + x) * 3;
       if (lo === -1) {
         data[o] = 1; // keel above deck → sentinel "no hull here, never cut"
         data[o + 1] = -1;
+        data[o + 2] = -1;
       } else {
+        const deckYLocal = (hi + 1) * VOXEL_SIZE;
         data[o] = lo * VOXEL_SIZE; // keel: bottom of lowest solid cell
-        data[o + 1] = (hi + 1) * VOXEL_SIZE; // deck: top of highest solid cell
+        data[o + 1] = deckYLocal; // deck: top of highest solid cell
+
+        // SEALED ⟺ solid survives in the deck-plane band → the deck still caps this column. OPEN ⟺
+        // the band is empty here → the deck/upper skin is gone and the sea can reach straight in.
+        let sealed = false;
+        for (let y = bandLo; y <= bandHi; y++) {
+          if (grid.isSolid(x, y, z)) { sealed = true; break; }
+        }
+        data[o + 2] = sealed ? deckYLocal : HULL_PROFILE_OPEN;
       }
     }
   }

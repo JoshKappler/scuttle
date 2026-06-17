@@ -342,12 +342,13 @@ async function main() {
   // into a float texture. P4 binds the PLAYER's for the voxel-accurate in-hull cut;
   // P5 stamps BOTH ships' profiles into the dynamic-wave field for the interaction
   // bulge. RG = keelYLocal, deckYLocal (m); Nearest so cut edges stay voxel-crisp.
-  const makeProfileTex = (grid: typeof sloop.build.grid) => {
-    const prof = buildHullProfile(grid);
+  const makeProfileTex = (grid: typeof sloop.build.grid, deckPlaneVoxelY?: number) => {
+    const prof = buildHullProfile(grid, deckPlaneVoxelY);
     const texData = new Float32Array(prof.nx * prof.nz * 4);
     for (let i = 0; i < prof.nx * prof.nz; i++) {
-      texData[i * 4] = prof.data[i * 2]; // keelYLocal → R
-      texData[i * 4 + 1] = prof.data[i * 2 + 1]; // deckYLocal → G
+      texData[i * 4] = prof.data[i * 3]; // keelYLocal → R
+      texData[i * 4 + 1] = prof.data[i * 3 + 1]; // deckYLocal → G
+      texData[i * 4 + 2] = prof.data[i * 3 + 2]; // sealYLocal → B
       texData[i * 4 + 3] = 1;
     }
     const tex = new THREE.DataTexture(texData, prof.nx, prof.nz, THREE.RGBAFormat, THREE.FloatType);
@@ -359,7 +360,7 @@ async function main() {
     tex.needsUpdate = true;
     return { tex, sizeX: prof.sizeX, sizeZ: prof.sizeZ, data: prof.data, nx: prof.nx, nz: prof.nz };
   };
-  let sloopProfile = makeProfileTex(sloop.build.grid);
+  let sloopProfile = makeProfileTex(sloop.build.grid, sloop.build.deckY);
   ocean.setHullProfile(0, sloopProfile.data, sloopProfile.nx, sloopProfile.nz, sloopProfile.sizeX, sloopProfile.sizeZ);
   // Per-ship voxel sea-cut bookkeeping: which ship currently occupies each ocean slot (so a slot's
   // atlas band is re-stamped only when its ship changes) + a per-hull cache of the built profile.
@@ -426,7 +427,8 @@ async function main() {
   // Each enemy now gets its OWN voxel sea-cut profile, stamped into its ocean slot's atlas band when
   // it is assigned (see feedProfiled) — no more shared-sloop approximation. This sloop profile is
   // kept only for the dynamic-wave field's enemy slot below.
-  const enemyProfile = makeProfileTex(buildSloop().grid);
+  const enemyBuild = buildSloop();
+  const enemyProfile = makeProfileTex(enemyBuild.grid, enemyBuild.deckY);
   // which tier each live enemy is (for unlock-on-defeat). WeakMap so culled ships GC.
   const enemyTier = new WeakMap<Ship, ShipTierId>();
 
@@ -580,7 +582,7 @@ async function main() {
     rebindPlayerRenderHooks();
   }
   function rebindPlayerRenderHooks(): void {
-    sloopProfile = makeProfileTex(sloop.build.grid);
+    sloopProfile = makeProfileTex(sloop.build.grid, sloop.build.deckY);
     ocean.setHullProfile(0, sloopProfile.data, sloopProfile.nx, sloopProfile.nz, sloopProfile.sizeX, sloopProfile.sizeZ);
     ocean.setFootprint(sloop.build.lengthM / 2 + 1.2, sloop.build.beamM / 2 + 1.0);
     slotShip[0] = sloop; // the swapped-in hull now occupies slot 0 (profile re-stamped just above)
@@ -1377,20 +1379,44 @@ async function main() {
     _poseM4.makeRotationFromQuaternion(_poseQuat);
     _poseInvRot.setFromMatrix4(_poseM4).transpose(); // R⁻¹ = Rᵀ for a rotation
     _poseTrans.set(tr.x, tr.y, tr.z);
-    ocean.updateHullPose(slot, _poseInvRot, _poseTrans);
+    // live waterline at the hull centre — the open-breach cut tests the cutout against THIS, not a
+    // hardcoded sea level, so a hole reads as cut only where it actually meets the moving surface.
+    const seaY = surfaceHeight(waves, tr.x, tr.z, world.simTime);
+    ocean.updateHullPose(slot, _poseInvRot, _poseTrans, seaY);
   };
 
   // Every visible enemy now gets the SAME voxel-accurate cut as the player (same class of object):
   // stamp its own hull profile into its atlas band on assignment, then feed pose + wake. The profile
-  // build is O(cells), so it's cached per ship and re-stamped only when a slot's occupant changes.
+  // build is O(cells), so it's cached per ship and re-stamped only when a slot's occupant changes —
+  // OR when the hull has been DAMAGED since the last build (cutout task), so a fresh hole appears in
+  // the cut instead of the cached intact profile masking it forever.
+  //
+  // DAMAGE SIGNAL: ship.build.grid.solidCount() — a public, allocation-free read off the grid that
+  // DROPS whenever a carve removes cells (the only mutation in combat). I deliberately do NOT touch
+  // game/ship.ts (another agent owns it); solidCount() is already exposed by VoxelGrid. The carve's
+  // own heavy recompute is throttled (~10 Hz) so the cut following a few flushes behind is fine; I
+  // additionally throttle the O(cells) profile REBUILD to REBUILD_INTERVAL per ship so a sustained
+  // ram doesn't rebuild a 470k-cell profile every frame. `lastSolids`/`lastBuilt` ride a WeakMap so
+  // culled ships GC.
+  const REBUILD_INTERVAL = 0.4; // s — min gap between profile rebuilds for a ship taking damage
+  const profMeta = new WeakMap<Ship, { solids: number; builtAt: number }>();
   const shipProfile = (ship: Ship) => {
     let p = profileCache.get(ship);
-    if (!p) { p = buildHullProfile(ship.build.grid); profileCache.set(ship, p); }
-    return p;
+    let meta = profMeta.get(ship);
+    const solids = ship.build.grid.solidCount();
+    const damaged = meta !== undefined && solids < meta.solids;
+    const stale = meta !== undefined && damaged && world.simTime - meta.builtAt >= REBUILD_INTERVAL;
+    if (!p || meta === undefined || stale) {
+      p = buildHullProfile(ship.build.grid, ship.build.deckY);
+      profileCache.set(ship, p);
+      profMeta.set(ship, { solids, builtAt: world.simTime });
+    }
+    return { prof: p, rebuilt: !meta || stale };
   };
   const feedProfiled = (slot: number, ship: Ship) => {
-    if (slotShip[slot] !== ship) {
-      const p = shipProfile(ship);
+    const { prof: p, rebuilt } = shipProfile(ship);
+    // re-stamp the slot's atlas band when the ship changed OR its profile was just rebuilt (damage).
+    if (slotShip[slot] !== ship || rebuilt) {
       ocean.setHullProfile(slot, p.data, p.nx, p.nz, p.sizeX, p.sizeZ);
       slotShip[slot] = ship;
     }
@@ -2104,6 +2130,10 @@ async function main() {
     post.setSun(_sunWorld.x * 0.5 + 0.5, _sunWorld.y * 0.5 + 0.5, sunOnScreen);
 
     seam.setHulls([sloop.visual.group, ...fleet.enemies.map((e) => e.visual.group), ...islandHulls]);
+    // feed the live waterline at the player so the stencil's above/below-water gate tracks the real
+    // swell (was stuck at 0). The hull silhouettes are local; one representative surface sample is
+    // ample for the coarse gate, and it keeps the stencil consistent with the ocean FRAG's cut.
+    seam.setSeaLevel(surfaceHeight(waves, tr.x, tr.z, world.simTime));
     const _r0 = performance.now();
     if (TUN.gfx.post.enabled) {
       // the composer's ScenePass runs the same clear → seam-write → scene-render

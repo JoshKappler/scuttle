@@ -73,11 +73,14 @@ export interface Ocean {
   ): void;
   /** P4: bind a hull's per-column keel/deck profile (built once from the voxel grid via
    *  buildHullProfile) and its local span into the per-slot atlas band, activating that slot's
-   *  voxel-accurate cut. `data` is nx*nz*2 floats [keelYLocal, deckYLocal]; works for ANY slot. */
+   *  voxel-accurate cut. `data` is nx*nz*3 floats [keelYLocal, deckYLocal, sealFlag]; works for ANY slot. */
   setHullProfile(slot: number, data: Float32Array, nx: number, nz: number, sizeX: number, sizeZ: number): void;
   /** P4: feed a hull's live world→local rotation (inverse of the body quaternion)
-   *  and world translation each frame, per slot, so its cut tracks heave/pitch/roll. */
-  updateHullPose(slot: number, invRot: THREE.Matrix3, trans: THREE.Vector3): void;
+   *  and world translation each frame, per slot, so its cut tracks heave/pitch/roll.
+   *  `seaY` is the live Gerstner surface world-Y at the hull's centre — the waterline the
+   *  open-breach cut tests against (cutout task): the cut is drawn over an intact deck above
+   *  this level, and over an OPEN hole only where it straddles this level. */
+  updateHullPose(slot: number, invRot: THREE.Matrix3, trans: THREE.Vector3, seaY: number): void;
   /** Free a per-ship slot so the shader skips it (sets halfL<0.5 + profileOn=0). */
   clearSlot(slot: number): void;
   /** Clear the stern-trail ribbon for a premium slot (0|1) on reassignment. */
@@ -415,10 +418,11 @@ uniform vec4 uTrail[64]; // stern-path points: x, z, age (s), strength
 // ES 1.00's no-dynamic-sampler-index rule (the non-sampler arrays below are loop-indexed fine, as
 // uShipA/uShipB already are).
 uniform float uProfileOn[MAXVIS];    // 1 per slot when that hull's profile cut is live
-uniform sampler2D uProfileAtlas;     // RG = keelYLocal, deckYLocal (m); band s = slot s's hull profile
+uniform sampler2D uProfileAtlas;     // RGB = keelYLocal, deckYLocal, sealYLocal (m); band s = slot s's hull profile
 uniform mat3 uProfileInvRot[MAXVIS]; // world→local rotation per slot (inverse body quat)
 uniform vec3 uProfileTrans[MAXVIS];  // body world translation per slot (= local origin)
 uniform vec2 uProfileSize[MAXVIS];   // local span (m) per slot (uv = localXZ / size)
+uniform float uProfileSeaY[MAXVIS];  // live Gerstner surface world-Y at each hull's centre (the waterline)
 
 // shore shoaling field (same texture as the vertex stage) — drives the surf-foam line.
 uniform sampler2D uLandTex;
@@ -470,31 +474,49 @@ void main() {
     float along2 = al0 * al0;
     float beamProfile = (1.0 - along2) * (0.5 + 0.5 * (1.0 - along2));
     if (along2 < 1.0 && ac0 * ac0 < beamProfile && vWorldPos.y > keelY && vWorldPos.y < deckY + 2.0) {
-      if (deckY > 0.3) discard;             // dry deck → cut the sea (no ocean in the hold)
-      else floorY = max(floorY, deckY);     // submerged → record the deck top as the column floor
+      if (deckY > uProfileSeaY[s0]) discard; // dry deck → cut the sea (no ocean in the hold)
+      else floorY = max(floorY, deckY);      // submerged → record the deck top as the column floor
     }
   }
 
   // P4 voxel-accurate cut — EVERY hull. Pose this fragment into each live hull's LOCAL frame and
-  // discard only sea between the per-column keel and deck (+2 m crest clearance vs green-water). The
-  // full inverse transform folds in heave/pitch/roll, so no void reveals as a ship bobs, and the
-  // per-column profile follows the true voxel plan (the pointed bow) instead of a fat ellipse. Every
-  // live slot reads its own band of the profile atlas, so all ships cut identically.
+  // decide, PER COLUMN, whether to cut the sea. The full inverse transform folds in heave/pitch/roll,
+  // so no void reveals as a ship bobs, and the per-column profile follows the true voxel plan (the
+  // pointed bow). Every live slot reads its own band of the profile atlas, so all ships cut identically.
+  //
+  // CUTOUT TASK (2026-06-16): the cut is restricted to where it is actually needed instead of the whole
+  // above-water silhouette. Per column the atlas carries keel (R), deck (G), and a SEAL FLAG (B): B is
+  // the deck-Y for a SEALED column (the deck planking still caps it) and a large negative sentinel for
+  // an OPEN one (the deck/upper skin over that column is carved away). Using the live waterline
+  // uProfileSeaY[s] at the hull centre:
+  //   • SEALED column, deck ABOVE water → cut (discard): no ocean washing over the sound, sealed deck.
+  //   • SEALED column, deck SUBMERGED   → don't cut; the sea closes over it (depth-fade), as before.
+  //   • OPEN column → never cut: let the sea render straight into the hole (it fades over the surviving
+  //     floor). So a hole above water shows air, a hole at/under the waterline shows the sea continuing
+  //     in, and a hole fully under just submerges. The intact deck spanning a sinking ship's U of open
+  //     breaches still cuts (SEALED rule), so the whole U reads as one clean cutout — the user's U-shape
+  //     exception falls out with no special case. (A SIDE hole under an intact deck plank stays SEALED,
+  //     so it shows the hull side / submerges and gets no spurious cutout — "underwater just goes under".)
   for (int s = 0; s < MAXVIS; s++) {
     if (uProfileOn[s] < 0.5) continue;
     vec3 lp = uProfileInvRot[s] * (vWorldPos - uProfileTrans[s]);
     vec2 puv = vec2(lp.x / uProfileSize[s].x, lp.z / uProfileSize[s].y);
     if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
-      vec2 kd = texture2D(uProfileAtlas, vec2(puv.x, (puv.y + float(s)) / float(MAXVIS))).rg; // keel, deck (m)
-      if (kd.y > kd.x && lp.y > kd.x) {
-        // world height of THIS column's deck top (local→world Y = trans.y + dot(R⁻¹'s y-column, localPt)).
-        float deckWY = uProfileTrans[s].y + dot(uProfileInvRot[s][1], vec3(lp.x, kd.y, lp.z));
-        // dry deck (still has freeboard) → cut the sea so the hold shows timber, not ocean. Submerged
-        // deck → DON'T cut: let the sea close over it and record the depth for the fade below, so a
-        // sinking bow dissolves into the water. (The old "lp.y < deck + 2 m" band kept carving a hole
-        // 2 m above a submerged deck → you saw straight through the bow to the skybox — the void bug.)
-        if (deckWY > 0.3) discard;
-        else floorY = max(floorY, deckWY); // submerged deck top → column floor
+      vec3 kds = texture2D(uProfileAtlas, vec2(puv.x, (puv.y + float(s)) / float(MAXVIS))).rgb; // keel, deck, sealFlag
+      float keelL = kds.x, deckL = kds.y, sealFlag = kds.z;
+      if (deckL > keelL && lp.y > keelL) {
+        // world height of this column's deck top (local→world Y = trans.y + dot(R⁻¹'s y-row, localPt)).
+        float deckWY = uProfileTrans[s].y + dot(uProfileInvRot[s][1], vec3(lp.x, deckL, lp.z));
+        float seaY = uProfileSeaY[s];
+        bool open = sealFlag < -500.0; // HULL_PROFILE_OPEN sentinel (≈ -1000) → the deck here is carved away
+        if (open) {
+          // OPEN breach: never cut. Let the sea flow in / close over the surviving floor (fade below).
+          if (deckWY <= seaY) floorY = max(floorY, deckWY);
+        } else {
+          // SEALED deck: cut above the waterline, fade when submerged (the original behaviour).
+          if (deckWY > seaY) discard;
+          else floorY = max(floorY, deckWY);
+        }
       }
     }
   }
@@ -753,17 +775,20 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
   profileAtlas.wrapS = profileAtlas.wrapT = THREE.ClampToEdgeWrapping;
   profileAtlas.flipY = false;
   profileAtlas.needsUpdate = true;
-  // Resample a hull's nx×nz keel/deck field (src idx (z*nx+x)*2) into band `slot` (nearest, fills the cell).
+  // Resample a hull's nx×nz keel/deck/seal field (src idx (z*nx+x)*3) into band `slot`
+  // (nearest, fills the cell). RGB = keelYLocal, deckYLocal, sealYLocal (the open-breach
+  // signal: seal < deck ⟺ the deck planking over this column is gone → an open hole).
   const stampProfile = (slot: number, data: Float32Array, nx: number, nz: number): void => {
     const band = slot * PROF_H;
     for (let ty = 0; ty < PROF_H; ty++) {
       const sz = Math.min(nz - 1, Math.floor((ty / PROF_H) * nz));
       for (let tx = 0; tx < PROF_W; tx++) {
         const sx = Math.min(nx - 1, Math.floor((tx / PROF_W) * nx));
-        const si = (sz * nx + sx) * 2;
+        const si = (sz * nx + sx) * 3;
         const di = ((band + ty) * PROF_W + tx) * 4;
         profileAtlasData[di] = data[si];         // keelYLocal → R
         profileAtlasData[di + 1] = data[si + 1]; // deckYLocal → G
+        profileAtlasData[di + 2] = data[si + 2]; // sealYLocal → B
         profileAtlasData[di + 3] = 1;
       }
     }
@@ -863,6 +888,7 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uProfileInvRot: { value: Array.from({ length: MAXVIS }, () => new THREE.Matrix3()) },
       uProfileTrans: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector3()) },
       uProfileSize: { value: Array.from({ length: MAXVIS }, () => new THREE.Vector2(1, 1)) },
+      uProfileSeaY: { value: Array.from({ length: MAXVIS }, () => 0) },
       // Cascade field (round 14): displacement is summed in the vertex stage, the
       // normal + foam in the fragment stage, one set of textures per band. uFftOn
       // gates every use so the null fallback (dummy textures) renders the
@@ -986,9 +1012,10 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       const base = slot * 32;
       for (let i = 0; i < 32; i++) u[base + i].set(0, 0, 0, 0);
     },
-    updateHullPose(slot, invRot, trans) {
+    updateHullPose(slot, invRot, trans, seaY) {
       (mat.uniforms.uProfileInvRot.value as THREE.Matrix3[])[slot].copy(invRot);
       (mat.uniforms.uProfileTrans.value as THREE.Vector3[])[slot].copy(trans);
+      (mat.uniforms.uProfileSeaY.value as number[])[slot] = seaY;
     },
     setDynamicField(tex, windowSize, originX, originZ, on, scale = 1) {
       if (tex) mat.uniforms.uDynDisp.value = tex;

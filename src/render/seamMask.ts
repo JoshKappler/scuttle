@@ -9,7 +9,14 @@ import * as THREE from "three";
  *  SUBMERGED hull (a sinking bow, a foundering wreck) is left UNmasked so the ocean closes over it —
  *  the ocean's own shader then renders that band as depth-faded translucent water. Masking the whole
  *  silhouette (as before) is what made a sunk bow read as a void: the stencil rejected the sea even
- *  where the hull had dropped below the surface. */
+ *  where the hull had dropped below the surface.
+ *
+ *  CUTOUT TASK (2026-06-16): `uSeaLevel` is now FED the real Gerstner surface height each frame (it
+ *  used to be stuck at 0.0, so the height gate never matched the moving sea). The mask is rendered
+ *  from the actual hull MESHES, so a hole carved in the hull writes NO stencil there — the ocean is
+ *  free to draw through the gap. Combined with the correct waterline, the stencil now agrees with the
+ *  ocean FRAG's open-breach cut: above-water solid hull rejects the sea; an above-water hole and any
+ *  below-water hull let it back in. */
 export class SeamMask {
   private maskMat = new THREE.ShaderMaterial({
     uniforms: { uSeaLevel: { value: 0.0 } },
@@ -43,6 +50,13 @@ export class SeamMask {
   /** Replace the set of hull silhouettes painted into the stencil (fleet changes). */
   setHulls(hulls: THREE.Object3D[]): void {
     this.hulls = hulls;
+  }
+
+  /** Feed the live water surface world-Y (cutout task): only hull fragments ABOVE this write the
+   *  stencil, so the sea closes over a submerged hull and the gate tracks the moving swell instead of
+   *  the old stuck-at-0 sea level. Call once per frame before write(). */
+  setSeaLevel(y: number): void {
+    this.maskMat.uniforms.uSeaLevel.value = y;
   }
 
   /** Render hull silhouettes into the stencil buffer of the current target. */
