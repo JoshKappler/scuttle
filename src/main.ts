@@ -148,6 +148,18 @@ async function main() {
       document.body.classList.add("menu-active"); // hide the game HUD behind the menu
       menu.showStart(saves.hasSave("career"));
     },
+    onSetVolume: (v) => {
+      settings.masterVolume = v;
+      audio.setMasterVolume(v); // live
+    },
+    onSetCamera: (mode) => {
+      settings.defaultCamera = (mode === 1 || mode === 2 ? mode : 0) as 0 | 1 | 2; // applied on game start
+    },
+    getSettings: () => ({ masterVolume: settings.masterVolume, defaultCamera: settings.defaultCamera }),
+    onSettingsClosed: () => {
+      if (worldReady) saveCurrent(); // safe only once the game (economy/tier) exists
+    },
+    onUiClick: () => audio.playUi("ui_click"),
   });
 
   // a clean dark screen behind the DOM menu while we wait for the player to choose
@@ -454,11 +466,26 @@ async function main() {
   // (press E within DOCK_RANGE) triggers at the town pier — not the DevDockProvider origin.
   const economy = new Economy();
   const portScreen = createPortScreen({
-    onSell: () => port.sell(),
-    onRepair: () => port.repair(),
-    onBuy: (id) => port.buy(id),
-    onBuyShip: (id) => port.buyShip(id),
-    onClose: () => port.closePort(),
+    onSell: () => {
+      audio.playUi("ui_buy");
+      port.sell();
+    },
+    onRepair: () => {
+      audio.playUi("ui_buy");
+      port.repair();
+    },
+    onBuy: (id) => {
+      audio.playUi("ui_buy");
+      port.buy(id);
+    },
+    onBuyShip: (id) => {
+      audio.playUi("ui_confirm");
+      port.buyShip(id);
+    },
+    onClose: () => {
+      audio.playUi("ui_confirm");
+      port.closePort();
+    },
   });
   const port = new PortController({
     economy,
@@ -1732,6 +1759,10 @@ async function main() {
       if (cfg.shipTier !== currentTier) swapPlayerShip(cfg.shipTier as ShipTierId);
       gs.startGame("sandbox");
     }
+    // apply the saved default camera (settings were just restored by applySave above)
+    camMode = settings.defaultCamera;
+    firstPerson = camMode === 1;
+    controls.charFollow = camMode === 0;
     menu.hide();
     document.body.classList.remove("menu-active"); // reveal the game HUD now that we're sailing
   }

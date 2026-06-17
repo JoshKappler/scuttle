@@ -3,12 +3,15 @@
  * in the same antique chart-room theme as {@link createPortScreen} (aged leather,
  * brass rules, parchment serif, gold). Built entirely in JS so it needs no
  * index.html changes. It is a DUMB view: it renders buttons and reports clicks
- * through {@link MenuActions}; it never touches game state. Settings are deferred
- * to a later pass (Phase 4).
+ * through {@link MenuActions}; it never touches game state. Includes a Settings
+ * sub-screen (master volume + default camera) reached from the title/pause screens.
  */
 
 const PARCH = "#d8c9a3";
 const MUTE = "#a8895c";
+
+/** Optional click cue, wired by createMenuScreen from MenuActions.onUiClick (keeps this view engine-free). */
+let uiClick: () => void = () => {};
 
 export interface MenuActions {
   onNewCareer(): void;
@@ -18,6 +21,15 @@ export interface MenuActions {
   onSandbox(): void;
   onResume(): void;
   onQuitToMenu(): void;
+  /** Settings — live master volume (0..1) and default camera (0/1/2). */
+  onSetVolume(v01: number): void;
+  onSetCamera(mode: number): void;
+  /** Current persisted settings, read when the Settings screen opens. */
+  getSettings(): { masterVolume: number; defaultCamera: number };
+  /** Settings screen closed — a good moment to persist. */
+  onSettingsClosed?(): void;
+  /** Optional click cue for buttons/pills. */
+  onUiClick?(): void;
 }
 
 /** What the player chose on the sandbox config screen. Plain strings so this view
@@ -75,7 +87,11 @@ function bigButton(label: string, onClick: () => void, enabled = true): HTMLButt
     letterSpacing: "0.08em",
   } as Partial<CSSStyleDeclaration>);
   b.disabled = !enabled;
-  if (enabled) b.addEventListener("click", onClick);
+  if (enabled)
+    b.addEventListener("click", () => {
+      uiClick();
+      onClick();
+    });
   return b;
 }
 
@@ -134,6 +150,7 @@ function chooserRow(
       letterSpacing: "0.05em",
     } as Partial<CSSStyleDeclaration>);
     el.addEventListener("click", () => {
+      uiClick();
       cur = c.value;
       paint();
       onPick(c.value);
@@ -211,17 +228,69 @@ export function createMenuScreen(actions: MenuActions): MenuScreen {
     if (v && document.pointerLockElement) document.exitPointerLock();
   };
 
-  return {
+  uiClick = () => actions.onUiClick?.();
+  let backToPrev: () => void = () => setOpen(false);
+
+  /** A labelled 0–100 master-volume slider; reports the normalised 0..1 value live. */
+  const volumeSlider = (value: number, onInput: (v: number) => void): HTMLDivElement => {
+    const wrap = document.createElement("div");
+    Object.assign(wrap.style, { display: "flex", alignItems: "center", gap: "10px", margin: "4px 0 8px" } as Partial<CSSStyleDeclaration>);
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "100";
+    input.value = String(Math.round(value * 100));
+    Object.assign(input.style, { flex: "1 1 auto", cursor: "pointer", accentColor: "#c9a227" } as Partial<CSSStyleDeclaration>);
+    const pct = document.createElement("div");
+    pct.textContent = `${input.value}%`;
+    Object.assign(pct.style, { width: "42px", textAlign: "right", color: MUTE, font: '700 12px Georgia, serif' } as Partial<CSSStyleDeclaration>);
+    input.addEventListener("input", () => {
+      pct.textContent = `${input.value}%`;
+      onInput(Number(input.value) / 100);
+    });
+    wrap.append(input, pct);
+    return wrap;
+  };
+
+  const showSettings = () => {
+    title.textContent = "Settings";
+    subtitle.textContent = "trim the ship to your liking";
+    const s = actions.getSettings();
+    const camRow = chooserRow(
+      [
+        { value: "0", label: "Char 3rd" },
+        { value: "1", label: "Char 1st" },
+        { value: "2", label: "Ship" },
+      ],
+      String(s.defaultCamera),
+      (v) => actions.onSetCamera(Number(v)),
+    );
+    body.replaceChildren(
+      sectionLabel("Master volume"),
+      volumeSlider(s.masterVolume, (v) => actions.onSetVolume(v)),
+      sectionLabel("Default camera"),
+      camRow,
+      bigButton("Back", () => {
+        actions.onSettingsClosed?.();
+        backToPrev();
+      }),
+    );
+    setOpen(true);
+  };
+
+  const api: MenuScreen = {
     get isOpen() {
       return open;
     },
     showStart(hasCareer: boolean) {
+      backToPrev = () => api.showStart(hasCareer);
       title.textContent = "SCUTTLE";
       subtitle.textContent = "a pirate's fortune, won broadside by broadside";
       body.replaceChildren(
         bigButton("New Career", actions.onNewCareer),
         bigButton(hasCareer ? "Continue Voyage" : "Continue (no save)", actions.onContinue, hasCareer),
         bigButton("Sandbox", actions.onSandbox),
+        bigButton("Settings", showSettings),
       );
       setOpen(true);
     },
@@ -262,10 +331,12 @@ export function createMenuScreen(actions: MenuActions): MenuScreen {
       setOpen(true);
     },
     showPause() {
+      backToPrev = () => api.showPause();
       title.textContent = "Paused";
       subtitle.textContent = "the sea holds her breath";
       body.replaceChildren(
         bigButton("Resume", actions.onResume),
+        bigButton("Settings", showSettings),
         bigButton("Quit to Menu", actions.onQuitToMenu),
       );
       setOpen(true);
@@ -278,4 +349,5 @@ export function createMenuScreen(actions: MenuActions): MenuScreen {
       backdrop.remove();
     },
   };
+  return api;
 }
