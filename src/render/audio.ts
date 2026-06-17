@@ -31,6 +31,9 @@ const MANIFEST: Record<string, string> = {
   sink: "sfx/sink.wav",
   coins: "sfx/coins.wav",
   splash: "sfx/splash.wav",
+  gull: "sfx/gull.wav",
+  creak: "sfx/creak.wav",
+  rope: "sfx/rope.wav",
   ui_click: "sfx/ui_click.wav",
   ui_confirm: "sfx/ui_confirm.wav",
   ui_buy: "sfx/ui_buy.wav",
@@ -45,9 +48,9 @@ const MANIFEST: Record<string, string> = {
 
 const POS_VOICES = 16;
 const UI_VOICES = 6;
-const MUSIC_GAIN = 0.45;
-const OCEAN_GAIN = 0.5;
-const WIND_BASE = 0.6;
+const MUSIC_GAIN = 0.4;
+const OCEAN_GAIN = 0.28;
+const WIND_BASE = 0.4;
 
 export class AudioManager {
   readonly listener: THREE.AudioListener;

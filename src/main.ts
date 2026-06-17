@@ -109,7 +109,13 @@ async function main() {
   const unlockAudio = () => audio.resume(); // browsers start the AudioContext suspended
   window.addEventListener("pointerdown", unlockAudio, { once: true });
   window.addEventListener("keydown", unlockAudio, { once: true });
-  const splashGate = new ThrottleGate(0.35); // rate-limit the bow-splash sfx (subtle, player only)
+  const creakGate = new ThrottleGate(0.55); // hull creak on roll/heel + hard rudder
+  const ropeGate = new ThrottleGate(0.3); // rope/rigging while trimming sail
+  const _audQ = new THREE.Quaternion();
+  const _audFwd = new THREE.Vector3();
+  let gullCountdown = 8; // seconds to the next gull cry
+  let prevSailSet = 0;
+  let prevRudder = 0;
 
   type StartChoice =
     | { kind: "career"; fresh: boolean }
@@ -170,9 +176,6 @@ async function main() {
     renderer.clear();
   });
   menu.showStart(saves.hasSave("career"));
-  audio.ready.then(() => {
-    if (gs.phase === "menu") audio.music("menu"); // sings once buffers load (after the first gesture)
-  });
 
   // BLOCK here until the player picks a mode — only then does the world build below run.
   const startChoice = await choicePromise;
@@ -583,6 +586,7 @@ async function main() {
     _dynShips[0].profileTex = sloopProfile.tex;
     _dynShips[0].sizeX = sloopProfile.sizeX;
     _dynShips[0].sizeZ = sloopProfile.sizeZ;
+    rebuildAimLines(); // resize the broadside trajectory-preview pool to the new hull's gun count
   }
   // Respawn a fresh hull of the current tier in clear water just seaward of the home
   // dock, and re-seat the captain at the wheel. (Used by the sink penalty.)
@@ -1188,31 +1192,43 @@ async function main() {
   // 4→6 because the faster r18 muzzle (TUN.gun) flies longer, so 4.3 s clipped the arc
   // short of its splash at normal combat elevations; the flatter shot stays smooth coarser.
   const ARC_SUB = 6;
-  const gunsPerSide = Math.max(
-    sloop.build.cannonPorts.filter((p) => p.side === 1).length,
-    sloop.build.cannonPorts.filter((p) => p.side === -1).length,
-  );
   const aimLines: { line: THREE.Line; pos: Float32Array }[] = [];
-  for (let i = 0; i < gunsPerSide; i++) {
-    const pos = new Float32Array(ARC_PTS * 3);
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    const line = new THREE.Line(
-      geo,
-      // red dashes: reads as a gunner's PREDICTION, not a laser (round 6.5)
-      new THREE.LineDashedMaterial({
-        color: 0xe03434,
-        dashSize: 1.1,
-        gapSize: 0.85,
-        transparent: true,
-        opacity: 0.95,
-      }),
+  // (Re)build one preview polyline per gun on the larger broadside of the CURRENT hull. MUST run on
+  // every hull swap: the Cutter has ~4 guns/side but the Man-o'-War ~24, and a pool sized once for the
+  // starting Cutter left a Man-o'-War showing only 4 arcs (playtest).
+  function rebuildAimLines(): void {
+    for (const a of aimLines) {
+      scene.remove(a.line);
+      a.line.geometry.dispose();
+      (a.line.material as THREE.Material).dispose();
+    }
+    aimLines.length = 0;
+    const gunsPerSide = Math.max(
+      sloop.build.cannonPorts.filter((p) => p.side === 1).length,
+      sloop.build.cannonPorts.filter((p) => p.side === -1).length,
     );
-    line.frustumCulled = false;
-    line.visible = false;
-    scene.add(line);
-    aimLines.push({ line, pos });
+    for (let i = 0; i < gunsPerSide; i++) {
+      const pos = new Float32Array(ARC_PTS * 3);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      const line = new THREE.Line(
+        geo,
+        // red dashes: reads as a gunner's PREDICTION, not a laser (round 6.5)
+        new THREE.LineDashedMaterial({
+          color: 0xe03434,
+          dashSize: 1.1,
+          gapSize: 0.85,
+          transparent: true,
+          opacity: 0.95,
+        }),
+      );
+      line.frustumCulled = false;
+      line.visible = false;
+      scene.add(line);
+      aimLines.push({ line, pos });
+    }
   }
+  rebuildAimLines();
 
   // which battery the camera bears toward — from the camera's look direction (works
   // identically first-person or orbit). Looking more along the keel than across it lays
@@ -1451,9 +1467,6 @@ async function main() {
       // emit from JUST BENEATH the surface so the spawn point is hidden under the water — the
       // sheet appears to erupt out of the sea, never from a visible dot floating above it.
       effects.bowWave(b.x, b.y - 0.25, b.z, sprayF.x, sprayF.z, strength);
-      if (ship === sloop && splashGate.allow(performance.now() / 1000)) {
-        audio.playAt("splash", { x: b.x, y: b.y, z: b.z }, { volume: Math.min(0.5, 0.15 + strength * 0.12) });
-      }
       st.cd = 0.05; // ~20 Hz → a continuous sheet, not bursts
     }
     // per-voxel waterline fizz off the hull's edge columns (the whole hull line), speed-scaled.
@@ -1789,7 +1802,8 @@ async function main() {
     // ---- audio: music + ambience crossfade on phase changes; wind + underwater per frame ----
     if (gs.phase !== lastAudioPhase) {
       lastAudioPhase = gs.phase;
-      audio.music(gs.phase); // menu_theme / sea_ambient / harbor (crossfaded)
+      // Music auto-play is OFF: the procedural pads read as a "stuck hum" (playtest). The crossfade
+      // system stays ready — drop real tracks into public/assets/audio/music and re-enable audio.music().
       const atSea = gs.phase === "playing" || gs.phase === "port";
       audio.ambient("ocean", atSea);
       audio.ambient("wind", atSea);
@@ -1798,6 +1812,36 @@ async function main() {
       const pv = sloop.body.linvel();
       audio.setWind(Math.hypot(pv.x, pv.z)); // louder under way
       audio.setUnderwater(camera.position.y < 0.2); // the listener (camera) dips below the sea
+      if (gs.phase === "playing") {
+        const now = performance.now() / 1000;
+        const sp = sloop.body.translation();
+        // hull creak as she rolls/heels (waves + turning) or the rudder is thrown hard over
+        const rot = sloop.body.rotation();
+        _audQ.set(rot.x, rot.y, rot.z, rot.w);
+        _audFwd.set(1, 0, 0).applyQuaternion(_audQ); // ship forward = the roll axis, in world space
+        const av = sloop.body.angvel();
+        const rollRate = Math.abs(av.x * _audFwd.x + av.y * _audFwd.y + av.z * _audFwd.z);
+        const steer = Math.abs(sailing.rudder - prevRudder);
+        prevRudder = sailing.rudder;
+        if ((rollRate > 0.28 || steer > 0.04) && creakGate.allow(now)) {
+          audio.playAt("creak", sp, { volume: Math.min(0.7, 0.3 + rollRate), rate: 0.9 + Math.random() * 0.2 });
+        }
+        // rope/rigging while the sails are being trimmed (W/S move sailSet)
+        if (Math.abs(sailing.sailSet - prevSailSet) > 0.012 && ropeGate.allow(now)) {
+          audio.playAt("rope", sp, { volume: 0.6, rate: 0.9 + Math.random() * 0.25 });
+        }
+        prevSailSet = sailing.sailSet;
+        // the occasional seagull overhead
+        gullCountdown -= dt;
+        if (gullCountdown <= 0) {
+          gullCountdown = 7 + Math.random() * 11;
+          audio.playAt(
+            "gull",
+            { x: sp.x + (Math.random() - 0.5) * 40, y: 9 + Math.random() * 6, z: sp.z + (Math.random() - 0.5) * 40 },
+            { volume: 0.5, rate: 0.9 + Math.random() * 0.3 },
+          );
+        }
+      }
     }
     // Quit-to-Menu returns here with the world still built — show a clean screen instead
     // of drawing the frozen world behind the menu. (Pause/port still render the freeze.)

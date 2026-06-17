@@ -29,7 +29,10 @@ the loader decodes whatever the browser supports (`.ogg`, `.wav`, `.mp3`).
 | crunch        | `sfx/crunch.wav`           | positional  |
 | sink          | `sfx/sink.wav`             | positional/2D |
 | coins         | `sfx/coins.wav`            | 2D (UI)     |
-| splash        | `sfx/splash.wav`           | positional  |
+| splash        | `sfx/splash.wav`           | positional (currently unused) |
+| gull          | `sfx/gull.wav`             | positional (occasional)       |
+| creak         | `sfx/creak.wav`            | positional (roll/heel + rudder) |
+| rope          | `sfx/rope.wav`             | positional (sail trim)        |
 | ui_click      | `sfx/ui_click.wav`         | 2D (UI)     |
 | ui_confirm    | `sfx/ui_confirm.wav`       | 2D (UI)     |
 | ui_buy        | `sfx/ui_buy.wav`           | 2D (UI)     |
@@ -37,9 +40,13 @@ the loader decodes whatever the browser supports (`.ogg`, `.wav`, `.mp3`).
 | ship_ready    | `sfx/ship_ready.wav`       | 2D (UI)     |
 | ocean_loop    | `ambient/ocean_loop.wav`   | looping bed |
 | wind_loop     | `ambient/wind_loop.wav`    | looping bed |
-| menu_theme    | `music/menu_theme.wav`     | music       |
-| sea_ambient   | `music/sea_ambient.wav`    | music       |
-| harbor        | `music/harbor.wav`         | music       |
+| menu_theme    | `music/menu_theme.wav`     | music (auto-play OFF) |
+| sea_ambient   | `music/sea_ambient.wav`    | music (auto-play OFF) |
+| harbor        | `music/harbor.wav`         | music (auto-play OFF) |
+
+> **Music auto-play is currently disabled** — the procedural pads read as a "stuck hum"
+> in play-test. The crossfade system in `audio.ts` is intact; drop real tracks into
+> `music/` and re-enable the `audio.music(...)` calls in `main.ts` to turn it back on.
 
 ## Licensing when you drop in premium audio (Steam endgame)
 

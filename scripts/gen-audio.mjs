@@ -33,6 +33,21 @@ const env = (i, n, a = 0.01, r = 0.2) => {
   return Math.max(0, Math.min(atk, rel));
 };
 const noise = () => Math.random() * 2 - 1;
+// one-pole high-pass to strip DC/sub-bass rumble (the "hum") out of looping noise beds.
+function highpass(buf, k) {
+  let pin = 0, pout = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const out = k * (pout + buf[i] - pin);
+    pin = buf[i]; pout = out; buf[i] = out;
+  }
+  return buf;
+}
+// crossfade the tail into the head so a looped bed has no seam click.
+function loopFade(out) {
+  const n = out.length, f = N(0.25);
+  for (let i = 0; i < f; i++) { const a = i / f; out[i] = out[i] * a + out[n - f + i] * (1 - a); }
+  return out;
+}
 const save = (rel, samples) => {
   const p = join(root, rel);
   mkdirSync(dirname(p), { recursive: true });
@@ -41,13 +56,18 @@ const save = (rel, samples) => {
 };
 
 // ---- SFX ----
+// A real broadside report: a sharp powder CRACK + a punchy low BOOM + a rumble tail,
+// soft-clipped (tanh) so it's loud and explosive, not a soft potato-gun thud.
 function cannon() {
-  const n = N(0.6), out = new Array(n);
+  const n = N(0.7), out = new Array(n).fill(0);
+  let tail = 0;
   for (let i = 0; i < n; i++) {
     const t = i / SR;
-    const thump = Math.sin(2 * Math.PI * (90 - 50 * t) * t) * Math.exp(-6 * t);
-    const crack = noise() * Math.exp(-25 * t);
-    out[i] = (thump * 0.8 + crack * 0.5) * env(i, n, 0.001, 0.25);
+    const crack = noise() * Math.exp(-30 * t);            // the blast transient
+    const boom = Math.sin(2 * Math.PI * 68 * t) * Math.exp(-8 * t); // chest punch
+    tail += (noise() - tail) * 0.08;                       // lowpassed rumble
+    const rumble = tail * Math.exp(-5.5 * t);
+    out[i] = Math.tanh((crack * 1.0 + boom * 0.9 + rumble * 0.7) * 1.7) * env(i, n, 0.0004, 0.35);
   }
   return out;
 }
@@ -88,18 +108,68 @@ function chime(freqs, sec, decay) {
   }
   return out;
 }
-function loopNoise(sec, lp, amp) {
-  const n = N(sec), out = new Array(n); let prev = 0;
-  for (let i = 0; i < n; i++) {
-    prev += (noise() - prev) * lp;
-    const swell = 0.6 + 0.4 * Math.sin(2 * Math.PI * (1 / sec) * (i / SR));
-    out[i] = prev * amp * swell;
+// Seagull cry: 2-3 reedy caws, each a quick pitch arc around ~1.5-2.2 kHz.
+function gull() {
+  const n = N(1.15), out = new Array(n).fill(0);
+  for (const start of [0.0, 0.42, 0.82]) {
+    const s0 = Math.floor(start * SR), dur = N(0.2 + Math.random() * 0.06);
+    for (let j = 0; j < dur && s0 + j < n; j++) {
+      const tt = j / dur;
+      const f = 1450 + 720 * Math.sin(Math.PI * tt);   // rise then fall
+      const amp = Math.sin(Math.PI * tt) * 0.5;
+      out[s0 + j] += (Math.sin(2 * Math.PI * f * (j / SR)) + 0.35 * Math.sin(4 * Math.PI * f * (j / SR))) * amp;
+    }
   }
-  // crossfade ends for a seamless loop
-  const f = N(0.2);
-  for (let i = 0; i < f; i++) { const a = i / f; out[i] = out[i] * a + out[n - f + i] * (1 - a); }
   return out;
 }
+// Hull creak: a low stick-slip wood groan, pitch wobbling, swelling in and out.
+function creak() {
+  const n = N(0.75), out = new Array(n); let lp = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    const wob = 1 + 0.22 * Math.sin(2 * Math.PI * 6 * t + Math.sin(2 * Math.PI * 2.3 * t));
+    const tone = Math.sin(2 * Math.PI * 175 * wob * t);
+    lp += (noise() - lp) * 0.05;
+    out[i] = (tone * 0.5 + lp * 0.5) * Math.sin(Math.PI * Math.min(1, t / (n / SR))) * 0.7;
+  }
+  return out;
+}
+// Rigging rope: a short creak that slides UP in pitch as the line tightens.
+function rope() {
+  const n = N(0.45), out = new Array(n); let lp = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR, tt = t / (n / SR);
+    lp += (noise() - lp) * 0.12;
+    const tone = Math.sin(2 * Math.PI * (220 + 180 * tt) * t) * 0.3;
+    out[i] = (lp * 0.6 + tone) * Math.exp(-3 * t) * 0.7;
+  }
+  return out;
+}
+// Airy wind bed: band-limited noise (lowpassed then high-passed → "shhh", no rumble), gusting.
+function windBed() {
+  const sec = 3, n = N(sec), out = new Array(n); let lp = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    lp += (noise() - lp) * 0.25;
+    const gust = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(2 * Math.PI * 0.3 * t)) * (0.5 + 0.5 * Math.sin(2 * Math.PI * 0.13 * t));
+    out[i] = lp * gust;
+  }
+  highpass(out, 0.97);
+  return loopFade(out);
+}
+// Soft ocean wash: lower, gentler noise with a slow swell; high-passed to lose the hum.
+function oceanBed() {
+  const sec = 4, n = N(sec), out = new Array(n); let lp = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    lp += (noise() - lp) * 0.13;
+    const swell = 0.55 + 0.45 * Math.sin(2 * Math.PI * (1 / sec) * t);
+    out[i] = lp * swell * 0.9;
+  }
+  highpass(out, 0.92);
+  return loopFade(out);
+}
+// Ambient pad (kept for music; auto-play is currently OFF — placeholder until real tracks).
 function pad(chord, sec) {
   const n = N(sec), out = new Array(n).fill(0);
   for (let i = 0; i < n; i++) {
@@ -108,9 +178,7 @@ function pad(chord, sec) {
     for (const f of chord) out[i] += Math.sin(2 * Math.PI * f * t);
     out[i] = (out[i] / chord.length) * 0.5 * lfo;
   }
-  const f = N(0.3);
-  for (let i = 0; i < f; i++) { const a = i / f; out[i] = out[i] * a + out[n - f + i] * (1 - a); }
-  return out;
+  return loopFade(out);
 }
 
 save("sfx/cannon.wav", cannon());
@@ -120,13 +188,16 @@ save("sfx/crunch.wav", band(N(0.35), 10, 0.6));
 save("sfx/sink.wav", sink());
 save("sfx/coins.wav", blips([880, 1175, 1568, 1319], 0.5));
 save("sfx/splash.wav", band(N(0.3), 12, 0.7));
+save("sfx/gull.wav", gull());
+save("sfx/creak.wav", creak());
+save("sfx/rope.wav", rope());
 save("sfx/ui_click.wav", chime([1200], 0.05, 60));
 save("sfx/ui_confirm.wav", chime([784, 1175], 0.18, 14));
 save("sfx/ui_buy.wav", blips([1047, 1319, 1568], 0.35));
 save("sfx/port_open.wav", chime([523, 659, 784], 0.6, 4));
 save("sfx/ship_ready.wav", chime([392, 523, 659, 784], 0.8, 3));
-save("ambient/ocean_loop.wav", loopNoise(3, 0.04, 0.5));
-save("ambient/wind_loop.wav", loopNoise(3, 0.02, 0.4));
+save("ambient/ocean_loop.wav", oceanBed());
+save("ambient/wind_loop.wav", windBed());
 save("music/menu_theme.wav", pad([196, 233, 294], 6));
 save("music/sea_ambient.wav", pad([147, 220, 247], 6));
 save("music/harbor.wav", pad([262, 330, 392], 6));
