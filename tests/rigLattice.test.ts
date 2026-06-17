@@ -72,3 +72,26 @@ describe("rigLattice integrate", () => {
     expect(rig.nodes[0].pos.y).toBe(10);
   });
 });
+
+describe("rigLattice stepRig + sleep", () => {
+  it("kineticEnergy is zero when no node has moved", () => {
+    const rig: Rig = { nodes: [node(0, 0, 0)], links: [], awake: true, sleepTimer: 0 };
+    expect(kineticEnergy(rig, 1 / 60)).toBeCloseTo(0, 9);
+  });
+
+  it("stepRig accumulates sleepTimer while KE stays below the threshold", () => {
+    const dt = 1 / 60;
+    const rig: Rig = { nodes: [node(0, 5, 0, true)], links: [], awake: true, sleepTimer: 0 };
+    const opts = { dt, damp: 1, iterations: 1, accel: () => ({ x: 0, y: -9.81, z: 0 }), sleepKE: 1e-6 };
+    stepRig(rig, opts);
+    stepRig(rig, opts);
+    expect(rig.sleepTimer).toBeCloseTo(2 * dt, 6);
+  });
+
+  it("stepRig resets sleepTimer when the rig is moving", () => {
+    const dt = 1 / 60;
+    const rig: Rig = { nodes: [node(0, 5, 0)], links: [], awake: true, sleepTimer: 99 };
+    stepRig(rig, { dt, damp: 1, iterations: 1, accel: () => ({ x: 0, y: -9.81, z: 0 }), sleepKE: 1e-12 });
+    expect(rig.sleepTimer).toBe(0);
+  });
+});

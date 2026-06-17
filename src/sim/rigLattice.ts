@@ -109,3 +109,38 @@ export function integrate(rig: Rig, accel: AccelFn, dt: number, damp: number): v
     n.prev.x = px; n.prev.y = py; n.prev.z = pz;
   }
 }
+
+/** Sum of ½·m·v² over free nodes, where v = (pos - prev) / dt. */
+export function kineticEnergy(rig: Rig, dt: number): number {
+  let ke = 0;
+  const inv = 1 / dt;
+  for (const n of rig.nodes) {
+    if (n.pinned) continue;
+    const vx = (n.pos.x - n.prev.x) * inv;
+    const vy = (n.pos.y - n.prev.y) * inv;
+    const vz = (n.pos.z - n.prev.z) * inv;
+    ke += 0.5 * n.mass * (vx * vx + vy * vy + vz * vz);
+  }
+  return ke;
+}
+
+export interface StepOpts {
+  dt: number;
+  damp: number;
+  iterations: number;
+  accel: AccelFn;
+  sleepKE: number; // KE below this counts as "settling"
+}
+
+/**
+ * One full rig step: integrate, satisfy/break links, then advance the sleep
+ * timer. Collision (node-vs-hull crush) is injected by the runtime BETWEEN
+ * integrate and relax in later phases; the pure core only does motion + the
+ * break rule + sleep accounting. The runtime decides when to actually sleep.
+ */
+export function stepRig(rig: Rig, opts: StepOpts): void {
+  integrate(rig, opts.accel, opts.dt, opts.damp);
+  relax(rig, opts.iterations);
+  if (kineticEnergy(rig, opts.dt) < opts.sleepKE) rig.sleepTimer += opts.dt;
+  else rig.sleepTimer = 0;
+}
