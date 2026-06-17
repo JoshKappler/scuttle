@@ -34,7 +34,15 @@ export interface Wave {
  * Σ(Q·k·a) ≤ 0.8 budget so the surface can never self-intersect and the
  * fixed-point inversion in surfaceHeight stays convergent.
  */
-export function makeWaves(rng: Rng, count = 16): Wave[] {
+// Swell shape constants (lifted out of makeWaves so applySeaScale can re-derive amplitudes from
+// the canonical formula at runtime). See makeWaves for the round-13 reasoning behind each value.
+const L_MAX = 150; // m — long ocean swell (wide + slow)
+const L_MIN = 3.5; // m — wind chop
+const SWELL_AMP = 1.5; // m — amplitude of the longest wave at sea-scale 1.0 (the bob driver)
+const AMP_FALLOFF = 1.3; // higher → more height concentrated in the swell
+const SHARPNESS = 0.8; // Σ(Q·k·a) budget — crests can't self-intersect
+
+export function makeWaves(rng: Rng, count = 16, seaScale = 1): Wave[] {
   const primary = rng.range(0, Math.PI * 2);
   // Round 13: the playtest wants the sea "10x slower, 10x wider, 10x taller" — it
   // read as fast tiny vibrating chop. The band-limited FFT chop (≤14 m) is
@@ -44,15 +52,11 @@ export function makeWaves(rng: Rng, count = 16): Wave[] {
   // the swell goes long and tall: L_MAX 80→150 m. A 150 m swell's phase speed is
   // ~30 kn (was ~21.7 at 80 m) — still well above an 18 kn ship, so no surf-lock,
   // and a crest now takes ~10 s to roll past: the slow majestic heave asked for.
-  const L_MAX = 150; // m — long ocean swell (wide + slow)
-  const L_MIN = 3.5; // m — wind chop
-  // Taller, but on a MUCH longer wave so the SLOPE stays gentle: steepness is
-  // amp/λ ≈ 1.3/150 = 0.0087, below the old 0.8/80 = 0.010 that floated dry — so
-  // a 1.3 m swell here pitches the hull LESS than the old 0.8 m did, and won't sit
-  // the gun ports awash. The visual surface relief comes from the (now calmed)
-  // FFT chop on top; this swell is the big slow roll under it.
-  const SWELL_AMP = 1.5; // m — amplitude of the longest wave (the bob driver)
-  const AMP_FALLOFF = 1.3; // higher → more height concentrated in the swell
+  // (L_MAX/L_MIN/SWELL_AMP/AMP_FALLOFF/SHARPNESS now live at module scope — applySeaScale reuses them.)
+  // Taller, but on a MUCH longer wave so the SLOPE stays gentle: steepness is amp/λ ≈ 1.3/150 = 0.0087,
+  // below the old 0.8/80 = 0.010 that floated dry — so a 1.3 m swell here pitches the hull LESS than the
+  // old 0.8 m did, and won't sit the gun ports awash. Surface relief is the FFT chop on top.
+  // `seaScale` (sandbox "sea state") multiplies SWELL_AMP: <1 calmer, >1 rougher; physics rides it.
   const waves: Wave[] = [];
   for (let i = 0; i < count; i++) {
     const f = count === 1 ? 0 : i / (count - 1);
@@ -76,19 +80,38 @@ export function makeWaves(rng: Rng, count = 16): Wave[] {
     waves.push({
       dirX: Math.cos(angle),
       dirZ: Math.sin(angle),
-      amplitude: SWELL_AMP * Math.pow(wavelength / L_MAX, AMP_FALLOFF) + chop,
+      amplitude: SWELL_AMP * seaScale * Math.pow(wavelength / L_MAX, AMP_FALLOFF) + chop,
       wavelength,
       steepness: 0, // filled below under the sharpness budget
       phaseSpeed: 0, // filled below from dispersion
     });
   }
-  const SHARPNESS = 0.8; // Σ(Q·k·a) budget — crests can't self-intersect
   for (const w of waves) {
     const k = (2 * Math.PI) / w.wavelength;
     w.steepness = Math.min(SHARPNESS / (count * k * w.amplitude), 1);
     w.phaseSpeed = Math.sqrt((G * w.wavelength) / (2 * Math.PI));
   }
   return waves;
+}
+
+/**
+ * Re-scale an EXISTING wave set's swell height in place to `seaScale` (sandbox "sea state").
+ * Mutates each wave's amplitude (re-derived from the canonical λ→amplitude formula, so scale 1
+ * reproduces makeWaves exactly) and its steepness Q under the same sharpness budget — directions,
+ * wavelengths and phase speeds are untouched, so it's the identical sea, just taller/flatter.
+ *
+ * Why mutate in place instead of rebuilding: the wave array is shared by reference into physics,
+ * the ocean shader, cannons, debris, etc. Mutating amplitude propagates to every CPU sampler for
+ * free (they read `w.amplitude` live); the GPU swell uniforms are refreshed separately by the
+ * caller (ocean.refreshSwell). scale 0 → flat calm (steepness clamps to 1, no NaN).
+ */
+export function applySeaScale(waves: Wave[], seaScale: number): void {
+  const count = waves.length;
+  for (const w of waves) {
+    const k = (2 * Math.PI) / w.wavelength;
+    w.amplitude = SWELL_AMP * seaScale * Math.pow(w.wavelength / L_MAX, AMP_FALLOFF);
+    w.steepness = Math.min(SHARPNESS / (count * k * w.amplitude), 1);
+  }
 }
 
 /** Physics rides the SWELL, not the chop: only wavelengths long enough to

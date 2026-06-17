@@ -141,6 +141,10 @@ export interface Ocean {
   setDynamicField(tex: THREE.Texture | null, windowSize: number, originX: number, originZ: number, on: boolean, scale?: number): void;
   /** dev-panel chop controls: overall strength (0 = pure swell) + crest-pinch choppiness. */
   setChop(strength: number, choppiness: number): void;
+  /** Re-read the analytic swell waves into the GPU uniforms. Call after the shared wave array's
+   *  amplitudes change at runtime (sim/gerstner.applySeaScale → sandbox "sea state") so the visible
+   *  surface matches the physics swell again. CPU samplers read the array live; the GPU needs this. */
+  refreshSwell(): void;
   /** Bind the live sky+cloud reflection cube (render/sky.ts envCube.texture). The
    *  surface then mirrors the real sky gradient, sun and clouds (Fresnel-weighted). */
   setSkyEnv(tex: THREE.Texture): void;
@@ -1136,6 +1140,16 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     setChop(strength, choppiness) {
       mat.uniforms.uChopScale.value = strength;
       mat.uniforms.uChoppiness.value = choppiness;
+    },
+    refreshSwell() {
+      const { a: na, b: nb } = waveUniforms(swell); // re-derive from the (mutated) swell amplitudes
+      const ua = mat.uniforms.uWaveA.value as THREE.Vector4[];
+      const ub = mat.uniforms.uWaveB.value as THREE.Vector2[];
+      for (let i = 0; i < na.length && i < ua.length; i++) {
+        ua[i].copy(na[i]);
+        ub[i].copy(nb[i]);
+      }
+      mat.uniforms.uAmpTotal.value = swell.reduce((s, w) => s + w.amplitude, 0);
     },
     setSkyEnv(tex) {
       mat.uniforms.uSkyEnv.value = tex;

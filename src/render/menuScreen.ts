@@ -41,6 +41,9 @@ export interface SandboxConfig {
   enemyCount: number;
   /** what the enemies are: "mixed" (the notoriety-scaled spread) or a specific tier id. */
   enemyTier: string;
+  /** how rough the seas are: a swell-amplitude SCALE (1 = the default sea, <1 calmer, >1 rougher).
+   *  The game layer feeds this to sim/gerstner.applySeaScale, so it drives the real wave physics. */
+  seaRoughness: number;
 }
 
 /** Data the game layer feeds the sandbox config screen (keeps the view dumb). */
@@ -317,6 +320,16 @@ export function createMenuScreen(actions: MenuActions): MenuScreen {
       const typeRow = chooserRow(typeChoices, cfg.enemyTier, (v) => {
         cfg.enemyTier = v;
       });
+      // sea state: each pill is a swell-amplitude scale fed straight to the wave physics.
+      const seaChoices = [
+        { value: "0.45", label: "Calm" },
+        { value: "1", label: "Moderate" },
+        { value: "1.7", label: "Rough" },
+        { value: "2.6", label: "Stormy" },
+      ];
+      const seaRow = chooserRow(seaChoices, String(cfg.seaRoughness), (v) => {
+        cfg.seaRoughness = Number(v);
+      });
 
       body.replaceChildren(
         sectionLabel("Your ship"),
@@ -325,6 +338,8 @@ export function createMenuScreen(actions: MenuActions): MenuScreen {
         countRow,
         sectionLabel("Enemy type"),
         typeRow,
+        sectionLabel("Seas"),
+        seaRow,
         bigButton("Set Sail", () => opts.onStart(cfg)),
         bigButton("Back", opts.onBack),
       );

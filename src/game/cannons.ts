@@ -75,6 +75,18 @@ export class Cannons {
     return Math.max((this.portReloadAt.get(this.portKey(ship, portIndex)) ?? 0) - simTime, 0);
   }
 
+  /** How many of a ship's live guns are loaded RIGHT NOW (across every battery). main.ts
+   *  watches this for the player ship: when it jumps up, a fresh gun (or a whole broadside)
+   *  just finished reloading — the cue to ring the reload bell. */
+  readyCount(ship: Ship, simTime: number): number {
+    let ready = 0;
+    for (let p = 0; p < ship.build.cannonPorts.length; p++) {
+      if (!ship.cannonAlive[p]) continue;
+      if (this.portReload(ship, p, simTime) <= 0) ready++;
+    }
+    return ready;
+  }
+
   /** Fraction of a battery's guns currently loaded, for the HUD (side, or "fore"/"aft"). */
   sideReadiness(ship: Ship, key: 1 | -1 | GunFacing, simTime: number): number {
     let total = 0;

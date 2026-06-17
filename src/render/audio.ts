@@ -50,6 +50,7 @@ const MANIFEST: Record<string, string | string[]> = {
   ui_buy: "sfx/ui_buy.mp3",
   port_open: "sfx/port_open.ogg",
   ship_ready: "sfx/ship_ready.wav", // placeholder
+  reload_bell: "sfx/reload_bell.wav", // struck ship's bell — rung when the guns finish reloading
   ocean_loop: "ambient/ocean_loop.ogg",
   wind_loop: "ambient/wind_loop.ogg",
   menu_theme: "music/menu_theme.ogg",

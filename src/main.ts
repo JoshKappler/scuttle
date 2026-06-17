@@ -1,6 +1,9 @@
 import * as THREE from "three";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { Rng } from "./core/rng";
-import { makeWaves, surfaceHeight } from "./sim/gerstner";
+import { makeWaves, surfaceHeight, applySeaScale } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
 import { SeamMask } from "./render/seamMask";
 import { Post } from "./render/post";
@@ -116,6 +119,10 @@ async function main() {
   let gullCountdown = 8; // seconds to the next gull cry
   let prevSailSet = 0;
   let prevRudder = 0;
+  // reload-bell cue: count of the player's loaded guns last sim step. When it jumps UP a gun
+  // (or a whole broadside) just finished reloading → ring the ship's bell. Reset to -1 on a
+  // hull swap/respawn (rebuildPlayerShip) so the new ship's all-loaded count never false-rings.
+  let prevGunsReady = -1;
 
   type StartChoice =
     | { kind: "career"; fresh: boolean }
@@ -141,7 +148,7 @@ async function main() {
       menu.showSandboxConfig({
         tiers: SHIP_TIERS.map((t) => ({ id: t.id, name: t.name })),
         maxEnemies: MAXVIS,
-        defaults: { shipTier: currentTier, enemyCount: Math.round(TUN.fleet.enemyCount), enemyTier: "mixed" },
+        defaults: { shipTier: currentTier, enemyCount: Math.round(TUN.fleet.enemyCount), enemyTier: "mixed", seaRoughness: 1 },
         onBack: () => menu.showStart(saves.hasSave("career")),
         onStart: (cfg: SandboxConfig) => start({ kind: "sandbox", cfg }),
       }),
@@ -597,6 +604,7 @@ async function main() {
     _dynShips[0].sizeX = sloopProfile.sizeX;
     _dynShips[0].sizeZ = sloopProfile.sizeZ;
     rebuildAimLines(); // resize the broadside trajectory-preview pool to the new hull's gun count
+    prevGunsReady = -1; // new hull → re-baseline the reload-bell tracker (no spurious ring)
   }
   // Respawn a fresh hull of the current tier in clear water just seaward of the home
   // dock, and re-seat the captain at the wheel. (Used by the sink penalty.)
@@ -792,6 +800,12 @@ async function main() {
     }
 
     cannons.update(dt, t, waves, fleet.enemies);
+    // reloaded → ring the ship's bell. A fired broadside drops the loaded count; ~reload later
+    // those guns come back at once, the count jumps up, and we strike the bell once (2D so it
+    // always carries over the wind). The -1 baseline (set on spawn/swap) skips the first sample.
+    const gunsReady = cannons.readyCount(sloop, t);
+    if (prevGunsReady >= 0 && gunsReady > prevGunsReady) audio.playUi("reload_bell", { volume: 0.5 });
+    prevGunsReady = gunsReady;
     // ship-vs-ship destruction now runs inside world.step (world.contact.stepAll), not here.
     debris.update(dt, t, waves);
     charSpike?.update(dt, controls.cameraYaw());
@@ -853,6 +867,7 @@ async function main() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
     post.setSize(w, h); // keep the composer's targets in lockstep with the canvas
+    for (const a of aimLines) a.mat.resolution.set(w, h); // fat aim lines size their width in px
   };
   window.addEventListener("resize", fitViewport);
   document.addEventListener("fullscreenchange", fitViewport);
@@ -1288,15 +1303,17 @@ async function main() {
   // 4→6 because the faster r18 muzzle (TUN.gun) flies longer, so 4.3 s clipped the arc
   // short of its splash at normal combat elevations; the flatter shot stays smooth coarser.
   const ARC_SUB = 6;
-  const aimLines: { line: THREE.Line; pos: Float32Array }[] = [];
+  const aimLines: { line: Line2; geo: LineGeometry; mat: LineMaterial; pos: Float32Array }[] = [];
   // (Re)build one preview polyline per gun on the larger broadside of the CURRENT hull. MUST run on
   // every hull swap: the Cutter has ~4 guns/side but the Man-o'-War ~24, and a pool sized once for the
   // starting Cutter left a Man-o'-War showing only 4 arcs (playtest).
+  // FAT lines (Line2): a plain THREE.Line is locked to 1px on every desktop GL driver and read as
+  // "too faint" — Line2 draws a real screen-space-thick ribbon (linewidth in px, needs resolution).
   function rebuildAimLines(): void {
     for (const a of aimLines) {
       scene.remove(a.line);
-      a.line.geometry.dispose();
-      (a.line.material as THREE.Material).dispose();
+      a.geo.dispose();
+      a.mat.dispose();
     }
     aimLines.length = 0;
     const gunsPerSide = Math.max(
@@ -1305,23 +1322,26 @@ async function main() {
     );
     for (let i = 0; i < gunsPerSide; i++) {
       const pos = new Float32Array(ARC_PTS * 3);
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-      const line = new THREE.Line(
-        geo,
-        // red dashes: reads as a gunner's PREDICTION, not a laser (round 6.5)
-        new THREE.LineDashedMaterial({
-          color: 0xe03434,
-          dashSize: 1.1,
-          gapSize: 0.85,
-          transparent: true,
-          opacity: 0.95,
-        }),
-      );
+      const geo = new LineGeometry();
+      geo.setPositions(pos); // seed the attribute; updateAimArc refills it each frame
+      // bold red-orange dashes: still reads as a gunner's PREDICTION (round 6.5), now thick + bright
+      // enough to stand out against the sea. linewidth is in PIXELS, so resolution must track the canvas.
+      const mat = new LineMaterial({
+        color: 0xff3a22,
+        linewidth: 3.6,
+        transparent: true,
+        opacity: 0.98,
+        dashed: true,
+        dashSize: 1.4,
+        gapSize: 0.9,
+        depthTest: true,
+      });
+      mat.resolution.set(window.innerWidth, window.innerHeight);
+      const line = new Line2(geo, mat);
       line.frustumCulled = false;
       line.visible = false;
       scene.add(line);
-      aimLines.push({ line, pos });
+      aimLines.push({ line, geo, mat, pos });
     }
   }
   rebuildAimLines();
@@ -1403,7 +1423,7 @@ async function main() {
           break;
         }
       }
-      (arc.line.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+      arc.geo.setPositions(arc.pos); // push the fresh curve into the fat-line instanced buffers
       arc.line.computeLineDistances(); // dashes need fresh arc lengths
     }
   }
@@ -1916,6 +1936,10 @@ async function main() {
   // Applies a menu choice to the (built) world and starts the sim. Runs once after the
   // initial build and again for every later Start after a Quit-to-Menu (world is reused).
   function applyChoice(choice: StartChoice): void {
+    // sea state: sandbox picks it; career always sails the default sea. applySeaScale mutates the
+    // shared wave set (physics reads it live); refreshSwell re-uploads the GPU swell to match.
+    applySeaScale(waves, choice.kind === "sandbox" ? choice.cfg.seaRoughness : 1);
+    ocean.refreshSwell();
     if (choice.kind === "career") {
       forcedEnemyTier = null; // Career always uses the notoriety-scaled spawn spread
       if (choice.fresh) {

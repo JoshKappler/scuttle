@@ -108,6 +108,31 @@ function chime(freqs, sec, decay) {
   }
   return out;
 }
+// Ship's bell: a struck-metal "ding". A real bell isn't harmonic — it has a strong strike
+// tone, an octave, a clangy inharmonic minor-third, a few bright upper partials (which die
+// fastest), and a long low "hum" tone underneath. Plus a tiny noise strike transient. One
+// clean ring → "the guns are reloaded, ready to fire again".
+function bell(f0, sec) {
+  const n = N(sec), out = new Array(n).fill(0);
+  // [freq ratio, relative gain, decay rate] — higher partials decay quicker; the hum lingers.
+  const parts = [
+    [1.0, 1.0, 3.0],   // prime / strike tone
+    [2.0, 0.55, 4.5],  // octave
+    [2.4, 0.5, 6.5],   // inharmonic clang (the metallic "bell" character)
+    [3.0, 0.32, 8.0],
+    [4.2, 0.22, 11],
+    [5.4, 0.15, 14],
+    [0.5, 0.38, 2.0],  // hum tone — the longest-ringing partial
+  ];
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    let s = 0;
+    for (const [r, g, d] of parts) s += g * Math.sin(2 * Math.PI * f0 * r * t) * Math.exp(-d * t);
+    const strike = noise() * Math.exp(-140 * t) * 0.5; // brief metallic clapper transient
+    out[i] = (s / 3.1 + strike) * env(i, n, 0.0004, sec * 0.55);
+  }
+  return out;
+}
 // Seagull cry: 2-3 reedy caws, each a quick pitch arc around ~1.5-2.2 kHz.
 function gull() {
   const n = N(1.15), out = new Array(n).fill(0);
@@ -191,5 +216,6 @@ save("sfx/splash.wav", band(N(0.3), 12, 0.7));
 save("sfx/gull.wav", gull()); // MUTED in audio.ts (PLACEHOLDER_MUTED) until a real gull lands
 save("sfx/ui_confirm.wav", chime([784, 1175], 0.18, 14));
 save("sfx/ship_ready.wav", chime([392, 523, 659, 784], 0.8, 3));
+save("sfx/reload_bell.wav", bell(740, 1.1)); // "guns reloaded" ship's-bell cue
 save("music/sea_ambient.wav", pad([147, 220, 247], 6)); // unused — at sea is ambience-only
 console.log("done — placeholders only; real audio lives beside these and is not regenerated");
