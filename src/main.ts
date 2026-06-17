@@ -49,6 +49,7 @@ import { PortController } from "./game/port";
 import { createMenuScreen, type SandboxConfig } from "./render/menuScreen";
 import { PerfMonitor } from "./render/perf";
 import { AudioManager } from "./render/audio";
+import { ThrottleGate } from "./render/audioMath";
 
 async function main() {
   // THROWAWAY (plan Task 0): ?spike=1 runs the voxel-collider perf gate and bails.
@@ -107,6 +108,7 @@ async function main() {
   const unlockAudio = () => audio.resume(); // browsers start the AudioContext suspended
   window.addEventListener("pointerdown", unlockAudio, { once: true });
   window.addEventListener("keydown", unlockAudio, { once: true });
+  const splashGate = new ThrottleGate(0.35); // rate-limit the bow-splash sfx (subtle, player only)
 
   type StartChoice =
     | { kind: "career"; fresh: boolean }
@@ -471,6 +473,7 @@ async function main() {
     onEnter: () => {
       gs.enterPort(); // freeze the world while the port screen is up
       saveCurrent(); // making port banks your progress
+      audio.playUi("port_open");
     },
     onLeave: () => gs.leavePort(),
     // sandbox unlocks everything so the whole ladder is buyable for free play
@@ -478,7 +481,10 @@ async function main() {
       unlocked: gs.isSandbox() ? tierOrder() : unlockedClasses,
       current: currentTier,
     }),
-    onSwapShip: (id) => swapPlayerShip(id),
+    onSwapShip: (id) => {
+      swapPlayerShip(id);
+      audio.playUi("ship_ready"); // only fires on an actual shipyard purchase
+    },
   });
 
   // ---- game-shell save/restore (tier/unlocks/settings are hoisted to the top of main) ----
@@ -740,7 +746,9 @@ async function main() {
     for (const e of fleet.enemies) {
       if (isSunk(e) && !salvaged.has(e)) {
         salvaged.add(e);
+        audio.playAt("sink", e.body.translation()); // her death groan, out where she went down
         port.plunder(e); // loot → economy → mirrors gs.wallet + toast
+        audio.playUi("coins"); // plunder collected
         const tid = enemyTier.get(e);
         if (tid && !unlockedClasses.includes(tid)) {
           unlockedClasses.push(tid);
@@ -753,6 +761,7 @@ async function main() {
     // tier, upgrades, unlocks and banked notoriety survive. Sandbox: a free fresh hull.
     if (isSunk(sloop) && !respawning) {
       respawning = true;
+      audio.playUi("sink", { volume: 1 }); // 2D so the loss lands even off-screen
       if (gs.mode === "career") {
         economy.state.cargo = {};
         economy.state.doubloons = Math.floor(economy.state.doubloons * 0.75);
@@ -1402,6 +1411,9 @@ async function main() {
       // emit from JUST BENEATH the surface so the spawn point is hidden under the water — the
       // sheet appears to erupt out of the sea, never from a visible dot floating above it.
       effects.bowWave(b.x, b.y - 0.25, b.z, sprayF.x, sprayF.z, strength);
+      if (ship === sloop && splashGate.allow(performance.now() / 1000)) {
+        audio.playAt("splash", { x: b.x, y: b.y, z: b.z }, { volume: Math.min(0.5, 0.15 + strength * 0.12) });
+      }
       st.cd = 0.05; // ~20 Hz → a continuous sheet, not bursts
     }
     // per-voxel waterline fizz off the hull's edge columns (the whole hull line), speed-scaled.
