@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { dist, relax, integrate, kineticEnergy, stepRig, attachedToPin, type Rig, type RigNode, type AccelFn, NodeFlag, LinkKind } from "../src/sim/rigLattice";
+import { dist, relax, integrate, kineticEnergy, stepRig, attachedToPin, type Rig, type RigNode, NodeFlag, LinkKind } from "../src/sim/rigLattice";
 
 describe("rigLattice vec helpers", () => {
   it("dist measures node separation", () => {
