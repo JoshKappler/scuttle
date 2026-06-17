@@ -21,6 +21,7 @@ import { SailingController, type Wind } from "./game/sailing";
 import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { FleetManager, type EnemyUnit } from "./game/fleet";
+import { isFoundered } from "./game/foundering";
 import { MAXVIS } from "./core/constants";
 import { GameState } from "./game/gameState";
 import { PlayerCharacter } from "./game/playerCharacter";
@@ -261,6 +262,7 @@ async function main() {
   const ocean = createOcean(waves, skySetup.sunDir, oceanField);
   ocean.setSkyEnv(skySetup.envCube.texture); // mirror the live sky+cloud cube
   ocean.setFogColor(HORIZON_COLOR); // far sea fades to the sky's horizon band → one seamless horizon
+  scene.add(ocean.backdrop); // opaque deep-water disc UNDER the surface (kills the void; renderOrder -1)
   scene.add(ocean.mesh);
 
   const physics = await initPhysics();
@@ -379,7 +381,7 @@ async function main() {
     flowDirX: waves[0].dirX,
     flowDirZ: waves[0].dirZ,
     flowSpeed: 1.4,
-    maxShips: 2,
+    maxShips: MAXVIS, // every visible ship stamps the field → every moving hull leaves a wake
   });
 
   // stencil seam mask: each frame, paint every hull AND island silhouette into
@@ -635,9 +637,10 @@ async function main() {
   let respawning = false; // guards the one-shot sink → respawn handoff
   let plugChannel = 0; // seconds remaining on the current plank repair
 
-  const isSunk = (s: Ship) =>
-    s.body.translation().y < -12 ||
-    s.build.compartments.every((c) => c.waterVolume / c.volume > 0.95);
+  // She's "sunk" only when genuinely FOUNDERED (deep + waterlogged, or fully saturated) — the same
+  // single predicate the fleet uses. The old bare `y < -12` fired on a transient deck-dip and reset a
+  // still-afloat ship; now a breached hull settles and slowly goes down, and you fight to save her.
+  const isSunk = isFoundered;
 
   world.onFixedStep = (t, dt) => {
     controls.modePressed = false; // legacy T — the wheel gates the helm now
@@ -1375,14 +1378,21 @@ async function main() {
   const _dynShips: DynShip[] = [
     { profileTex: sloopProfile.tex, sizeX: sloopProfile.sizeX, sizeZ: sloopProfile.sizeZ,
       trans: new THREE.Vector3(), invRot: new THREE.Matrix3(), fwdX: 1, fwdZ: 0, speed: 0, wetness: 0, waterY: 0 },
-    { profileTex: enemyProfile.tex, sizeX: enemyProfile.sizeX, sizeZ: enemyProfile.sizeZ,
-      trans: new THREE.Vector3(), invRot: new THREE.Matrix3(), fwdX: 1, fwdZ: 0, speed: 0, wetness: 0, waterY: 0 },
+    // slots 1..MAXVIS-1: one per possible visible enemy. A generic enemy hull profile is plenty for a
+    // WAKE (the stamp is posed by each enemy's live transform, so the trail sits in the right place and
+    // heading); only the player's slot 0 tracks its exact swapped hull. Was a single enemy slot → only
+    // the nearest enemy disturbed the water; the rest "sailed through without leaving a trail".
+    ...Array.from({ length: MAXVIS - 1 }, () => ({
+      profileTex: enemyProfile.tex, sizeX: enemyProfile.sizeX, sizeZ: enemyProfile.sizeZ,
+      trans: new THREE.Vector3(), invRot: new THREE.Matrix3(), fwdX: 1, fwdZ: 0, speed: 0, wetness: 0, waterY: 0,
+    })),
   ];
   const _dynQuat = new THREE.Quaternion();
   const _dynM4 = new THREE.Matrix4();
   const _dynFwd = new THREE.Vector3();
   const buildDynShips = (): DynShip[] => {
-    const ships = [sloop, fleet.premiumEnemy].filter(Boolean) as Ship[];
+    // player + EVERY visible enemy (was player + the nearest enemy only) → all of them leave a wake.
+    const ships = [sloop, ...fleet.enemies].slice(0, MAXVIS).filter(Boolean) as Ship[];
     for (let i = 0; i < ships.length; i++) {
       const ship = ships[i];
       const d = _dynShips[i];

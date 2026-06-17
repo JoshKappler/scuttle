@@ -250,7 +250,7 @@ export const TUN = {
      *  sky/sun uniformly without touching the individual effects. Nested in its own
      *  flat object so the dev-panel slider's `obj` stays a Bag (the gfx root has
      *  sub-objects, which a Bag = Record<string, number|boolean> can't hold). */
-    tone: { exposure: 0.76 },
+    tone: { exposure: 0.82 },
     /** UnrealBloomPass — glows the sun disc, the sun-glint path and bright foam.
      *  Mild by design ("grounded realism with punch", not a bloom-fest). clamp caps
      *  the HDR fed to bloom — and, because the ClampShader runs before BOTH bloom and

@@ -163,12 +163,13 @@ export function createSky(): SkySetup {
   sunLight.shadow.autoUpdate = false;
   sunLight.shadow.needsUpdate = true; // render once on the first frame
 
-  // sky bounce carries the shade: at 0.55 anything out of the sun read as
-  // pitch black (round 7). 1.3 + a strong IBL env then over-lit it and
-  // bleached the dark oak hull to "a light birch" (round 8 v2). Back to m10's
-  // fill value — the lifted shadows + a faint IBL env keep shade out of the
-  // void without brightening the wood's overall tone.
-  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x2a505c, 0.95);
+  // sky bounce carries the shade: at 0.55 anything out of the sun read as pitch black (round 7); 1.3 +
+  // a strong IBL env then over-lit it and bleached the dark oak hull to "a light birch" (round 8 v2).
+  // The user's standing note is that shade still goes near-black, so lift the hemisphere HARD (1.5) and
+  // warm/brighten its ground term — this is the safe shade-lift (hemisphere is normal-based fill, it
+  // doesn't wash albedo the way the IBL env did), so down/away-facing faces read instead of crushing to
+  // black while the lit wood keeps its tone.
+  const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x46656f, 1.7);
 
   // Live sky+cloud reflection cube for the ocean. 128² — round 2 tried 512 for a sharper
   // reflection, but baking 6 faces of the FBM cloud scene is a periodic main-thread STALL
@@ -217,13 +218,11 @@ export function createSky(): SkySetup {
       const rt = pmrem.fromScene(env, 0.04);
       bgScene.add(sky); // return it to the background scene
       mainScene.environment = rt.texture;
-      // IBL ambient bleached the dark oak hull to birch (round 8 v2) at every
-      // level I tried (0.72 → 0.16). m10 had NO environment and its wood was
-      // right, so the env is now barely-there — just enough to keep the metal
-      // guns from going dead-flat. The shade is lifted by shadow.intensity +
-      // the hemisphere instead, neither of which touches the lit wood's tone.
-      // (IBL is baked ONCE here: only a full page reload re-bakes it.)
-      mainScene.environmentIntensity = 0.05;
+      // IBL ambient bleached the dark oak hull to birch (round 8 v2) at high levels (0.72 → 0.16), so
+      // the env stays modest — a gentle 0.12 lifts metals/shade a touch and keeps the guns off dead-
+      // flat without washing the wood. The heavy shade-lift is the hemisphere above; this just rounds
+      // the corners. (IBL is baked ONCE here: only a full page reload re-bakes it.)
+      mainScene.environmentIntensity = 0.12;
       pmrem.dispose();
     },
   };

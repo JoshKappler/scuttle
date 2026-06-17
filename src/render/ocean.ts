@@ -31,6 +31,10 @@ const SECTORS = 160;
 
 export interface Ocean {
   mesh: THREE.Mesh;
+  /** Opaque dark-water disc UNDER the surface: what shows through wherever the sea goes translucent
+   *  (a submerged deck, the shallows) so it reads as a solid body of water, not a sheet over the void.
+   *  Add it to the scene alongside `mesh`; it follows the camera in `update`. */
+  backdrop: THREE.Mesh;
   update(time: number, cameraPos: THREE.Vector3): void;
   /** Cutaway support (playtest rounds 2–4): discard the sea (a) inside the
    *  ship's footprint, so the hull never reads "full of ocean", and (b) in a
@@ -879,12 +883,31 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
 
+  // Underwater backdrop — the fix for "the ocean is just a sheet over the void". The surface mesh is
+  // transparent (its alpha fades from ~opaque in deep water to see-through over a shallow floor); in
+  // open water it's fully opaque so this never shows, but where the sea goes translucent — the sea
+  // closing over a submerged deck, the shallows near an island — what used to show THROUGH was the sky
+  // dome in the background scene (the black "void beneath the water"). This big opaque dark-navy disc
+  // sits just under the surface so what shows through is DEEP WATER instead: the sea genuinely closes
+  // over the sinking deck. A dark navy (not the near-black uDeepColor) so it reads as water, not void.
+  // Radius < the ocean's R_FAR so it can never poke past the horizon; y below the island sand-shelves
+  // so those still read through the shallows. Unlit + fog so it melts into the horizon haze like the sea.
+  const backdrop = new THREE.Mesh(
+    new THREE.CircleGeometry(2350, 96),
+    new THREE.MeshBasicMaterial({ color: 0x08182b, fog: true, side: THREE.DoubleSide }),
+  );
+  backdrop.rotation.x = -Math.PI / 2; // lie flat in the XZ plane
+  backdrop.position.y = -8;
+  backdrop.renderOrder = -1; // draw before the transparent surface composites over it
+  backdrop.frustumCulled = false;
+
   // stern-path ring buffers (one per ship slot): points are laid every few
   // meters of travel and age out; the fragment shader laces foam between them
   const trails: { x: number; z: number; t: number; w: number }[][] = [[], []];
 
   return {
     mesh,
+    backdrop,
     setCutaway(on) {
       mat.uniforms.uCutOn.value = on ? 1 : 0;
     },
@@ -996,6 +1019,9 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       // grid — the round-8 "stuttering".
       mesh.position.x = cameraPos.x;
       mesh.position.z = cameraPos.z;
+      // the underwater backdrop follows too, so deep water is always under the player (its Y is fixed).
+      backdrop.position.x = cameraPos.x;
+      backdrop.position.z = cameraPos.z;
     },
   };
 }

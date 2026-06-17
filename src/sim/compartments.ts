@@ -98,6 +98,57 @@ export function floodStep(
 }
 
 /**
+ * Local-meter point where a flooded compartment's water weight bears, modelled as the water SETTLES:
+ * the horizontal geometric centre, and a vertical height that rises with fill from the floor toward
+ * mid-compartment (water pools bottom-up). Crucially HEEL-INDEPENDENT — unlike the wet-cell centroid
+ * it replaced (which ranked cells by world-Y and so slid to the LOW side as she heeled, a free-surface
+ * moment that deepened the list until she turned turtle), this point never moves with attitude. So
+ * floodwater acts like shifting BALLAST: it lowers the CG and makes a flooding hull MORE bottom-heavy,
+ * and the per-voxel buoyancy keeps her upright while she settles instead of capsizing.
+ */
+export function floodBallastLocal(c: Compartment): [number, number, number] {
+  const fill = c.volume > 0 ? c.waterVolume / c.volume : 0;
+  // Bottom-up pool: the surface rises with fill. We bias the bearing point BELOW the physical mid-
+  // water-column (factor 0.28, not 0.5) so heavy flooding acts like the keel BALLAST the user asked
+  // for — a near-sunk hull (where reserve buoyancy and waterplane righting are nearly gone, so only
+  // KG-below-KB holds her up) stays MORE bottom-heavy and rides upright down to the bottom instead of
+  // turning turtle. The actual sinking is still driven by `waterlog`, not by losing stability, so she
+  // founders upright rather than flipping. Still rises monotonically with fill; still heel-independent.
+  const ly = (c.bboxMin[1] + (c.bboxMax[1] + 1 - c.bboxMin[1]) * fill * 0.28 + 0.5) * VOXEL_SIZE;
+  return [c.centroid[0], ly, c.centroid[2]];
+}
+
+const SEEP_FILL_GATE = 0.55; // a compartment only sheds to a neighbour once it's this full
+const SEEP_RATE = 0.06; // per-second fraction of the fill-fraction gap moved (slow overtopping)
+
+/**
+ * Slow cross-compartment seepage: real bulkheads aren't watertight under a standing head — once a
+ * compartment is substantially flooded, water overtops/seeps into its fore-aft neighbours. Modelling
+ * that makes a foundering hull fill EVENLY (staying balanced and bottom-heavy) instead of pooling all
+ * the water in the one breached end and trimming/listing hard. Consecutive ids are physical neighbours
+ * (compartments are sorted bow→stern in findCompartments). Slow, fill-driven, mass-conserving, clamped
+ * so it can never push a compartment below 0 or over capacity. Deterministic — safe for the oracle.
+ */
+export function equalizeFlooding(compartments: Compartment[], dt: number): void {
+  for (let i = 0; i + 1 < compartments.length; i++) {
+    const a = compartments[i];
+    const b = compartments[i + 1];
+    if (a.volume <= 0 || b.volume <= 0) continue;
+    const fillA = a.waterVolume / a.volume;
+    const fillB = b.waterVolume / b.volume;
+    if (Math.max(fillA, fillB) < SEEP_FILL_GATE) continue; // neither side full enough to overtop
+    const gap = fillA - fillB; // + → a is fuller, sheds to b
+    if (Math.abs(gap) < 1e-6) continue;
+    // move toward equal FILL at a slow rate; size by the smaller capacity so neither side overshoots
+    let flow = gap * SEEP_RATE * dt * Math.min(a.volume, b.volume); // + = a→b
+    flow = Math.min(flow, a.waterVolume, b.volume - b.waterVolume);
+    flow = Math.max(flow, -b.waterVolume, -(a.volume - a.waterVolume));
+    a.waterVolume -= flow;
+    b.waterVolume += flow;
+  }
+}
+
+/**
  * Find watertight compartments: connected regions of empty cells strictly
  * below deckY that never escape to the grid boundary. Regions that DO escape
  * are exterior water/air, not compartments.

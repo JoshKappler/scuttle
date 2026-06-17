@@ -5,6 +5,7 @@ import type { AICaptain } from "./ai";
 import type { Ship } from "./ship";
 import { TUN } from "../core/tunables";
 import { MAXVIS } from "../core/constants";
+import { isFoundered } from "./foundering";
 
 /** One hostile unit: a ship and the AI captain that sails + fires her. */
 export interface EnemyUnit {
@@ -56,7 +57,7 @@ export class FleetManager {
     // a heeling hull whose grid-corner origin swings low, or a deep swell trough — so a still-afloat
     // victim got replaced before it sank. `waterlog` only climbs after a compartment is ~90% full,
     // so it's a true sinking signal. (De-pen is now horizontal too, removing the shove path.)
-    this.isWreck = opts.isWreck ?? ((s) => (s.body.translation().y < -12 && s.waterlog > 0.05) || s.waterlog >= 0.45);
+    this.isWreck = opts.isWreck ?? isFoundered;
     this.maxVis = opts.maxVis ?? MAXVIS;
   }
 
