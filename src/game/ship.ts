@@ -11,6 +11,9 @@ import {
   floodStep,
   equalizeFlooding,
   floodBallastLocal,
+  buildFillCurve,
+  fillHeightLocal,
+  type FillCurve,
   type BreachInput,
   type Opening,
   type Compartment,
@@ -120,17 +123,16 @@ export class Ship implements ContactTarget {
   private openings: Opening[] = [];
   /** Substep counter throttling the (expensive) per-cell flood-geometry recompute to ~20 Hz. */
   private floodGeomTick = 0;
-  /** Per-compartment flood geometry, recomputed each step for compartments that hold water or
-   *  have a breach: the world-horizontal POOL surface height (for two-reservoir breach heads) and
-   *  the WET-cell local centroid (where the floodwater weight bears → free-surface list/capsize).
-   *  Cell local centres + sort scratch are built once per compartment (cells are static). */
+  /** Per-compartment flood geometry: the world-horizontal POOL surface height fed to the two-
+   *  reservoir breach heads + the render surface. `poolY` is derived O(log layers) from the
+   *  compartment's current waterVolume via a STATIC cumulative volume↔height curve (built once —
+   *  cells are static), transformed to world at the compartment's horizontal centre. This replaced
+   *  the old per-tick "rotate every cell into world-Y and Float32Array.sort()" pass (the flood-phase
+   *  CPU wall on a badly-holed big hull). The floodwater WEIGHT bears via floodBallastLocal (heel-
+   *  independent), so the local-fill approximation here is safe — see fillHeightLocal's note. */
   private floodGeom = new Map<
     number,
-    {
-      lx: Float32Array; ly: Float32Array; lz: Float32Array;
-      worldY: Float32Array; order: Int32Array;
-      poolY: number; cx: number; cy: number; cz: number; hasWater: boolean;
-    }
+    { curve: FillCurve; cx: number; cz: number; poolY: number; hasWater: boolean }
   >();
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
@@ -532,11 +534,13 @@ export class Ship implements ContactTarget {
     return false;
   }
 
-  /** Recompute the pool SURFACE height for compartments that hold water or are breached. The pool is a
-   *  world-horizontal plane: rank the interior cells by world-Y and wet the lowest `fill·n` (volume-exact,
-   *  since cells are equal); `poolY` is that pool's surface, fed to the two-reservoir breach heads. (The
-   *  floodwater weight now bears via floodBallastLocal, so no wet centroid is computed here.) Dry,
-   *  unbreached compartments are skipped — normally that's all of them, so this is ~free while afloat. */
+  /** Recompute the pool SURFACE height for compartments that hold water or are breached, via the
+   *  STATIC cumulative volume↔height curve — O(log layers), no per-cell rotate-and-sort. The pool is
+   *  a world-horizontal plane: `fillHeightLocal` gives the ship-local fill height for the current
+   *  waterVolume; we transform a point at the compartment's horizontal centre at that height to world
+   *  to get `poolY`, fed to the two-reservoir breach heads. (The floodwater weight bears via
+   *  floodBallastLocal — heel-independent — so a local-horizontal fill level is a safe approximation;
+   *  see fillHeightLocal.) Dry, unbreached compartments are skipped — normally that's all of them. */
   private updateFloodGeom(): void {
     const tr = this.body.translation();
     const rot = this.body.rotation();
@@ -548,50 +552,31 @@ export class Ship implements ContactTarget {
         if (old) { old.hasWater = false; old.poolY = -Infinity; }
         continue;
       }
-      const g = this.floodCellArrays(c);
-      const n = g.lx.length;
-      if (n === 0) { g.hasWater = false; g.poolY = -Infinity; continue; }
-      const wy = g.worldY;
-      for (let i = 0; i < n; i++) {
-        const vx = g.lx[i], vy = g.ly[i], vz = g.lz[i];
-        // quaternion-rotate the cell centre, y-component only, + translation → absolute world-Y
-        const tx = 2 * (qy * vz - qz * vy);
-        const ty = 2 * (qz * vx - qx * vz);
-        const tz = 2 * (qx * vy - qy * vx);
-        wy[i] = vy + qw * ty + (qz * tx - qx * tz) + tr.y;
-      }
-      // We only need the wetCount-th lowest world-Y (the pool surface), not WHICH cell it is — so sort
-      // the VALUES in place with the NATIVE numeric Float32Array.sort() (ascending, no comparator). The
-      // old code sorted an INDEX array with a `(a,b)=>wy[a]-wy[b]` JS callback — V8's slowest sort path —
-      // which cost ~15 ms on a 60k-cell compartment and dominated the ENTIRE flood phase during a
-      // flooding grind. Bit-identical result; just the fast primitive. (g.worldY is exactly length n.)
-      wy.sort();
-      const fill = c.volume > 0 ? c.waterVolume / c.volume : 0;
-      const wetCount = Math.min(n, Math.max(0, Math.round(fill * n)));
-      // pool surface = top of the highest wet cell; empty → just under the lowest cell (a dry floor)
-      g.poolY = wetCount > 0 ? wy[wetCount - 1] + VOXEL_SIZE * 0.5 : wy[0] - VOXEL_SIZE * 0.5;
-      // (The wet-cell centroid g.cx/cy/cz that used to be summed here is GONE — floodBallastLocal now
-      //  bears the floodwater weight low + heel-independent, so the per-step centroid sum was dead work.)
-      g.hasWater = wetCount > 0;
+      const g = this.floodGeomData(c);
+      // local fill height (ship-Y, meters) from the static curve — the cheap inverse of the cell
+      // volume distribution. Place the surface point at the compartment's horizontal centre.
+      const lyH = fillHeightLocal(g.curve, c.waterVolume);
+      const vx = g.cx, vy = lyH, vz = g.cz;
+      // quaternion-rotate that local surface point, y-component only, + translation → world-Y
+      const tx = 2 * (qy * vz - qz * vy);
+      const ty = 2 * (qz * vx - qx * vz);
+      const tz = 2 * (qx * vy - qy * vx);
+      g.poolY = vy + qw * ty + (qz * tx - qx * tz) + tr.y;
+      g.hasWater = c.waterVolume > 1e-6;
     }
   }
 
-  /** Lazily build + cache the per-compartment cell local-centre arrays and sort scratch. Compartment
-   *  cells are static after build, so this runs once per compartment. */
-  private floodCellArrays(c: Compartment) {
+  /** Lazily build + cache the per-compartment STATIC fill curve + horizontal-centre local point.
+   *  Compartment cells are static after build, so this runs once per compartment. */
+  private floodGeomData(c: Compartment) {
     let g = this.floodGeom.get(c.id);
-    if (g && g.lx.length === c.cells.size) return g;
-    const n = c.cells.size;
-    const lx = new Float32Array(n), ly = new Float32Array(n), lz = new Float32Array(n);
+    if (g) return g;
     const [nx, ny] = this.build.grid.dims;
-    const layer = nx * ny;
-    let i = 0;
-    for (const pcell of c.cells) {
-      const x = pcell % nx, y = Math.floor(pcell / nx) % ny, z = Math.floor(pcell / layer);
-      lx[i] = (x + 0.5) * VOXEL_SIZE; ly[i] = (y + 0.5) * VOXEL_SIZE; lz[i] = (z + 0.5) * VOXEL_SIZE;
-      i++;
-    }
-    g = { lx, ly, lz, worldY: new Float32Array(n), order: new Int32Array(n), poolY: -Infinity, cx: 0, cy: 0, cz: 0, hasWater: false };
+    const curve = buildFillCurve(c, nx, ny);
+    // horizontal centre of the compartment footprint (local meters) — where we sample the surface.
+    const cx = ((c.bboxMin[0] + c.bboxMax[0]) / 2 + 0.5) * VOXEL_SIZE;
+    const cz = ((c.bboxMin[2] + c.bboxMax[2]) / 2 + 0.5) * VOXEL_SIZE;
+    g = { curve, cx, cz, poolY: -Infinity, hasWater: false };
     this.floodGeom.set(c.id, g);
     return g;
   }

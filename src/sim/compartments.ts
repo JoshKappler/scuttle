@@ -118,6 +118,82 @@ export function floodBallastLocal(c: Compartment): [number, number, number] {
   return [c.centroid[0], ly, c.centroid[2]];
 }
 
+/**
+ * Static cumulative volume↔height curve for a compartment, built ONCE (cells never change after
+ * build). Replaces the old per-tick "rotate every cell into world-Y and Float32Array.sort() them"
+ * pass that dominated the flood phase on a badly-holed big hull (~60k cells/compartment).
+ *
+ * Water settles bottom-up in LOCAL space: it fills the lowest cell-LAYER first, then the next up.
+ * `layerY[k]` is the local-Y voxel index of the k-th occupied layer (ascending); `cumCells[k]` is
+ * the number of cells AT OR BELOW that layer. So as the pool rises through the compartment the wet
+ * cell count steps through `cumCells`. Inverting that step function (cheap binary search) turns the
+ * current `waterVolume` into a LOCAL fill height in O(log layers) — no per-cell work at runtime.
+ *
+ * HEEL TRADEOFF: this is a ship-LOCAL-horizontal fill, so the derived level is exact upright and an
+ * approximation under heel (the old code used world-Y, heel-aware). That's safe because the list /
+ * capsize physics is entirely independent (`floodBallastLocal`, heel-independent) — the level here
+ * only feeds the two-reservoir breach head and the rendered surface, both of which just need a
+ * believable world height that equilibrates toward the outside waterline. The render side still
+ * counter-rotates its tiles so the surface DRAWS world-horizontal at this height.
+ */
+export interface FillCurve {
+  /** Ascending local-Y voxel indices of the occupied layers. */
+  layerY: Int32Array;
+  /** Cumulative cell count at or below layerY[k]. cumCells[last] === total cells. */
+  cumCells: Int32Array;
+  /** Total interior cells (=== compartment cell count). */
+  total: number;
+}
+
+/** Build the static fill curve for a compartment from its cell set + grid dims. Runs once. */
+export function buildFillCurve(c: Compartment, nx: number, ny: number): FillCurve {
+  // count cells per local-Y layer (packed index = x + nx*(y + ny*z), so y = floor(p/nx) % ny)
+  const perLayer = new Map<number, number>();
+  for (const p of c.cells) {
+    const y = Math.floor(p / nx) % ny;
+    perLayer.set(y, (perLayer.get(y) ?? 0) + 1);
+  }
+  const ys = Array.from(perLayer.keys()).sort((a, b) => a - b);
+  const layerY = new Int32Array(ys.length);
+  const cumCells = new Int32Array(ys.length);
+  let cum = 0;
+  for (let k = 0; k < ys.length; k++) {
+    layerY[k] = ys[k];
+    cum += perLayer.get(ys[k])!;
+    cumCells[k] = cum;
+  }
+  return { layerY, cumCells, total: c.cells.size };
+}
+
+/**
+ * Local-space fill height (meters, in ship-local Y) of a compartment's pool given its current
+ * `waterVolume`, via the static curve — the cheap replacement for ranking + sorting every cell.
+ * Returns the TOP of the wet column: the local Y at which the free surface sits. Empty → the floor.
+ *
+ *   wetCells = waterVolume / VOXEL_VOLUME ; binary-search cumCells for the layer that count reaches,
+ *   then linearly interpolate WITHIN that layer by how far the count fills it (partial top layer).
+ */
+export function fillHeightLocal(curve: FillCurve, waterVolume: number): number {
+  const m = curve.layerY.length;
+  if (m === 0) return 0;
+  const wetCells = waterVolume / VOXEL_VOLUME;
+  if (wetCells <= 0) return curve.layerY[0] * VOXEL_SIZE; // dry → the floor (bottom of lowest layer)
+  if (wetCells >= curve.total) return (curve.layerY[m - 1] + 1) * VOXEL_SIZE; // full → top of top layer
+  // binary search for the first layer whose cumulative count >= wetCells
+  let lo = 0,
+    hi = m - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (curve.cumCells[mid] >= wetCells) hi = mid;
+    else lo = mid + 1;
+  }
+  const below = lo > 0 ? curve.cumCells[lo - 1] : 0; // cells filled by all layers strictly below
+  const inLayer = curve.cumCells[lo] - below; // cells this layer holds
+  const frac = inLayer > 0 ? Math.min(1, Math.max(0, (wetCells - below) / inLayer)) : 0;
+  // surface sits `frac` of the way up the current layer; layer spans [layerY, layerY+1) in voxels
+  return (curve.layerY[lo] + frac) * VOXEL_SIZE;
+}
+
 const SEEP_FILL_GATE = 0.55; // a compartment only sheds to a neighbour once it's this full
 const SEEP_RATE = 0.06; // per-second fraction of the fill-fraction gap moved (slow overtopping)
 

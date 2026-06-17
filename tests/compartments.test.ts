@@ -4,11 +4,13 @@ import {
   floodStep,
   floodBallastLocal,
   equalizeFlooding,
+  buildFillCurve,
+  fillHeightLocal,
   type Compartment,
   type BreachInput,
   type Opening,
 } from "../src/sim/compartments";
-import { VOXEL_SIZE } from "../src/core/constants";
+import { VOXEL_SIZE, VOXEL_VOLUME } from "../src/core/constants";
 
 function comp(volume: number, waterVolume: number, id = 0): Compartment {
   return {
@@ -168,5 +170,74 @@ describe("equalizeFlooding (slow cross-compartment seepage)", () => {
     expect(a.waterVolume).toBeGreaterThanOrEqual(0);
     expect(b.waterVolume).toBeLessThanOrEqual(b.volume);
     expect(a.waterVolume + b.waterVolume).toBeCloseTo(10, 6);
+  });
+});
+
+// The static cumulative volume↔height curve replaces the per-tick rotate-and-sort: it maps the
+// compartment's waterVolume to a ship-local fill height in O(log layers). Built once (cells static).
+describe("buildFillCurve / fillHeightLocal (cheap volume↔height)", () => {
+  const NX = 8, NY = 8;
+  // a box compartment occupying local cells x∈[x0..x1], y∈[y0..y1], z∈[z0..z1] (inclusive).
+  function box(x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): Compartment {
+    const cells = new Set<number>();
+    for (let z = z0; z <= z1; z++)
+      for (let y = y0; y <= y1; y++)
+        for (let x = x0; x <= x1; x++) cells.add(x + NX * (y + NY * z));
+    const c = comp(cells.size * VOXEL_VOLUME, 0);
+    c.cells = cells;
+    c.bboxMin = [x0, y0, z0];
+    c.bboxMax = [x1, y1, z1];
+    return c;
+  }
+
+  it("endpoints: empty → floor, full → top of the column", () => {
+    const c = box(0, 3, 2, 5, 0, 3); // y spans voxel layers 2..5 (4 layers)
+    const curve = buildFillCurve(c, NX, NY);
+    expect(curve.total).toBe(c.cells.size);
+    // empty pool → the bottom of the lowest layer (y=2)
+    expect(fillHeightLocal(curve, 0)).toBeCloseTo(2 * VOXEL_SIZE, 9);
+    // full pool → the TOP of the highest layer (y=5 → top is 6)
+    expect(fillHeightLocal(curve, c.volume)).toBeCloseTo(6 * VOXEL_SIZE, 9);
+    // over-full clamps to the top
+    expect(fillHeightLocal(curve, c.volume * 2)).toBeCloseTo(6 * VOXEL_SIZE, 9);
+  });
+
+  it("monotonic: height never decreases as the pool fills", () => {
+    const c = box(0, 3, 0, 5, 0, 3);
+    const curve = buildFillCurve(c, NX, NY);
+    let prev = -Infinity;
+    for (let f = 0; f <= 1.0001; f += 0.05) {
+      const h = fillHeightLocal(curve, c.volume * f);
+      expect(h).toBeGreaterThanOrEqual(prev - 1e-9);
+      prev = h;
+    }
+  });
+
+  it("uniform box: half the volume → half the height (linear within equal layers)", () => {
+    const c = box(0, 3, 0, 7, 0, 3); // 4×8×4, layers 0..7
+    const curve = buildFillCurve(c, NX, NY);
+    const h = fillHeightLocal(curve, c.volume * 0.5);
+    // each layer has equal cells, so 50% fill ⇒ surface at the top of layer 3 = 4 voxels up
+    expect(h).toBeCloseTo(4 * VOXEL_SIZE, 6);
+  });
+
+  it("inverse round-trips: filling to a height back through volume reproduces the height", () => {
+    // a NON-uniform footprint (a step) so cells-per-layer varies and the curve isn't trivially linear
+    const cells = new Set<number>();
+    for (let z = 0; z <= 3; z++)
+      for (let x = 0; x <= 3; x++) {
+        for (let y = 0; y <= 2; y++) cells.add(x + NX * (y + NY * z)); // wide base, layers 0..2
+        if (x <= 1 && z <= 1) for (let y = 3; y <= 5; y++) cells.add(x + NX * (y + NY * z)); // narrow tower
+      }
+    const c = comp(cells.size * VOXEL_VOLUME, 0);
+    c.cells = cells;
+    c.bboxMin = [0, 0, 0];
+    c.bboxMax = [3, 5, 3];
+    const curve = buildFillCurve(c, NX, NY);
+    // pick a target height at a layer boundary, count the cells at or below it → volume, invert.
+    // top of layer 2 (h = 3 voxels) holds the wide base = 4×3×4 = 48 cells.
+    const targetH = 3 * VOXEL_SIZE;
+    const vol = 48 * VOXEL_VOLUME;
+    expect(fillHeightLocal(curve, vol)).toBeCloseTo(targetH, 6);
   });
 });
