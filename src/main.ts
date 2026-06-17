@@ -583,6 +583,7 @@ async function main() {
     fleet.setTarget(fresh);
     character.setShip(fresh);
     rebindPlayerRenderHooks();
+    rebuildFloodSegments(); // new hull → new compartment count → rebuild the flood readout
   }
   function rebindPlayerRenderHooks(): void {
     sloopProfile = makeProfileTex(sloop.build.grid, sloop.build.deckY);
@@ -920,7 +921,7 @@ async function main() {
       console.warn("[fullscreen]", err);
     }
   };
-  document.getElementById("fs-btn")?.addEventListener("click", toggleFullscreen);
+  // (the on-screen ⛶ fullscreen button was removed — F still toggles, bound in the keydown handler below)
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return; // holding X must not strobe the cutaway (playtest)
@@ -1082,7 +1083,7 @@ async function main() {
   const hudEls = {
     spd: $("spd"),
     sailsBar: $("sails-bar"),
-    fl: [$("fl0"), $("fl1"), $("fl2")],
+    floodStrip: $("flood-strip"),
     crewLine: $("crew-line"),
     hpRow: $("hp-row"),
     hpBar: $("hp-bar"),
@@ -1096,6 +1097,12 @@ async function main() {
     infamy: $("infamy"),
     tier: $("tier"),
     rose: $("rose"),
+    // compass letters: children of .rose, so they spin WITH the ring — we
+    // counter-rotate each one every frame to keep the glyph upright.
+    roseN: $("rose-n"),
+    roseE: $("rose-e"),
+    roseS: $("rose-s"),
+    roseW: $("rose-w"),
     hdg: $("hdg"),
     rudderInd: $("rudder-ind"),
     enemyMarker: $("enemy-marker"),
@@ -1104,6 +1111,31 @@ async function main() {
     hints: $("hints"),
     underwater: $("underwater"),
   };
+  // Flood readout: ONE segment per ACTUAL hull compartment (ships have 8-12, not 3).
+  // Rebuilt whenever the player swaps hulls (compartment count changes). We cache the
+  // inner fill <i> + last-applied class so we only touch the DOM when a value moves.
+  let floodCells: HTMLElement[] = [];
+  let floodFills: HTMLElement[] = [];
+  let floodCls: string[] = [];
+  function rebuildFloodSegments(): void {
+    const n = sloop.build.compartments.length;
+    hudEls.floodStrip.replaceChildren();
+    floodCells = [];
+    floodFills = [];
+    floodCls = [];
+    for (let i = 0; i < n; i++) {
+      const cell = document.createElement("div");
+      cell.className = "flood-cell dry";
+      cell.title = `compartment ${i + 1}`;
+      const fill = document.createElement("i");
+      cell.appendChild(fill);
+      hudEls.floodStrip.appendChild(cell);
+      floodCells.push(cell);
+      floodFills.push(fill);
+      floodCls.push("dry");
+    }
+  }
+  rebuildFloodSegments();
   let lastToast = "";
   let toastTimer = 0;
   const hdgQ = new THREE.Quaternion();
@@ -1123,8 +1155,16 @@ async function main() {
     hdgQ.set(rot.x, rot.y, rot.z, rot.w);
     hdgV.set(1, 0, 0).applyQuaternion(hdgQ);
     const heading = Math.atan2(hdgV.z, hdgV.x); // world yaw of the bow
-    hudEls.rose.style.transform = `rotate(${(-heading * 180) / Math.PI}deg)`;
-    hudEls.hdg.textContent = `${Math.round(((heading * 180) / Math.PI + 360) % 360)}°`;
+    const headingDeg = (heading * 180) / Math.PI;
+    hudEls.rose.style.transform = `rotate(${-headingDeg}deg)`;
+    // The letters are children of .rose, so the line above also spins them. Counter-rotate
+    // each glyph by +headingDeg (cancelling the rose spin) ON TOP of its own positioning
+    // transform, so the ring/ticks turn but N/E/S/W always read upright.
+    hudEls.roseN.style.transform = `translateX(-50%) rotate(${headingDeg}deg)`;
+    hudEls.roseS.style.transform = `translateX(-50%) rotate(${headingDeg}deg)`;
+    hudEls.roseE.style.transform = `translateY(-50%) rotate(${headingDeg}deg)`;
+    hudEls.roseW.style.transform = `translateY(-50%) rotate(${headingDeg}deg)`;
+    hudEls.hdg.textContent = `${Math.round((headingDeg + 360) % 360)}°`;
     if (primaryEnemy) {
       const et = primaryEnemy.body.translation();
       const enemyBearing = Math.atan2(et.z - tr.z, et.x - tr.x) - heading;
@@ -1164,7 +1204,15 @@ async function main() {
     hudEls.spd.textContent = (sailing.speed * 1.944).toFixed(1);
     hudEls.sailsBar.style.width = `${sailing.sailSet * 100}%`;
     sloop.build.compartments.forEach((c, i) => {
-      if (hudEls.fl[i]) hudEls.fl[i].style.width = `${(c.waterVolume / c.volume) * 100}%`;
+      const fill = floodFills[i];
+      if (!fill) return;
+      const frac = c.volume > 0 ? c.waterVolume / c.volume : 0;
+      fill.style.height = `${Math.min(100, frac * 100)}%`;
+      const cls = frac < 0.02 ? "dry" : frac > 0.97 ? "full" : "flooding";
+      if (cls !== floodCls[i]) {
+        floodCells[i].className = `flood-cell ${cls}`;
+        floodCls[i] = cls;
+      }
     });
     hudEls.crewLine.textContent =
       `planks ${sloop.planks} · pump ${sloop.pumpOn ? "ON" : "off"}` +
@@ -1194,11 +1242,9 @@ async function main() {
     hudEls.stamRow.style.display = onFoot ? "flex" : "none";
     if (onFoot && character.player) hudEls.stamBar.style.width = `${character.player.stamina * 100}%`;
 
-    const lockHint = controls.locked ? "" : "CLICK to capture mouse · ";
-    const sandboxHint = gs.isSandbox() ? " · SANDBOX (` panel for enemies/sea)" : "";
     hudEls.hints.textContent = onFoot
-      ? `${lockHint}WASD move · Shift sprint · Space jump · C kick · hold RMB aim + LMB fire · E take wheel · V view · Esc menu${sandboxHint}`
-      : `${lockHint}W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plank · P pump · Esc menu · foes ${fleet.enemies.length}${sandboxHint}`;
+      ? `WASD move · Shift sprint · Space jump · C kick · hold RMB aim + LMB fire · E take wheel · V view · Esc menu`
+      : `W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plug breach · P pump · Esc menu · foes ${fleet.enemies.length}`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on

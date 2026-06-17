@@ -34,6 +34,13 @@
       .bar { flex: 1; height: 8px; background: rgba(0,0,0,0.45); border: 1px solid rgba(201,162,39,0.25); border-radius: 2px; overflow: hidden; }
       .bar > div { height: 100%; background: linear-gradient(180deg, #b08d3c, #8a6c2a); width: 0%; transition: width 0.2s; }
       .bar.flood > div { background: linear-gradient(180deg, #3f7e9e, #2c5871); }
+      /* one segment per ACTUAL hull compartment (built dynamically in main.ts).
+         each fills bottom-up by its flood fraction; tint shifts dry→flooding→full */
+      .flood-strip { flex: 1; display: flex; gap: 2px; height: 11px; align-items: stretch; }
+      .flood-cell { flex: 1; position: relative; min-width: 3px; background: rgba(0,0,0,0.5); border: 1px solid rgba(201,162,39,0.28); border-radius: 2px; overflow: hidden; }
+      .flood-cell > i { position: absolute; left: 0; right: 0; bottom: 0; height: 0%; background: linear-gradient(180deg, #4f93b3, #2c5871); transition: height 0.2s, background 0.2s; }
+      .flood-cell.dry > i { background: linear-gradient(180deg, #5a7c5a, #3a5538); }
+      .flood-cell.full > i { background: linear-gradient(180deg, #c24a3a, #7c2a20); }
       .bar.hp > div { background: linear-gradient(180deg, #a8392c, #7c2a20); }
       .bar.stam > div { background: linear-gradient(180deg, #74a368, #44663a); }
       .bar.rudder { position: relative; overflow: visible; }
@@ -78,8 +85,6 @@
       #spyglass.up .lens { transform: scale(1); }
       #spyglass .lens::before { content: ""; position: absolute; inset: 0; border-radius: 50%; box-shadow: inset 0.5vmin 0 1.4vmin rgba(111,211,227,0.16), inset -0.5vmin 0 1.4vmin rgba(227,150,60,0.14); }
       #spyglass .lens::after { content: ""; position: absolute; inset: 11%; border-radius: 50%; border: 1px solid rgba(216,201,163,0.12); }
-      #fs-btn { position: fixed; top: 14px; left: 14px; width: 36px; height: 36px; display: grid; place-items: center; background: linear-gradient(170deg, rgba(38,26,14,0.93), rgba(16,10,5,0.96)); border: 2px solid #8a6c2a; border-radius: 5px; color: #d8b24a; font: 700 17px Georgia, serif; cursor: pointer; pointer-events: auto; user-select: none; box-shadow: 0 4px 14px rgba(0,0,0,0.55); }
-      #fs-btn:hover { color: #efe3c2; border-color: #c9a227; }
     </style>
   </head>
   <body class="menu-active">
@@ -90,10 +95,8 @@
       <div class="speed"><span id="spd">0.0</span> <small>kn</small></div>
       <div class="row"><span class="lbl">Sails</span><div class="bar"><div id="sails-bar"></div></div></div>
       <div class="row"><span class="lbl">Rudder</span><div class="bar rudder"><div id="rudder-ind"></div></div></div>
-      <div class="row"><span class="lbl">Flood</span>
-        <div class="bar flood"><div id="fl0"></div></div>
-        <div class="bar flood"><div id="fl1"></div></div>
-        <div class="bar flood"><div id="fl2"></div></div>
+      <div class="row"><span class="lbl">Holds</span>
+        <div class="flood-strip" id="flood-strip"></div>
       </div>
       <div class="row"><span class="lbl">Crew</span><span id="crew-line">planks 8 · pump off</span></div>
       <div class="row" id="hp-row" style="display:none"><span class="lbl">Health</span><div class="bar hp"><div id="hp-bar"></div></div></div>
@@ -106,15 +109,14 @@
       <div id="gun-sub">elevation 4.0°</div>
     </div>
     <div id="gold-panel" class="panel">⛀ <span id="gold">0</span><div id="infamy-line">infamy <span id="infamy">0</span> · <span id="tier" class="tier">Cutter</span></div></div>
-    <div id="fs-btn" title="fullscreen (F)">⛶</div>
     <div id="spyglass"><div class="mask"></div><div class="lens"></div></div>
     <div id="compass">
       <div class="ring"></div>
       <div class="rose" id="rose">
-        <div class="n">N</div>
-        <div class="pt e">E</div>
-        <div class="pt s">S</div>
-        <div class="pt w">W</div>
+        <div class="n" id="rose-n">N</div>
+        <div class="pt e" id="rose-e">E</div>
+        <div class="pt s" id="rose-s">S</div>
+        <div class="pt w" id="rose-w">W</div>
         <div class="tick" style="transform: rotate(45deg) translateY(-38px)"></div>
         <div class="tick" style="transform: rotate(135deg) translateY(-38px)"></div>
         <div class="tick" style="transform: rotate(225deg) translateY(-38px)"></div>
