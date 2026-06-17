@@ -68,37 +68,50 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
     }
   });
 
-  it("bow chasers seat near the stem so every barrel pokes OUT the bow face", () => {
-    // regression for "I only see TWO bow cannons": the inner pairs used to seat back at x≈187–189,
-    // where the ~2.1 m barrel stopped inside the solid bow timber (stem skin ≈ x202) — invisible.
-    // All six now seat at x≈199–201 so the barrel tip clears the stem; each still has a real mount.
-    const [nx] = ship.grid.dims;
+  it("bow chasers form a CLEAN 2-column × 3-row grid that pokes OUT the bow face", () => {
+    // user layout: the six bow guns are an orderly 2×3 grid — exactly TWO z columns (a mirror pair
+    // about the centerline), THREE evenly-spaced y rows, all seated FAR forward so each barrel tip
+    // clears the stem (stem skin ≈ x202 at the centerline; the ~11.3-voxel barrel reaches x≈212).
+    const [nx, , nz] = ship.grid.dims;
     const fore = ship.cannonPorts.filter((p) => p.facing === "fore");
     expect(fore.length).toBe(6);
     // distinct seats (no two guns share a voxel)
     const keys = new Set(fore.map((p) => `${p.x},${p.y},${p.z}`));
     expect(keys.size).toBe(6);
+    // exactly TWO z columns, forming one mirror pair about the centerline
+    const zs = [...new Set(fore.map((p) => p.z))].sort((a, b) => a - b);
+    expect(zs.length).toBe(2);
+    expect(zs[0] + zs[1]).toBe(nz - 1); // mirror pair → port/starboard symmetric
+    // exactly THREE y rows at an even (constant) pitch
+    const ys = [...new Set(fore.map((p) => p.y))].sort((a, b) => a - b);
+    expect(ys.length).toBe(3);
+    const yPitches = ys.slice(1).map((y, i) => y - ys[i]);
+    expect(new Set(yPitches).size).toBe(1); // single, consistent row pitch
+    // every (row,col) cell is filled → a full 2×3 lattice
+    expect(new Set(fore.map((p) => `${p.y},${p.z}`)).size).toBe(6);
     for (const p of fore) {
-      expect(p.x).toBeGreaterThanOrEqual(nx - 12); // hard up against the bow
-      expect(mountSolidCount(ship.grid, p)).toBeGreaterThan(0);
+      expect(p.x).toBeGreaterThanOrEqual(nx - 12); // hard up against the bow → barrel clears the stem
+      expect(mountSolidCount(ship.grid, p)).toBeGreaterThan(0); // bolts to real bow timber
     }
   });
 
-  it("stern chasers form an EVEN 4-wide × 2-high grid on the transom (not a fan)", () => {
-    // user fix: the eight stern guns used to fan out in z at descending y (a widening triangle).
-    // Now they're a regular grid — ONE station (the transom face), exactly TWO y rows, FOUR evenly
-    // spaced z columns. Lock that orderly shape in.
+  it("stern chasers form a CLEAN 2-column × 4-row grid on the transom (not a fan)", () => {
+    // user layout: the eight stern guns are an orderly 2×4 grid — ONE station (the transom face),
+    // exactly TWO z columns (a mirror pair), FOUR evenly-spaced y rows. Lock that orderly shape in.
+    const nz = ship.grid.dims[2];
     const aft = ship.cannonPorts.filter((p) => p.facing === "aft");
     expect(aft.length).toBe(8);
     const xs = new Set(aft.map((p) => p.x));
     expect(xs.size).toBe(1); // a single transom station — no fore/aft fan
-    const ys = [...new Set(aft.map((p) => p.y))].sort((a, b) => a - b);
-    expect(ys.length).toBe(2); // exactly two evenly-spaced rows
+    // exactly TWO z columns, a mirror pair about the centerline
     const zs = [...new Set(aft.map((p) => p.z))].sort((a, b) => a - b);
-    expect(zs.length).toBe(4); // four columns
-    // columns are an even pitch (3 voxels) → a neat grid, not a spread
-    const pitches = zs.slice(1).map((z, i) => z - zs[i]);
-    expect(new Set(pitches)).toEqual(new Set([3]));
+    expect(zs.length).toBe(2);
+    expect(zs[0] + zs[1]).toBe(nz - 1); // mirror pair → port/starboard symmetric
+    // exactly FOUR y rows at an even (constant) pitch
+    const ys = [...new Set(aft.map((p) => p.y))].sort((a, b) => a - b);
+    expect(ys.length).toBe(4);
+    const yPitches = ys.slice(1).map((y, i) => y - ys[i]);
+    expect(new Set(yPitches).size).toBe(1); // single, consistent row pitch
     // every (row,col) cell is filled → a full 2×4 lattice
     expect(new Set(aft.map((p) => `${p.y},${p.z}`)).size).toBe(8);
   });

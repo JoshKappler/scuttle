@@ -1402,43 +1402,43 @@ export function buildManOfWar(): ShipBuild {
 
   // axial chasers (cannon-count pass): 6 bow (fore, under the forecastle) + 8 stern (aft,
   // through the great cabin / transom) — the first-rate's explicit minimum, a heavy chase
-  // battery far beyond the brig's pair. They are stacked across the THREE gun-deck heights
-  // and spread in z, fired apart from the broadsides. Every pair straddles the centerline
-  // (z sums to 2·czi → exact mirror); all seat in solid bow/stern timber below the weather
-  // deck (sim/cannonMount.ts samples a box around each port). The bow is a finer wedge than
-  // the broad transom, so the bow chasers hug the centerline while the stern guns fan wider.
+  // battery far beyond the brig's pair. Both are now laid out as CLEAN, REGULAR GRIDS: the bow
+  // as 2 columns × 3 rows, the stern as 2 columns × 4 rows. In each grid the two z-columns are a
+  // single mirror PAIR (their z values sum to nz − 1 → exact port/starboard symmetry), the rows
+  // are evenly pitched in y, and every gun is below the weather deck (y < deckY). All seat in
+  // solid bow/stern timber (sim/cannonMount.ts samples a box around each port) and every barrel
+  // tip clears the hull skin so the whole grid is visible from outside.
   const cz0 = Math.floor(cz),
-    cz1 = Math.ceil(cz); // centre cells; cz0 + cz1 === nz − 1, so spreading both by k mirrors
-  // ---- 6 bow chasers: three mirror pairs poking OUT through the stem at three heights ----
+    cz1 = Math.ceil(cz); // centre cells; cz0 + cz1 === nz − 1, so a {cz0, cz1} column pair mirrors
+  // ---- 6 bow chasers: a 2 × 3 grid poking OUT through the stem ----
   // The cannon barrel reaches ~11.3 voxels forward of its port cell (pivot→tip =
   // (TRUNNION_OUT_B + TIP_FROM_TRUNNION_B)·GUN_SCALE / VOXEL_SIZE), and the bow stem skin at the
-  // centerline sits at x≈202. The earlier layout seated the inner two pairs back at x≈187–189, so
-  // their barrels stopped at x≈198–200 — still buried INSIDE the solid bow timber, invisible: only
-  // the forward-most pair (x≈197) protruded, which is the "I only see TWO bow cannons" report.
-  // Seat all three pairs FAR forward (x≈194–196) so every tip clears the stem (verified: tip x≈205–207
-  // > skin x≈202), while the port cell + its surrounding wedge stay solid (mountSolidCount ≫ 0,
-  // sim/cannonMount.ts) and below the weather deck (y < deckY). The bow is a fine wedge, so the high
-  // and low pairs hug the centerline (cz0/cz1) and the middle pair fans a little wider — every pair an
-  // exact z-mirror (cz0 + cz1 === nz − 1; 27 + 32 === nz − 1).
-  cannonPorts.push({ x: x0 + L - 4, y: deckY - 5, z: cz0, side: -1, facing: "fore" }); // x=200, high pair (mount≈60)
-  cannonPorts.push({ x: x0 + L - 4, y: deckY - 5, z: cz1, side: 1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 5, y: deckY - 8, z: cz0 - 2, side: -1, facing: "fore" }); // x=199, mid pair fanned (mount≈28)
-  cannonPorts.push({ x: x0 + L - 5, y: deckY - 8, z: cz1 + 2, side: 1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 3, y: deckY - 11, z: cz0, side: -1, facing: "fore" }); // x=201, low pair at the stem (mount≈49)
-  cannonPorts.push({ x: x0 + L - 3, y: deckY - 11, z: cz1, side: 1, facing: "fore" });
-  // ---- 8 stern chasers: an EVEN 4-wide × 2-high grid across the broad transom ----
-  // (was four pairs fanning out in z at descending y — read as a widening "triangle"). The transom
-  // is full and wide, so stack the eight guns as a neat regular grid: ONE station (the transom face
-  // sternX = x0), TWO rows evenly spaced in y, FOUR evenly-spaced columns in z. Columns are two
-  // mirror pairs (cz∓4, cz∓1 → 25/34 and 28/31, each summing to nz − 1) at a constant 3-voxel pitch,
-  // so it reads as an orderly battery, not a fan. The hull is a HOLLOW shell, so a chaser must seat
-  // ON the solid transom plating: the cabin behind it is open air, and the mount sampler reaches
-  // INBOARD (+x) from the port cell — only at the transom skin (x0) does it bite real timber
-  // (mountSolidCount = 49; one voxel forward it falls to 0). Each barrel runs out aft through the
-  // transom; below the weather deck (y < deckY). cz0 + cz1 === nz − 1, so every column is mirrored.
-  const sternX = x0; // the transom face: the only solid station behind the hollow great cabin
-  const sternZcols = [cz0 - 4, cz0 - 1, cz1 + 1, cz1 + 4]; // 25, 28, 31, 34 — even 3-vox pitch, mirrored
-  for (const gy of [deckY - 3, deckY - 7]) {
+  // centerline (z = cz0/cz1) sits at x = 202 across every chosen row (a fine, vertical wedge there).
+  // Seat all six at ONE forward station x = x0 + L − 3 = 201 → every tip lands at x ≈ 212.3, a clear
+  // ~10 voxels (2.5 m) proud of the stem (verified). Two columns = the centerline mirror pair
+  // {cz0, cz1} (29 + 30 === nz − 1); three rows evenly pitched 4 voxels in y (deckY−4/−8/−12 = 32/28/24),
+  // all below the weather deck and seated in solid bow timber (mountSolidCount ≈ 49–64). A neat
+  // upright 2-wide × 3-tall battery on the bow face, all bearing dead ahead.
+  const bowX = x0 + L - 3;                       // 201 — one forward station for the whole grid
+  const bowZcols = [cz0, cz1];                    // 29, 30 — the centerline mirror pair
+  const bowYrows = [deckY - 4, deckY - 8, deckY - 12]; // 32, 28, 24 — even 4-voxel pitch
+  for (const gy of bowYrows) {
+    for (const gz of bowZcols) {
+      cannonPorts.push({ x: bowX, y: gy, z: gz, side: gz < cz ? -1 : 1, facing: "fore" });
+    }
+  }
+  // ---- 8 stern chasers: a 2 × 4 grid across the broad transom ----
+  // The hull is a HOLLOW shell, so a chaser must seat ON the solid transom plating: the cabin behind
+  // it is open air, and the mount sampler reaches INBOARD (+x) from the port cell — only at the
+  // transom skin (sternX = x0 = 4) does it bite real timber (mountSolidCount ≈ 49–70; one voxel
+  // forward it falls to 0). Two columns = a single mirror pair {cz0−2, cz1+2} (27 + 32 === nz − 1);
+  // four rows evenly pitched 3 voxels in y (deckY−1/−4/−7/−10 = 35/32/29/26), all below the weather
+  // deck. Each barrel runs out aft through the transom. A neat upright 2-wide × 4-tall battery,
+  // all bearing dead astern.
+  const sternX = x0;                              // 4 — the transom face: the only solid stern station
+  const sternZcols = [cz0 - 2, cz1 + 2];          // 27, 32 — mirror pair (27 + 32 === nz − 1)
+  const sternYrows = [deckY - 1, deckY - 4, deckY - 7, deckY - 10]; // 35, 32, 29, 26 — even 3-voxel pitch
+  for (const gy of sternYrows) {
     for (const gz of sternZcols) {
       cannonPorts.push({ x: sternX, y: gy, z: gz, side: gz < cz ? -1 : 1, facing: "aft" });
     }
