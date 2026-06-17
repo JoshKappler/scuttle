@@ -40,6 +40,9 @@ export class ShipVisual {
   readonly group = new THREE.Group();
   private chunkMeshes = new Map<string, THREE.Mesh>();
   private hullMaterial: THREE.MeshStandardMaterial;
+  /** Captured hull shader uniforms (set in onBeforeCompile) so animate() can drive the
+   *  live shade-floor knob (TUN.gfx.hull.shadeFloor) without recompiling the material. */
+  private hullUniforms: { [k: string]: THREE.IUniform } | null = null;
   private build: ShipBuild;
 
   /** Real clipped, world-leveled, sloshing flood fluid (round 14): replaced the
@@ -85,6 +88,8 @@ export class ShipVisual {
     this.hullMaterial.onBeforeCompile = (shader) => {
       shader.uniforms.uDeckTex = { value: wood.deck };
       shader.uniforms.uHullTex = { value: wood.hull };
+      shader.uniforms.uShadeFloor = { value: TUN.gfx.hull.shadeFloor };
+      this.hullUniforms = shader.uniforms; // animate() drives uShadeFloor live
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -101,7 +106,8 @@ export class ShipVisual {
           varying vec3 vShipLocal;
           varying vec3 vShipNormal;
           uniform sampler2D uDeckTex;
-          uniform sampler2D uHullTex;`,
+          uniform sampler2D uHullTex;
+          uniform float uShadeFloor;`,
         )
         .replace(
           "#include <color_fragment>",
@@ -123,6 +129,17 @@ export class ShipVisual {
             // real pirate ship").
             diffuseColor.rgb *= 0.26 + tex * 0.62;
           }`,
+        )
+        .replace(
+          "#include <emissivemap_fragment>",
+          // SHADE FLOOR: the oak albedo is so low that a face out of the sun (fill-only)
+          // reflected ~nothing and crushed to a black void. Add a minimum self-lit term
+          // PROPORTIONAL to the wood's own diffuseColor (carries the plank grain + warm
+          // tint, so it reads as dim wood, not a flat grey card). It lifts the dark/shaded
+          // side hard while barely touching the already-bright sunlit side (same absolute
+          // add over a much larger lit value). Fed BEFORE tonemap, well under bloom thr.
+          `#include <emissivemap_fragment>
+          totalEmissiveRadiance += diffuseColor.rgb * uShadeFloor;`,
         );
     };
     this.remeshAll();
@@ -156,6 +173,7 @@ export class ShipVisual {
       this.sailUniforms.uFill.value = 0.35 + 0.65 * sailSet;
       this.sailUniforms.uSailTrans.value = TUN.gfx.sail.glow; // live glow strength (sail stays opaque)
     }
+    if (this.hullUniforms) this.hullUniforms.uShadeFloor.value = TUN.gfx.hull.shadeFloor; // live shade-floor knob
     // rudder convention: sailing.rudder + = port turn → trailing edge swings
     // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
     // puts the trailing edge at −z for +r. Wheel turns the same sense as a

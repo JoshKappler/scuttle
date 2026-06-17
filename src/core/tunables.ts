@@ -332,6 +332,15 @@ export const TUN = {
     /** triplanar procedural grit on island voxels (render/islandVisual.ts) — 0 =
      *  flat vertex color, 1 = full weathered variation. Silhouettes stay crisp. */
     islandGrit: { strength: 0.65 },
+    /** hull shade floor (render/shipVisual.ts). The oak albedo is intentionally tiny
+     *  (sim/materials.ts OAK ≈ 0.055 linear, ×~0.5 in the shader) so the LIT wood stays
+     *  dark — but diffuse reflection = albedo × light, so a face out of the sun (lit only
+     *  by the hemisphere fill) reflected almost nothing and crushed to a pure-black void
+     *  no matter how high the fill was pushed. shadeFloor adds a minimum self-lit term
+     *  PROPORTIONAL TO the wood's own diffuse colour (so it carries the plank grain + tint,
+     *  not a flat glow): outgoing += diffuseColor × shadeFloor. It lifts the dark/shaded
+     *  side far more in relative terms than the already-bright sunlit side. 0 = old void. */
+    hull: { shadeFloor: 1.2 },
     /** sail canvas (render/shipVisual.ts): the sail stays fully OPAQUE (same texture);
      *  glow = strength of the warm back-light ADDED where the sun lights the cloth's FAR
      *  side — i.e. when the sail is between the sun and the camera (0 = none/matte, higher
