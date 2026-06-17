@@ -584,6 +584,9 @@ async function main() {
     character.setShip(fresh);
     rebindPlayerRenderHooks();
     rebuildFloodSegments(); // new hull → new compartment count → rebuild the flood readout
+    // if the cutaway is on, carry it onto the freshly-built hull (the plane is the player's
+    // centerline; the per-frame block keeps it tracking this new ship's pose).
+    if (cutaway) visual.setCutaway(cutPlane);
   }
   function rebindPlayerRenderHooks(): void {
     sloopProfile = makeProfileTex(sloop.build.grid, sloop.build.deckY);
@@ -849,12 +852,20 @@ async function main() {
   document.addEventListener("fullscreenchange", fitViewport);
   new ResizeObserver(fitViewport).observe(app);
 
-  // cutaway damage view (X): clips the near half of each hull so compartment
-  // water levels read at a glance — flooding legibility is a core spec feature.
-  // The ocean gets a box hole around the PLAYER ship (one hole is all the
-  // clip-plane intersection can express; the enemy hull is inspected from afar)
+  // cutaway damage view (X): a FIXED half-cut of the PLAYER ship. The plane is the
+  // ship's LONGITUDINAL CENTERLINE (a vertical plane through the keel, normal = the
+  // hull's beam axis), so she's sliced in half down her length and the whole interior
+  // — decks, compartments, flooding — reads as a clean cross-section. The plane is
+  // STATIC RELATIVE TO THE SHIP: clipping planes are world-space, so each frame we
+  // transform that fixed local plane by the live ship pose (it rides the centerline as
+  // she turns) — NOT the old camera-driven sweep, which playtested as "too hard to deal
+  // with". The ocean gets a box hole around the player so the hold reads as air, not sea.
   let cutaway = false;
   const cutPlane = new THREE.Plane();
+  // the ship-local beam axis (+Z) and a point on the keel centerline, reused each frame
+  // to rebuild the world-space centerline cut plane from the live hull pose.
+  const cutNormalWorld = new THREE.Vector3();
+  const cutPointWorld = new THREE.Vector3();
   // dark abyss disc under the ship: the cutaway trench shows "the depths"
   // instead of glowing white skybox-below-the-sea
   const abyss = new THREE.Mesh(
@@ -865,6 +876,16 @@ async function main() {
   abyss.position.y = -9;
   abyss.visible = false;
   scene.add(abyss);
+  // INTERIOR FILL — "the inside of the ship is always well lit and visible". The sun +
+  // hemisphere only graze the deck; the hold, the lower deck, and anything seen through a
+  // breach / open hatch / the cutaway sit in shadow and crush near-black. A soft point
+  // light parked at the player hull's centre (short range, so it's a LOCAL fill that lifts
+  // the interior timber + flood water without touching the bright ocean/exterior) keeps the
+  // inside readable at all times — under the deck, through shot holes, and in the cutaway.
+  // No shadow casting (it's a fill, and the inside has no sun-shadow to honour).
+  const interiorFill = new THREE.PointLight(0xfff0d8, 2.4, 26, 1.6);
+  interiorFill.castShadow = false;
+  scene.add(interiorFill);
   const holeQ = new THREE.Quaternion();
   const holeFwd = new THREE.Vector3();
   const holeCenter = new THREE.Vector3();
@@ -955,7 +976,9 @@ async function main() {
     if (e.code === "KeyF") toggleFullscreen();
     if (e.code === "KeyX") {
       cutaway = !cutaway;
-      for (const s of [sloop, ...fleet.enemies]) s.visual.setCutaway(cutaway ? cutPlane : null);
+      // only the PLAYER ship is cut — the plane is HER centerline (the camera follows
+      // her). Enemy hulls stay whole; they're inspected from afar.
+      sloop.visual.setCutaway(cutaway ? cutPlane : null);
       ocean.setCutaway(cutaway);
       abyss.visible = cutaway;
     }
@@ -2035,6 +2058,13 @@ async function main() {
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
+    // keep the interior fill at the player hull's centre of mass — it rides inside the
+    // hold so it lights the lower deck / compartments / flood water (seen via cutaway or
+    // a breach) at all times, then falls off well before reaching the open sea.
+    {
+      const com = sloop.body.worldCom();
+      interiorFill.position.set(com.x, com.y, com.z);
+    }
     if (firstPerson && character.player) {
       // eye-level camera — at the model's eye line, not its collar
       // (playtest round 5: "really only shows the inside of the uniform")
@@ -2112,12 +2142,29 @@ async function main() {
     }
 
     if (cutaway) {
-      // hide the half of each hull facing the camera; keep the ocean trench
-      // tracking the hull footprint
-      const com = sloop.body.worldCom();
-      const n = new THREE.Vector3(com.x - camera.position.x, 0, com.z - camera.position.z).normalize();
-      cutPlane.setFromNormalAndCoplanarPoint(n, new THREE.Vector3(com.x, com.y, com.z));
+      // STATIC half-cut, fixed to the SHIP: the plane is the hull's longitudinal
+      // centerline (normal = beam axis). Build it from the live pose so it stays on
+      // the keel as she turns. THREE clips away the NEGATIVE side, so we point the
+      // normal at the half FACING AWAY from the camera → the near half is removed and
+      // we look straight down the open interior, full length.
+      const rotS = sloop.body.rotation();
+      holeQ.set(rotS.x, rotS.y, rotS.z, rotS.w);
+      // ship-local +Z is the beam (centerline normal); keep it horizontal so the cut is
+      // a clean vertical slice regardless of heel/pitch.
+      cutNormalWorld.set(0, 0, 1).applyQuaternion(holeQ);
+      cutNormalWorld.y = 0;
+      cutNormalWorld.normalize();
+      // a point ON the centerline: the hull footprint's z-center, mid-length, at deck level.
+      const fp = sloop.build.footprint;
+      sloop.localToWorld([(fp.minX + fp.maxX) / 2, 2, fp.zC], cutPointWorld);
+      // flip the normal to face away from the camera so the near (camera-side) half clips.
+      if (cutNormalWorld.x * (camera.position.x - cutPointWorld.x) +
+          cutNormalWorld.z * (camera.position.z - cutPointWorld.z) > 0) {
+        cutNormalWorld.negate();
+      }
+      cutPlane.setFromNormalAndCoplanarPoint(cutNormalWorld, cutPointWorld);
       updateHole();
+      const com = sloop.body.worldCom();
       abyss.position.x = com.x;
       abyss.position.z = com.z;
     }

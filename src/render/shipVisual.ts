@@ -43,6 +43,10 @@ export class ShipVisual {
   /** Captured hull shader uniforms (set in onBeforeCompile) so animate() can drive the
    *  live shade-floor knob (TUN.gfx.hull.shadeFloor) without recompiling the material. */
   private hullUniforms: { [k: string]: THREE.IUniform } | null = null;
+  /** True while the static half-cut is active: lifts the hull's self-lit shade floor so the
+   *  cross-section interior (lower deck, compartments, flood water) reads as clearly-lit
+   *  timber instead of crushing to a dark void on the faces turned away from the sun. */
+  private cutawayOn = false;
   private build: ShipBuild;
 
   /** Real clipped, world-leveled, sloshing flood fluid (round 14): replaced the
@@ -185,7 +189,13 @@ export class ShipVisual {
       this.sailUniforms.uFill.value = 0.35 + 0.65 * sailSet;
       this.sailUniforms.uSailTrans.value = TUN.gfx.sail.glow; // live glow strength (sail stays opaque)
     }
-    if (this.hullUniforms) this.hullUniforms.uShadeFloor.value = TUN.gfx.hull.shadeFloor; // live shade-floor knob
+    // live shade-floor knob; while cut away, lift it hard so the exposed interior reads
+    // (the cut faces point INTO the hull, away from sun + sky, so without this they go black).
+    if (this.hullUniforms) {
+      this.hullUniforms.uShadeFloor.value = this.cutawayOn
+        ? Math.max(TUN.gfx.hull.shadeFloor, 2.2)
+        : TUN.gfx.hull.shadeFloor;
+    }
     // rudder convention: sailing.rudder + = port turn → trailing edge swings
     // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
     // puts the trailing edge at −z for +r. Wheel turns the same sense as a
@@ -236,6 +246,7 @@ export class ShipVisual {
   setCutaway(plane: THREE.Plane | null): void {
     this.hullMaterial.clippingPlanes = plane ? [plane] : null;
     this.hullMaterial.needsUpdate = true;
+    this.cutawayOn = !!plane; // animate() lifts the shade floor while cut away
   }
 
   /** Reflect current flooding levels. Call once per frame, AFTER syncVisual()
