@@ -303,7 +303,9 @@ export class Ship implements ContactTarget {
     this.sailIntegrity[mi] = 0;
     const col = this.mastColliders[mi];
     if (col) this.phys.world.removeCollider(col, false);
-    this.visual.fellMast(mi);
+    // NOTE: the static spars/sails are NOT hidden here — RigManager.spawnFallingMast (driven by the
+    // mastAlive alive→dead edge) calls visual.detachMast, which clips the static parts AND spawns the
+    // real falling section in one place, so exactly one mast disappears and one real mast falls.
     this.onMastFelled?.(mi);
   }
 

@@ -50,7 +50,19 @@ export class ShipVisual {
   private fluid: CompartmentFluid;
   /** Sails by mast, for ball-vs-cloth tests and hole decals. */
   readonly sails: SailRecord[] = [];
-  private mastRigs: { group: THREE.Group; fallT: number; fallAxis: THREE.Vector3 }[] = [];
+  /** the bowsprit spar mesh — detachBowsprit() hands a clone to game/rig.ts when it snaps off. */
+  private spritMesh: THREE.Mesh | null = null;
+  private mastRigs: {
+    group: THREE.Group; fallT: number; fallAxis: THREE.Vector3;
+    /** the trunk pole mesh — clipped (scaled down) to the stub on a mid-hit. */
+    pole: THREE.Mesh;
+    /** each spar/sail part with its mast-local foot height (m above the foot), so a
+     *  detach can split the rig at the hit height: parts above the cut fall, below stay. */
+    parts: { mesh: THREE.Mesh; yLocal: number }[];
+    mastH: number;
+    /** the FULL pole height (m) — restore target if the mast is repaired/reset. */
+    poleH: number;
+  }[] = [];
 
   /** Real CC0 plank photos (ambientCG), shared by every ship. */
   private static deckTex: THREE.Texture | null = null;
@@ -256,13 +268,121 @@ export class ShipVisual {
     rec.tex.needsUpdate = true;
   }
 
-  /** A mast goes by the board: HIDE the static standing rig — the physical fall is now a live
-   *  voxel lattice spawned by game/rig.ts (RigManager.spawnFallingMast), which topples, breaks and
-   *  crushes for real. (The old canned t² topple below is retained but dormant: fallT stays <0.) */
-  fellMast(mi: number): void {
+  /** A mast goes by the board. Build the REAL falling section as CLONES of the standing spars +
+   *  sails (so the wreck looks like an actual mast WITH its canvas, not voxel confetti), HIDE /
+   *  CLIP the corresponding static parts, and return the clone group + the pivot/centroid frame
+   *  game/rig.ts drives rigidly each step. `cutLocalY` is the ship-local world-Y of the felling
+   *  hit; parts whose foot sits above it fall, the rest stay as a standing stub. cutLocalY < the
+   *  foot (or a foot/low hit) → the WHOLE mast falls (nothing left standing).
+   *
+   *  The clones are placed at their SPAWN WORLD transforms and the returned group is left at the
+   *  scene's identity; game/rig.ts applies the rigid delta about `pivot` each frame. Returns null
+   *  for an out-of-range / already-felled mast (or headless with no parts). */
+  detachMast(mi: number, cutLocalY: number): {
+    group: THREE.Group; pivot: THREE.Vector3;
+  } | null {
     const rig = this.mastRigs[mi];
-    if (rig) rig.group.visible = false;
+    if (!rig) return null;
+    const deckTopWorldLocalY = rig.group.position.y; // mast group sits at (mx, deckTop, mz)
+    // a part FALLS if its foot height clears the cut; on a foot/low hit cutLocalY is below the
+    // foot so EVERY part falls and the whole static group is hidden.
+    const cutAboveFoot = cutLocalY - deckTopWorldLocalY; // cut height measured from the mast foot
+    const wholeMast = cutAboveFoot <= 0.5; // hit at/below the foot → topple the lot
+    const holder = new THREE.Group();
+    holder.matrixAutoUpdate = false;
+
+    const tmpP = new THREE.Vector3();
+    const tmpQ = new THREE.Quaternion();
+    const tmpS = new THREE.Vector3();
+    const cloneInto = (mesh: THREE.Mesh) => {
+      // a debris clone: plain opaque material (the billow shader doesn't survive Material.clone()
+      // and a felled spar/sail doesn't billow). Keep the sail's alphaMap so shot holes still read.
+      mesh.getWorldPosition(tmpP);
+      mesh.getWorldQuaternion(tmpQ);
+      mesh.getWorldScale(tmpS);
+      const src = mesh.material as THREE.MeshStandardMaterial;
+      const mat = new THREE.MeshStandardMaterial({
+        color: src.color.clone(), map: src.map ?? null, roughness: src.roughness,
+        side: THREE.DoubleSide,
+      });
+      if (src.alphaMap) { mat.alphaMap = src.alphaMap; mat.alphaTest = src.alphaTest; }
+      const c = new THREE.Mesh(mesh.geometry, mat);
+      c.position.copy(tmpP); c.quaternion.copy(tmpQ); c.scale.copy(tmpS);
+      c.castShadow = true;
+      holder.add(c);
+    };
+
+    // --- the trunk pole: clone the section ABOVE the cut, clip the static pole to the stub below ---
+    // the pole spans local y∈[-0.5, mastH-0.5]; world-local foot = deckTop-0.5, top = deckTop+mastH-0.5.
+    if (wholeMast) {
+      cloneInto(rig.pole);
+      rig.pole.visible = false;
+    } else {
+      // split the pole at cutAboveFoot: clone a top cylinder, shrink the standing one to the stub.
+      const fullH = rig.poleH;
+      const cutA = Math.min(Math.max(cutAboveFoot + 0.5, 0.5), fullH - 0.5); // pole-local distance from its base
+      const topH = fullH - cutA;
+      if (topH > 0.4) {
+        const topGeo = new THREE.CylinderGeometry(rig.mastH * 0.006, rig.mastH * 0.009, topH, 8);
+        topGeo.userData.ownDispose = true; // unique to this clone → game/rig.ts disposes it on despawn
+        const topMesh = new THREE.Mesh(topGeo, (rig.pole.material as THREE.Material));
+        // place it where the upper pole section sits, in mast-local then to world
+        topMesh.position.set(0, (cutA - 0.5) + topH / 2, 0);
+        rig.group.add(topMesh); // momentarily, to read its world transform
+        topMesh.updateWorldMatrix(true, false);
+        cloneInto(topMesh);
+        rig.group.remove(topMesh);
+        // NOTE: topGeo is now owned by the clone — do NOT dispose here.
+      }
+      // shrink the standing pole down to the stub (scale a centered cylinder so its base stays put)
+      const stubH = cutA;
+      rig.pole.scale.y = stubH / fullH;
+      rig.pole.position.y = stubH / 2 - 0.5;
+    }
+
+    // --- yards + sails: each falls if its foot clears the cut; else it stays on the stub ----------
+    for (const part of rig.parts) {
+      const aboveCut = wholeMast || part.yLocal > cutAboveFoot;
+      if (!aboveCut) continue;
+      cloneInto(part.mesh);
+      part.mesh.visible = false;
+    }
+
+    // pivot = the mast FOOT world point (the standing stub's break face) — game/rig.ts rotates the
+    // falling section about a point near here; the exact value is refined to the chunk centroid there.
+    const pivot = new THREE.Vector3();
+    rig.group.getWorldPosition(pivot);
+    return { group: holder, pivot };
   }
+
+  /** The bowsprit snaps off (Task 9): clone the real spar as a falling-debris mesh and HIDE the
+   *  static one. Returns the clone group at the scene identity (game/rig.ts drives it rigidly) +
+   *  its spawn-world centroid as the pivot. Null if there's no spar mesh (headless / already gone). */
+  detachBowsprit(): { group: THREE.Group; pivot: THREE.Vector3 } | null {
+    const sprit = this.spritMesh;
+    if (!sprit || !sprit.visible) return null;
+    const holder = new THREE.Group();
+    holder.matrixAutoUpdate = false;
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
+    sprit.getWorldPosition(pos);
+    sprit.getWorldQuaternion(quat);
+    sprit.getWorldScale(scl);
+    // a FRESH debris material (its map texture is shared, which is fine) so game/rig.ts can dispose
+    // the falling clone's material on despawn without touching the live ship's shared woodMat.
+    const src = sprit.material as THREE.MeshStandardMaterial;
+    const mat = new THREE.MeshStandardMaterial({ color: src.color.clone(), map: src.map ?? null, roughness: src.roughness });
+    const c = new THREE.Mesh(sprit.geometry, mat);
+    c.position.copy(pos); c.quaternion.copy(quat); c.scale.copy(scl);
+    c.castShadow = true;
+    holder.add(c);
+    sprit.visible = false;
+    return { group: holder, pivot: pos.clone() };
+  }
+
+  /** True while the bowsprit spar mesh is still standing (game/rig.ts gates its detach on this). */
+  get bowspritStanding(): boolean { return !!this.spritMesh && this.spritMesh.visible; }
 
   /** A cannon loses its mount: HIDE the static gun mesh (the live physical fall is a falling
    *  body spawned by game/rig.ts) and report its current WORLD pose so the caller can spawn the
@@ -470,11 +590,9 @@ export class ShipVisual {
       this.group.add(mastGroup);
       // tip abeam (alternating side per mast) and a touch aft
       const df = new THREE.Vector3(-0.4, 0, mi % 2 === 0 ? 1 : -1).normalize();
-      this.mastRigs.push({
-        group: mastGroup,
-        fallT: -1,
-        fallAxis: new THREE.Vector3(df.z, 0, -df.x), // up × df
-      });
+      // parts list (yards + sails) with each part's local foot-height, filled below — lets
+      // detachMast(mi, cutY) split the rig at the hit height (above = falls, below = stub).
+      const parts: { mesh: THREE.Mesh; yLocal: number }[] = [];
 
       const mast = new THREE.Mesh(
         new THREE.CylinderGeometry(mastH * 0.006, mastH * 0.012, mastH, 8),
@@ -483,6 +601,16 @@ export class ShipVisual {
       mast.position.set(0, mastH / 2 - 0.5, 0);
       mast.castShadow = true;
       mastGroup.add(mast);
+
+      this.mastRigs.push({
+        group: mastGroup,
+        fallT: -1,
+        fallAxis: new THREE.Vector3(df.z, 0, -df.x), // up × df
+        pole: mast,
+        parts,
+        mastH,
+        poleH: mastH,
+      });
 
       // square rig, canvas up to the masthead (playtest round 4): three
       // yards crossing the FORE side of the mast, two tapered sails laced
@@ -507,6 +635,7 @@ export class ShipVisual {
         yard.position.set(yardOff, lv.y, 0);
         yard.castShadow = true;
         mastGroup.add(yard);
+        parts.push({ mesh: yard, yLocal: lv.y });
       }
       for (let i = 0; i < levels.length - 1; i++) {
         const foot = levels[i];
@@ -540,6 +669,7 @@ export class ShipVisual {
         sail.position.set(sailOff, (foot.y + head.y) / 2, 0);
         sail.castShadow = true;
         mastGroup.add(sail);
+        parts.push({ mesh: sail, yLocal: (foot.y + head.y) / 2 });
 
         this.sails.push({
           mesh: sail,
@@ -804,5 +934,6 @@ export class ShipVisual {
     );
     sprit.castShadow = true;
     this.group.add(sprit);
+    this.spritMesh = sprit;
   }
 }

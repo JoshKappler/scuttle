@@ -245,6 +245,12 @@ export const TUN = {
     fallMass: 800,
     /** seconds before a falling-mast wreck is despawned (also goes early once fully sunk). */
     fallLifetime: 40,
+    /** max metres a felled section is lifted per step out of deck penetration so it RESTS on the
+     *  deck instead of phasing through (BUG 3). Capped so a deep teleport-overlap can't fling it. */
+    restLift: 0.6,
+    /** Task 9: bore energy (J) the bowsprit must shed into hulls before it SNAPS OFF and falls. One
+     *  good bow-first ram sheds tens of kJ, so this is a few solid bites' worth of damage. */
+    spritBreak: 60000,
   },
 
   /** Navigational hazards (game/islandField.ts) — extra terrain scattered at world generation.

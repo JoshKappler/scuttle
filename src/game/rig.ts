@@ -3,12 +3,11 @@ import { TUN } from "../core/tunables";
 import { buildRig, type RigSpec } from "../sim/rigBuild";
 import {
   type Rig, type RigidChunk, type Vec3, NodeFlag, dist,
-  components, freezeChunk, integrateChunk, applyChunk,
+  freezeChunk, integrateChunk, applyChunk,
 } from "../sim/rigLattice";
 import { breakImpulse, splitClosingImpulse } from "../sim/crush";
 import { VOXEL_SIZE, G } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
-import { RigPieceVisual } from "../render/rigVisual";
 import type { Ship } from "./ship";
 import type { Effects } from "../render/effects";
 
@@ -32,27 +31,30 @@ interface ShipRig {
   sprit: number[]; // node indices flagged SPRIT (the bowsprit chain)
   reach: number;   // bowsprit length (m), the broad-phase AABB margin
   alive: boolean[]; // last-seen ship.mastAlive — a true→false edge spawns a falling mast
+  /** accumulated bore load (J) the bowsprit has shed into enemy hulls. Once it crosses
+   *  TUN.rig.spritBreak the spar snaps off and falls (Task 9). −1 once detached. */
+  boreLoad: number;
 }
 
 /**
- * A felled mast living its own life in WORLD space. The detached section(s) move as RIGID
- * CHUNKS (each holds its shape — no noodle): a chunk integrates ONE position + orientation
- * under gravity + summed per-node buoyancy + the topple kick, and the member nodes' world
- * positions are re-derived from that transform each step. Break-at-hit: when a ball strikes
- * mid-trunk, only the section ABOVE the hit becomes a falling chunk; the stub BELOW stays
- * STANDING (its nodes ride the moving deck, rendered as the same voxel beams). A foot hit
- * fells the WHOLE mast as one chunk.
+ * A felled mast (or snapped bowsprit) living its own life in WORLD space. The PHYSICS is a single
+ * RIGID CHUNK (holds its shape — no noodle): it integrates ONE centroid position + orientation under
+ * gravity + summed per-node buoyancy + the topple kick. The VISUAL is the ship's REAL spars + sail
+ * meshes (cloned by shipVisual.detachMast / detachBowsprit), so a downed mast looks like an actual
+ * mast WITH its canvas — not voxel confetti — and it's posed rigidly each frame from the chunk's
+ * pos+quaternion (a delta transform about the spawn centroid). The chunk's member nodes drive the
+ * deck crush (crushFalling) so the wreck lands ON the hull instead of phasing through.
  */
 interface FallingRig {
-  rig: Rig;
-  visual: RigPieceVisual;
-  chunks: RigidChunk[];             // the detached, rigidly-falling section(s)
-  standing: number[];              // node indices of the still-attached stub (ride the deck), empty if whole mast fell
+  rig: Rig;                         // the lattice nodes that carry the chunk's mass + crush samples
+  group: THREE.Group;               // the REAL cloned spars/sail (added to the scene at identity)
+  chunk: RigidChunk;                // the rigidly-falling section
+  /** spawn centroid (world) — the visual delta transform rotates the clones about this point. */
+  pivot0: THREE.Vector3;
   age: number;
   buoy: number;     // lift multiplier, decays so she floats then founders (cf. debris.wreckLift)
-  ship: Ship;                       // the ship she fell from — the standing stub rides its MOVING deck
-  /** standing stub nodes' ship-local rest positions (parallel to `standing`), to track the moving hull. */
-  standLocal: [number, number, number][];
+  ship: Ship;       // the ship she fell from (for crush targeting + despawn cleanup)
+  rested: boolean;  // landed on a deck → motion mostly bled, stops re-crushing every step
 }
 
 export class RigManager {
@@ -76,6 +78,11 @@ export class RigManager {
   private cells: [number, number, number][] = [];
   private cellPool: [number, number, number][] = [];
   private seen = new Set<number>(); // cell dedup across dense samples within one bore
+  // scratch for posing the cloned falling-mast group rigidly from its chunk transform.
+  private _mTrans = new THREE.Matrix4();
+  private _mRot = new THREE.Matrix4();
+  private _mBack = new THREE.Matrix4();
+  private _q = new THREE.Quaternion();
 
   /** Build (once) and cache the rig for a ship, deriving the bowsprit from the SAME geometry
    *  render/shipVisual draws it from, so the spar lines up with the hull. */
@@ -100,7 +107,7 @@ export class RigManager {
     const rig = buildRig(spec);
     const sprit: number[] = [];
     rig.nodes.forEach((n, i) => { if (n.flags & NodeFlag.SPRIT) sprit.push(i); });
-    sr = { rig, sprit, reach: spritLen, alive: ship.mastAlive.slice() };
+    sr = { rig, sprit, reach: spritLen, alive: ship.mastAlive.slice(), boreLoad: 0 };
     this.rigs.set(ship, sr);
     return sr;
   }
@@ -120,11 +127,12 @@ export class RigManager {
       }
     }
 
-    // Phase 2: bowsprit boring (still on-ship, follows the hull rigidly).
+    // Phase 2: bowsprit boring (still on-ship, follows the hull rigidly). Task 9: once a spar has
+    // shed enough bore-load into hulls, it SNAPS OFF and falls (reusing the mast-fall machinery).
     if (TUN.crush.enabled && TUN.rig.bowsprit) {
       for (const A of ships) {
         const sr = this.rigFor(A);
-        if (sr.sprit.length === 0) continue;
+        if (sr.sprit.length === 0 || sr.boreLoad < 0) continue; // <0 = already detached
         A.aabbWorld(this.aabbA);
         const m = sr.reach; // inflate so the broad cull keeps pairs where only the spar overlaps
         this.aabbA.min.x -= m; this.aabbA.min.y -= m; this.aabbA.min.z -= m;
@@ -135,127 +143,137 @@ export class RigManager {
           if (!aabbIntersect(this.aabbA, this.aabbB)) continue;
           this.bore(A, sr, B);
         }
+        if (sr.boreLoad >= TUN.rig.spritBreak) this.detachBowsprit(A, sr);
       }
     }
 
     if (TUN.rig.masts) this.stepFalling(ships, simTime, dt);
   }
 
-  /** Sync the falling-mast visuals to the latest node positions (called from the RENDER loop, not
+  /** The bowsprit has bored enough — it snaps off and falls. The VISUAL is the real cloned spar
+   *  (shipVisual.detachBowsprit, which also hides the static one); the PHYSICS is a rigid chunk over
+   *  the spar's lattice nodes, dropped forward+down off the bow. (Task 9.) */
+  private detachBowsprit(A: Ship, sr: ShipRig): void {
+    sr.boreLoad = -1; // mark detached so it never re-fires / re-bores
+    if (!this.scene || !TUN.rig.masts) return;
+    const detached = A.visual.detachBowsprit?.() ?? null;
+    // build a tiny rig of JUST the spar nodes in world space so a chunk can carry/sink it.
+    const spritLocal = sr.sprit.map((i) => sr.rig.nodes[i].pos);
+    const rig: Rig = { nodes: [], links: [], awake: true, sleepTimer: 0 };
+    const idx: number[] = [];
+    for (const p of spritLocal) {
+      A.localToWorld([p.x, p.y, p.z], this.wp);
+      rig.nodes.push({ pos: { x: this.wp.x, y: this.wp.y, z: this.wp.z }, prev: { x: this.wp.x, y: this.wp.y, z: this.wp.z }, mass: 4, pinned: false, flags: NodeFlag.WOOD });
+      idx.push(rig.nodes.length - 1);
+    }
+    if (idx.length < 2) { if (detached) this.scene.add(detached.group); return; }
+    const sv = A.body.linvel();
+    // it pitches DOWN and forward off the bow as it tears free.
+    const vel: Vec3 = { x: sv.x + 1.0, y: sv.y - 1.5, z: sv.z };
+    const omega: Vec3 = { x: 0, y: 0, z: -1.2 };
+    const chunk = freezeChunk(rig, idx, vel, omega);
+    let group: THREE.Group;
+    if (detached) { group = detached.group; this.scene.add(group); }
+    else group = new THREE.Group();
+    const pivot0 = new THREE.Vector3(chunk.pos.x, chunk.pos.y, chunk.pos.z);
+    const F: FallingRig = { rig, group, chunk, pivot0, age: 0, buoy: 1.0, ship: A, rested: false };
+    this.poseFalling(F);
+    this.falling.push(F);
+  }
+
+  /** Sync the falling-mast visuals to the latest chunk transform (called from the RENDER loop, not
    *  the fixed step, so wreckage moves smoothly between physics steps). */
   refresh(): void {
-    for (const F of this.falling) F.visual.update();
+    for (const F of this.falling) this.poseFalling(F);
+  }
+
+  /** Pose the cloned spars/sail group rigidly from its chunk: the clones were captured at their
+   *  SPAWN world transforms, so applying the delta `T(pos) · R(q) · T(−pivot0)` about the spawn
+   *  centroid moves them exactly as the rigid chunk moves (the chunk starts at q=identity). */
+  private poseFalling(F: FallingRig): void {
+    const c = F.chunk;
+    this._q.set(c.q[0], c.q[1], c.q[2], c.q[3]);
+    this._mRot.makeRotationFromQuaternion(this._q);
+    this._mBack.makeTranslation(-F.pivot0.x, -F.pivot0.y, -F.pivot0.z);
+    this._mTrans.makeTranslation(c.pos.x, c.pos.y, c.pos.z);
+    F.group.matrix.copy(this._mTrans).multiply(this._mRot).multiply(this._mBack);
   }
 
   /**
-   * A mast goes by the board. Build its lattice (ship-local), BREAK the trunk at the recorded hit
-   * height (ship.mastHitY[mi]; <0 → break at the foot = whole mast), lift it into WORLD space, then
-   * flood the alive links into connected components: the component still reaching the foot is the
-   * STANDING stub (held fixed, rides the deck); every other component is frozen into a RIGID CHUNK
-   * that topples + falls as one stiff body (no noodle). shipVisual has already hidden the static mast.
+   * A mast goes by the board. The VISUAL is the ship's real spars + sail (cloned by
+   * shipVisual.detachMast, which also clips the static parts so EXACTLY one mast disappears and one
+   * real mast falls). The PHYSICS is a lattice for the falling section only: build it ship-local,
+   * GEOMETRICALLY split at the recorded hit height (nodes above hitY fall; below stay as the static
+   * stub — connectivity is NOT used to split, because yards/cloth bridge a single trunk cut and the
+   * top would never separate), lift the falling nodes to WORLD space, and freeze ONE rigid chunk
+   * that topples + crushes the deck. A foot/low hit (hitY < 0) fells the WHOLE mast.
    */
   private spawnFallingMast(ship: Ship, mi: number): void {
     if (!this.scene || !TUN.rig.masts || mi >= ship.build.masts.length) return;
     const b = ship.build;
-    const rig = buildRig({ voxelSize: VOXEL_SIZE, deckTopY: (xv) => (b.deckYAt(xv) + 1) * VOXEL_SIZE, masts: [b.masts[mi]] });
-
-    // --- break the trunk at the hit height (ship-local Y, meters) -------------------------------
-    // Identify the trunk: the WOOD nodes sharing the foot's x/z (the yards/cloth sit fore/abeam of it).
-    const foot = rig.nodes.find((n) => n.flags & NodeFlag.FOOT);
-    const footIdx = foot ? rig.nodes.indexOf(foot) : -1;
     const hitY = ship.mastHitY[mi];
-    // a mid-trunk break leaves a STANDING stub below + a falling top above. It only happens when
-    // the hit is genuinely up the trunk (hitY >= 0 AND it straddles a trunk segment above the foot).
-    // A foot/low hit (hitY < 0, or below the first trunk segment) severs nothing here → the WHOLE
-    // mast falls (handled below: with no stub, every component is a falling chunk).
-    let midBreak = false;
-    if (foot && hitY >= 0) {
-      const fx = foot.pos.x, fz = foot.pos.z;
-      // a trunk node sits exactly on the mast axis (x==fx, z==fz). Yards sit +0.25 m fore and cloth
-      // +0.4 m, so a tight 0.15 m tolerance excludes them — we only ever cut the vertical trunk.
-      const onTrunk = (n: { pos: Vec3 }) => Math.abs(n.pos.x - fx) < 0.15 && Math.abs(n.pos.z - fz) < 0.15;
-      for (const lk of rig.links) {
-        if (!lk.alive) continue;
-        const a = rig.nodes[lk.a], c = rig.nodes[lk.b];
-        if (!onTrunk(a) || !onTrunk(c)) continue;
-        const yLo = Math.min(a.pos.y, c.pos.y), yHi = Math.max(a.pos.y, c.pos.y);
-        // break the trunk segment spanning the hit, but ONLY if it sits clear above the foot — a hit
-        // right at the foot (yLo ≈ foot.y) should topple the whole mast, not leave a degenerate stub.
-        if (hitY >= yLo && hitY <= yHi && yLo > foot.pos.y + 0.5) { lk.alive = false; midBreak = true; }
-      }
-    }
 
-    // --- lift the whole lattice into WORLD space (record standing-stub local rest first) --------
-    const localPos: Vec3[] = rig.nodes.map((n) => ({ x: n.pos.x, y: n.pos.y, z: n.pos.z }));
+    // the real cloned spars/sail (clips the static parts as a side effect) — null in headless tests.
+    const detached = ship.visual.detachMast?.(mi, hitY) ?? null;
+
+    const rig = buildRig({ voxelSize: VOXEL_SIZE, deckTopY: (xv) => (b.deckYAt(xv) + 1) * VOXEL_SIZE, masts: [b.masts[mi]] });
+    const foot = rig.nodes.find((n) => n.flags & NodeFlag.FOOT);
+    const footY = foot ? foot.pos.y : 0;
+    // GEOMETRIC split: a node FALLS if its ship-local height clears the hit (a real mid-break leaves a
+    // stub); a foot/low hit (hitY < footY+1) fells everything. Robust where connectivity wasn't.
+    const wholeMast = !(hitY >= footY + 1);
+    const fallIdx: number[] = [];
     for (let i = 0; i < rig.nodes.length; i++) {
-      ship.localToWorld([localPos[i].x, localPos[i].y, localPos[i].z], this.wp);
-      rig.nodes[i].pos = { x: this.wp.x, y: this.wp.y, z: this.wp.z };
-      rig.nodes[i].prev = { x: this.wp.x, y: this.wp.y, z: this.wp.z };
-      rig.nodes[i].pinned = false; // chunks integrate themselves; the stub is held explicitly
+      if (wholeMast || rig.nodes[i].pos.y > hitY) fallIdx.push(i);
+    }
+    if (fallIdx.length === 0) { if (detached) this.scene.add(detached.group); return; }
+
+    // lift the falling nodes into WORLD space (the stub nodes are irrelevant — the stub is the
+    // clipped static mesh, no physics needed for it).
+    for (const i of fallIdx) {
+      const n = rig.nodes[i];
+      ship.localToWorld([n.pos.x, n.pos.y, n.pos.z], this.wp);
+      n.pos = { x: this.wp.x, y: this.wp.y, z: this.wp.z };
+      n.prev = { x: this.wp.x, y: this.wp.y, z: this.wp.z };
+      n.pinned = false;
     }
     rig.awake = true;
 
-    // --- split into components; on a MID break the foot's component STANDS, the rest fall as rigid
-    //     chunks. With no mid break (foot/low hit) NOTHING stands → the whole mast falls. ----------
-    const { comp, count } = components(rig);
-    const footComp = midBreak && footIdx >= 0 ? comp[footIdx] : -1;
+    // ONE rigid chunk: inherit the ship's velocity + a topple shove abeam + a roll kick so a vertical
+    // spar goes OVER the side instead of dropping straight down.
     const sv = ship.body.linvel();
-    const lean = mi % 2 === 0 ? 1 : -1; // abeam topple direction, alternating per mast
-    const chunks: RigidChunk[] = [];
-    const standing: number[] = [];
-    const standLocal: [number, number, number][] = [];
-    for (let cId = 0; cId < count; cId++) {
-      const idx: number[] = [];
-      for (let i = 0; i < comp.length; i++) if (comp[i] === cId) idx.push(i);
-      if (idx.length === 0) continue;
-      if (cId === footComp) {
-        // the standing stub — keep these nodes fixed on the (moving) deck, do not integrate.
-        for (const i of idx) { standing.push(i); standLocal.push([localPos[i].x, localPos[i].y, localPos[i].z]); }
-        continue;
-      }
-      // a falling chunk: inherit the ship's velocity + a topple shove + a roll kick about its base.
-      const vel: Vec3 = { x: sv.x - 0.4 * TUN.rig.toppleKick, y: sv.y, z: sv.z + lean * TUN.rig.toppleKick };
-      // angular kick: tip it OVER (rotate about the fore-aft axis so it falls abeam), scaled to the kick.
-      const omega: Vec3 = { x: lean * TUN.rig.toppleKick * 0.18, y: 0, z: 0 };
-      chunks.push(freezeChunk(rig, idx, vel, omega));
-    }
+    const lean = mi % 2 === 0 ? 1 : -1;
+    const vel: Vec3 = { x: sv.x - 0.4 * TUN.rig.toppleKick, y: sv.y, z: sv.z + lean * TUN.rig.toppleKick };
+    const omega: Vec3 = { x: lean * TUN.rig.toppleKick * 0.18, y: 0, z: 0 };
+    const chunk = freezeChunk(rig, fallIdx, vel, omega);
 
-    const visual = new RigPieceVisual(rig);
-    this.scene.add(visual.group);
-    this.falling.push({ rig, visual, chunks, standing, standLocal, age: 0, buoy: 1.3, ship });
+    let group: THREE.Group;
+    let pivot0: THREE.Vector3;
+    if (detached) {
+      group = detached.group;
+      // the clones move rigidly about the CHUNK centroid (its spawn world pos), so the visual ≡ physics.
+      pivot0 = new THREE.Vector3(chunk.pos.x, chunk.pos.y, chunk.pos.z);
+      this.scene.add(group);
+    } else {
+      group = new THREE.Group(); pivot0 = new THREE.Vector3(chunk.pos.x, chunk.pos.y, chunk.pos.z);
+    }
+    const F: FallingRig = { rig, group, chunk, pivot0, age: 0, buoy: 1.3, ship, rested: false };
+    this.poseFalling(F);
+    this.falling.push(F);
   }
 
-  /** Integrate every falling mast as RIGID CHUNKS (gravity + summed per-node buoyancy off the swell),
-   *  hold the standing stub on the moving deck, let chunks crush what they land on, waterlog and sink.
-   *  The chunks hold their shape — they topple and fall stiff, never noodle. */
+  /** Integrate every falling piece as ONE RIGID CHUNK (gravity + summed per-node buoyancy off the
+   *  swell), let it crush the deck it lands on, waterlog and sink. The chunk holds its shape — it
+   *  topples and falls stiff, never noodle — and the cloned real spars/sail are posed from it. */
   private stepFalling(ships: Ship[], simTime: number, dt: number): void {
     if (this.falling.length === 0) return;
     for (let fi = this.falling.length - 1; fi >= 0; fi--) {
       const F = this.falling[fi];
       F.age += dt;
-      const shipGone = ships.indexOf(F.ship) === -1;
+      const c = F.chunk;
 
-      // standing stub: ride the ship's MOVING deck (ship-local rest → world) so it stays planted.
-      // If the ship is gone (sunk/despawned) the stub can't be tracked → let it fall with the rest
-      // by converting it into a chunk once, then it integrates like any other.
-      if (F.standing.length > 0) {
-        if (shipGone) {
-          const sv0 = { x: 0, y: 0, z: 0 };
-          F.chunks.push(freezeChunk(F.rig, F.standing.slice(), sv0, sv0));
-          F.standing.length = 0; F.standLocal.length = 0;
-        } else {
-          for (let k = 0; k < F.standing.length; k++) {
-            const n = F.rig.nodes[F.standing[k]];
-            F.ship.localToWorld(F.standLocal[k], this.wp);
-            n.pos.x = this.wp.x; n.pos.y = this.wp.y; n.pos.z = this.wp.z;
-            n.prev.x = this.wp.x; n.prev.y = this.wp.y; n.prev.z = this.wp.z;
-          }
-        }
-      }
-
-      // each detached section integrates as ONE rigid body. Per-node accel = gravity + buoyancy
-      // (computed at the node's current world position); integrateChunk sums force+torque about
-      // the centroid so the chunk topples and falls while holding its shape.
+      // per-node accel = gravity + buoyancy (computed at the node's current world position);
+      // integrateChunk sums force+torque about the centroid so the chunk topples while staying rigid.
       const buoy = F.buoy;
       const accel = (n: { pos: Vec3 }): Vec3 => {
         let ay = -G;
@@ -266,57 +284,68 @@ export class RigManager {
         }
         return { x: 0, y: ay, z: 0 };
       };
-      for (const c of F.chunks) {
-        integrateChunk(F.rig, c, accel, dt, TUN.rig.linDamp, TUN.rig.angDamp);
-        applyChunk(F.rig, c, dt); // re-derive member node world positions from the rigid transform
-      }
+      integrateChunk(F.rig, c, accel, dt, TUN.rig.linDamp, TUN.rig.angDamp);
+      applyChunk(F.rig, c, dt); // re-derive member node world positions from the rigid transform
 
       this.crushFalling(F, ships, dt);
+      this.poseFalling(F); // re-pose the cloned spars/sail from the (possibly bled) transform
       F.buoy = Math.max(F.buoy - dt * TUN.rig.waterlog, 0.25); // float, then founder
 
-      // a chunk that has fully sunk well under the sea collapses (kill its links) so it stops drawing
-      // underwater — and frees a stub-bearing piece to keep its STANDING stump on deck indefinitely.
-      let chunksLeft = false;
-      for (let ci = F.chunks.length - 1; ci >= 0; ci--) {
-        const c = F.chunks[ci];
-        let sunk = true;
-        for (const i of c.nodeIdx) {
-          const n = F.rig.nodes[i];
-          if (n.pos.y > surfaceHeight(this.waves, n.pos.x, n.pos.z, simTime) - 4) { sunk = false; break; }
-        }
-        if (sunk) {
-          for (const lk of F.rig.links) if (c.nodeIdx.includes(lk.a) || c.nodeIdx.includes(lk.b)) lk.alive = false;
-          F.chunks.splice(ci, 1);
-        } else chunksLeft = true;
+      // despawn once the whole section has sunk well under the sea, or it times out.
+      let sunk = true;
+      for (const i of c.nodeIdx) {
+        const n = F.rig.nodes[i];
+        if (n.pos.y > surfaceHeight(this.waves, n.pos.x, n.pos.z, simTime) - 4) { sunk = false; break; }
       }
-      F.visual.update();
-
-      // despawn: a fully-fallen piece (no standing stub) goes once all its chunks have sunk or it
-      // times out. A piece WITH a standing stub stays — its stump is part of the ship now.
-      const done = (F.standing.length === 0 && (!chunksLeft || F.age > TUN.rig.fallLifetime));
-      if (done) { F.visual.dispose(); this.falling.splice(fi, 1); }
+      if (sunk || F.age > TUN.rig.fallLifetime) this.disposeFalling(fi);
     }
   }
 
-  /** A falling rigid chunk that drives a node into a hull crushes it (the same energy→voxels
-   *  primitive) and the whole CHUNK comes to rest — "damages stuff on the way down". The crush
-   *  bleeds the chunk's linear+angular velocity (not just one node) so it lands as a stiff body. */
+  /** Remove a falling piece: detach its cloned group from the scene and free its geometry/materials. */
+  private disposeFalling(fi: number): void {
+    const F = this.falling[fi];
+    F.group.removeFromParent();
+    F.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      // Most geometries are SHARED with the live ship (clones reuse them) — never dispose those.
+      // Only a synthesized one-off (the mid-hit top-pole cylinder) is flagged ownDispose.
+      if (m.geometry && m.geometry.userData && m.geometry.userData.ownDispose) m.geometry.dispose();
+      // debris materials are fresh ones we own in detach*(); their map/alphaMap textures are shared → keep.
+      const mat = m.material as THREE.Material | undefined;
+      if (mat && (mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) mat.dispose();
+    });
+    this.falling.splice(fi, 1);
+  }
+
+  /** The falling chunk lands ON a hull and rests across it instead of phasing through (BUG 3). Each
+   *  node buried in solid wood (a) CRUSHES that wood — the same energy→voxels primitive, so a heavy
+   *  mast staves in a light deck — and (b) records the deepest penetration so we can push the chunk
+   *  UP and rest it on top. A low rest threshold (not vBreak) is used for a mast landing on its OWN
+   *  slow-moving deck: a topple barely exceeds vBreak vertically, yet must still settle on the deck. */
   private crushFalling(F: FallingRig, ships: Ship[], dt: number): void {
     if (!TUN.crush.enabled) return;
     const inv = 1 / VOXEL_SIZE;
-    for (const c of F.chunks) {
-      let crushedThisChunk = false;
-      for (const ni of c.nodeIdx) {
-        const n = F.rig.nodes[ni];
-        const vx = (n.pos.x - n.prev.x) / dt, vy = (n.pos.y - n.prev.y) / dt, vz = (n.pos.z - n.prev.z) / dt;
-        const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
-        if (speed < TUN.crush.vBreak) continue;
-        for (const S of ships) {
-          const g = S.build.grid, [bx, by, bz] = g.dims;
-          S.worldToLocal(this.wp.set(n.pos.x, n.pos.y, n.pos.z), this.wl);
-          const cvx = Math.floor(this.wl.x * inv), cvy = Math.floor(this.wl.y * inv), cvz = Math.floor(this.wl.z * inv);
-          if (cvx < 0 || cvy < 0 || cvz < 0 || cvx >= bx || cvy >= by || cvz >= bz) continue;
-          if (!g.isSolid(cvx, cvy, cvz)) continue;
+    const c = F.chunk;
+    let contacted = false;
+    let maxPen = 0; // deepest node penetration below the deck top this step (m)
+    for (const ni of c.nodeIdx) {
+      const n = F.rig.nodes[ni];
+      const vx = (n.pos.x - n.prev.x) / dt, vy = (n.pos.y - n.prev.y) / dt, vz = (n.pos.z - n.prev.z) / dt;
+      const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      for (const S of ships) {
+        const g = S.build.grid, [bx, by, bz] = g.dims;
+        S.worldToLocal(this.wp.set(n.pos.x, n.pos.y, n.pos.z), this.wl);
+        const cvx = Math.floor(this.wl.x * inv), cvy = Math.floor(this.wl.y * inv), cvz = Math.floor(this.wl.z * inv);
+        if (cvx < 0 || cvy < 0 || cvz < 0 || cvx >= bx || cvy >= by || cvz >= bz) continue;
+        if (!g.isSolid(cvx, cvy, cvz)) continue;
+        contacted = true;
+        // penetration depth: how far the node sits below this solid cell's TOP face (ship-local Y).
+        const cellTopLocalY = (cvy + 1) * VOXEL_SIZE;
+        const pen = cellTopLocalY - this.wl.y;
+        if (pen > maxPen) maxPen = pen;
+        // CRUSH only at a real impact speed (a slow rest must NOT keep eating the deck). The mast is
+        // heavy (fallMass) so even a modest landing speed staves in light planking.
+        if (speed >= TUN.crush.vBreak) {
           const cells = this.cells; cells.length = 0;
           for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
             const yy = cvy + dy, zz = cvz + dz;
@@ -324,17 +353,19 @@ export class RigManager {
             if (g.isSolid(cvx, yy, zz)) this.pushCell(cells, cvx, yy, zz);
           }
           const { removed } = S.crush(cells, 0.5 * TUN.rig.fallMass * speed * speed);
-          crushedThisChunk = true;
           if (removed > 0 && this.effects) this.effects.crunch(this.wp.set(n.pos.x, n.pos.y, n.pos.z), removed);
-          break; // one hull per node per step
         }
+        break; // one hull per node per step
       }
-      if (crushedThisChunk) {
-        // the chunk lands and settles: bleed most of its motion (it rests on the wreckage, stiff).
-        c.vel.x *= 0.2; c.vel.y *= 0.2; c.vel.z *= 0.2;
-        c.omega.x *= 0.2; c.omega.y *= 0.2; c.omega.z *= 0.2;
-        applyChunk(F.rig, c, dt); // re-sync node prev so the next step reads the bled velocity
-      }
+    }
+    if (contacted) {
+      // REST on the deck: lift the whole chunk out of penetration (it can't sink through what it
+      // didn't carve) and bleed its motion so it lies stiff across the hull rather than bouncing.
+      if (maxPen > 0) c.pos.y += Math.min(maxPen, TUN.rig.restLift);
+      c.vel.x *= 0.35; c.vel.y *= 0.1; c.vel.z *= 0.35;
+      c.omega.x *= 0.4; c.omega.y *= 0.4; c.omega.z *= 0.4;
+      F.rested = true;
+      applyChunk(F.rig, c, dt); // re-sync node prev so the next step reads the bled velocity
     }
   }
 
@@ -398,6 +429,9 @@ export class RigManager {
     const { removed, leftover } = B.crush(cells, budget); // the universal energy→voxels primitive
     if (removed === 0) return;
     const energy = budget - leftover;
+    // Task 9: the spar accumulates the load it sheds into hulls; once it crosses TUN.rig.spritBreak
+    // it snaps off (handled in stepAll after this pass, so we don't mutate the rig mid-bore).
+    sr.boreLoad += energy;
 
     // shed the fracture energy off the closing motion: drag the aggressor + a tunable transfer
     // to the struck hull — identical to the hull-hull bite (crush.splitClosingImpulse).
