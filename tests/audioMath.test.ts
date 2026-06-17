@@ -28,7 +28,7 @@ describe("musicTrackForState", () => {
     expect(musicTrackForState("menu")).toBe("menu_theme");
     expect(musicTrackForState("playing")).toBe(""); // at sea = ambience only, no music track
     expect(musicTrackForState("port")).toBe("harbor");
-    expect(musicTrackForState("paused")).toBe("menu_theme");
+    expect(musicTrackForState("paused")).toBe(""); // pause menu is silent — music plays ONLY in the main menu
   });
 });
 

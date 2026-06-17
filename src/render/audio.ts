@@ -60,8 +60,8 @@ const MANIFEST: Record<string, string | string[]> = {
 const POS_VOICES = 16;
 const UI_VOICES = 6;
 const MUSIC_GAIN = 0.4;
-const OCEAN_GAIN = 0.28;
-const WIND_BASE = 0.4;
+const OCEAN_GAIN = 0.6; // ≥2× the old 0.28 — ocean ambient is the at-sea bed, was too quiet
+const WIND_BASE = 0.5; // nudged up so wind isn't drowned by the louder ocean (was 0.4)
 
 // Placeholders still awaiting a real recording that sound worse than silence stay MUTED — the
 // synthetic seagull was unpleasant, so `gull` waits. (creak + rope now have real files and play.)

@@ -24,9 +24,9 @@ export function windGain(intensity: number): number {
 export function musicTrackForState(state: MusicState): string {
   switch (state) {
     case "playing": return "";
+    case "paused": return ""; // pause menu is silent — music plays ONLY in the main menu
     case "port": return "harbor";
     case "menu":
-    case "paused":
     default: return "menu_theme";
   }
 }
