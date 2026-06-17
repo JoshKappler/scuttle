@@ -219,9 +219,14 @@ export const TUN = {
     /** master switch for lattice mast-fall. Off → a felled mast just vanishes (shipVisual hides it). */
     masts: true,
     /** sideways shove (m/s) given the felled mast so a vertical spar topples OVER the side instead of
-     *  dropping straight down. The "goes by the board" lean. */
+     *  dropping straight down. The "goes by the board" lean (seeds the chunk's linear + roll kick). */
     toppleKick: 2.0,
-    /** seconds the foot stays a hinge (pivot) before it's released so the wreck can slide off + sink. */
+    /** RIGID-chunk velocity retention per step (1 = none). A felled section falls as ONE stiff body —
+     *  it holds its shape (no noodle); these only bleed a touch of air drag so it doesn't spin forever. */
+    linDamp: 0.999,
+    angDamp: 0.995,
+    /** (legacy) seconds the foot used to stay a hinge — the chunk model no longer hinges, but the
+     *  dev-panel slider in main.ts still binds this key, so keep it to avoid an out-of-scope edit. */
     hingeTime: 1.2,
     /** buoyancy lift decay per second — a downed mast floats on entrained air, then waterlogs and
      *  founders (cf. debris.wreckLift). */

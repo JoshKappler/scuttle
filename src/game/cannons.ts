@@ -195,7 +195,7 @@ export class Cannons {
           this.effects.muzzleSmoke(b.pos, this.tmpDir.copy(b.vel).normalize());
         }
         if (rig.stop) {
-          if (rig.stop.kind === "mast") ship.hitMast(rig.stop.mi);
+          if (rig.stop.kind === "mast") ship.hitMast(rig.stop.mi, rig.stop.localY);
           else ship.hitRudder();
           this.effects.splinters(b.pos, this.tmpDir.copy(b.vel).normalize().negate());
           this.kill(b);

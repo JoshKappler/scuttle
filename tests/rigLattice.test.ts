@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { dist, relax, integrate, kineticEnergy, stepRig, attachedToPin, type Rig, type RigNode, NodeFlag, LinkKind } from "../src/sim/rigLattice";
+import {
+  dist, relax, integrate, kineticEnergy, stepRig, attachedToPin,
+  components, freezeChunk, integrateChunk, applyChunk,
+  type Rig, type RigNode, type Vec3, NodeFlag, LinkKind,
+} from "../src/sim/rigLattice";
 
 describe("rigLattice vec helpers", () => {
   it("dist measures node separation", () => {
@@ -122,5 +126,105 @@ describe("rigLattice attachedToPin", () => {
       awake: true, sleepTimer: 0,
     };
     expect(attachedToPin(rig)).toEqual([true, true, false, false]);
+  });
+});
+
+describe("rigLattice components (mid-mast break split)", () => {
+  it("a single intact chain is one component", () => {
+    const rig: Rig = {
+      nodes: [node(0, 0, 0), node(0, 1, 0), node(0, 2, 0), node(0, 3, 0)],
+      links: [
+        { a: 0, b: 1, rest: 1, breakStrain: 10, kind: LinkKind.WOOD, alive: true },
+        { a: 1, b: 2, rest: 1, breakStrain: 10, kind: LinkKind.WOOD, alive: true },
+        { a: 2, b: 3, rest: 1, breakStrain: 10, kind: LinkKind.WOOD, alive: true },
+      ],
+      awake: true, sleepTimer: 0,
+    };
+    const { comp, count } = components(rig);
+    expect(count).toBe(1);
+    expect(comp).toEqual([0, 0, 0, 0]);
+  });
+
+  it("breaking the trunk MID-way splits into a foot stub + a detached top", () => {
+    // a 4-node vertical trunk; break the middle link (between node 1 and node 2)
+    const rig: Rig = {
+      nodes: [node(0, 0, 0, true), node(0, 1, 0), node(0, 2, 0), node(0, 3, 0)],
+      links: [
+        { a: 0, b: 1, rest: 1, breakStrain: 10, kind: LinkKind.WOOD, alive: true },
+        { a: 1, b: 2, rest: 1, breakStrain: 10, kind: LinkKind.WOOD, alive: false }, // broken at the hit
+        { a: 2, b: 3, rest: 1, breakStrain: 10, kind: LinkKind.WOOD, alive: true },
+      ],
+      awake: true, sleepTimer: 0,
+    };
+    const { comp, count } = components(rig);
+    expect(count).toBe(2);
+    // foot stub (0,1) is one component; detached top (2,3) is the other
+    expect(comp[0]).toBe(comp[1]);
+    expect(comp[2]).toBe(comp[3]);
+    expect(comp[0]).not.toBe(comp[2]);
+  });
+});
+
+describe("rigLattice rigid chunk (felled mast holds its shape — no noodle)", () => {
+  // a 6-node trunk chunk: integrate it as a rigid body and check the pairwise
+  // inter-node distances NEVER drift — that is what "stiff, not floppy" means.
+  function trunkRig(): { rig: Rig; idx: number[] } {
+    const nodes: RigNode[] = [];
+    for (let i = 0; i < 6; i++) nodes.push(node(0, i * 2, 0));
+    const links = [];
+    for (let i = 0; i + 1 < 6; i++) links.push({ a: i, b: i + 1, rest: 2, breakStrain: 10, kind: LinkKind.WOOD, alive: true });
+    return { rig: { nodes, links, awake: true, sleepTimer: 0 }, idx: [0, 1, 2, 3, 4, 5] };
+  }
+
+  it("inter-node distances stay constant across 600 steps under gravity + topple (rigid, no NaN)", () => {
+    const { rig, idx } = trunkRig();
+    // rest distances BEFORE motion (the shape we must preserve)
+    const rest: number[][] = [];
+    for (let i = 0; i < idx.length; i++) {
+      rest[i] = [];
+      for (let j = 0; j < idx.length; j++) rest[i][j] = dist(rig.nodes[idx[i]].pos, rig.nodes[idx[j]].pos);
+    }
+    const vel: Vec3 = { x: 0, y: 0, z: 1.5 };
+    const omega: Vec3 = { x: 0.6, y: 0, z: 0 }; // a topple roll
+    const c = freezeChunk(rig, idx, vel, omega);
+    const dt = 1 / 60;
+    const gravity = () => ({ x: 0, y: -9.81, z: 0 });
+    let maxDrift = 0;
+    for (let step = 0; step < 600; step++) {
+      integrateChunk(rig, c, gravity, dt, 1, 1);
+      applyChunk(rig, c, dt);
+      for (let i = 0; i < idx.length; i++) {
+        for (let j = i + 1; j < idx.length; j++) {
+          const d = dist(rig.nodes[idx[i]].pos, rig.nodes[idx[j]].pos);
+          expect(Number.isFinite(d)).toBe(true);
+          maxDrift = Math.max(maxDrift, Math.abs(d - rest[i][j]));
+        }
+      }
+    }
+    // rigid: distances are preserved to floating-point tolerance — the antithesis of a noodle.
+    expect(maxDrift).toBeLessThan(1e-6);
+  });
+
+  it("a freely-falling chunk's centroid follows projectile motion (½gt²)", () => {
+    const { rig, idx } = trunkRig();
+    const c = freezeChunk(rig, idx, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+    const y0 = c.pos.y;
+    const dt = 1 / 60;
+    const N = 120;
+    for (let s = 0; s < N; s++) { integrateChunk(rig, c, () => ({ x: 0, y: -9.81, z: 0 }), dt, 1, 1); applyChunk(rig, c, dt); }
+    const t = N * dt;
+    // semi-implicit Euler drops slightly faster than the closed form; within a few % is plenty.
+    const expected = y0 - 0.5 * 9.81 * t * t;
+    expect(c.pos.y).toBeLessThan(y0);
+    expect(Math.abs(c.pos.y - expected) / Math.abs(y0 - expected)).toBeLessThan(0.05);
+  });
+
+  it("a spinning chunk conserves its node fan-out (rotation does not stretch it)", () => {
+    const { rig, idx } = trunkRig();
+    const span0 = dist(rig.nodes[idx[0]].pos, rig.nodes[idx[5]].pos);
+    const c = freezeChunk(rig, idx, { x: 0, y: 0, z: 0 }, { x: 2.0, y: 1.0, z: 0.5 });
+    const dt = 1 / 60;
+    for (let s = 0; s < 300; s++) { integrateChunk(rig, c, () => ({ x: 0, y: 0, z: 0 }), dt, 1, 1); applyChunk(rig, c, dt); }
+    expect(dist(rig.nodes[idx[0]].pos, rig.nodes[idx[5]].pos)).toBeCloseTo(span0, 6);
   });
 });

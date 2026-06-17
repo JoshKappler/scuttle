@@ -83,6 +83,10 @@ export class Ship implements ContactTarget {
   mastAlive: boolean[];
   /** Per mast: trunk hits it can still take. */
   mastHp: number[];
+  /** Per mast: ship-local Y (m) of the last trunk hit, so the fall breaks AT the
+   *  hit point — the section above falls rigid, the stub below keeps standing.
+   *  −1 (default) = no recorded hit / foot blown out → the WHOLE mast falls. */
+  mastHitY: number[];
   /** Per mast: 1 = whole canvas → 0.15 floor as shot full of holes. */
   sailIntegrity: number[];
   rudderHp = 3;
@@ -244,6 +248,7 @@ export class Ship implements ContactTarget {
 
     this.mastAlive = build.masts.map(() => true);
     this.mastHp = build.masts.map(() => 2);
+    this.mastHitY = build.masts.map(() => -1);
     this.sailIntegrity = build.masts.map(() => 1);
     this.mastFootInit = build.masts.map((m) => this.mastFootCount(m));
 
@@ -266,9 +271,16 @@ export class Ship implements ContactTarget {
     return n;
   }
 
-  /** The mast goes by the board: rig falls, drive dies, trunk stops blocking. */
-  fellMast(mi: number): void {
+  /**
+   * The mast goes by the board: rig falls, drive dies, trunk stops blocking.
+   * `localY` is the ship-local height (m) of the impact that felled it: the
+   * RigManager breaks the trunk THERE so the section above topples as a rigid
+   * chunk and the stub below keeps standing. Omitted / −1 (foot blown out, or a
+   * non-trunk cause) = the WHOLE mast falls.
+   */
+  fellMast(mi: number, localY = -1): void {
     if (!this.mastAlive[mi]) return;
+    this.mastHitY[mi] = localY;
     this.mastAlive[mi] = false;
     this.sailIntegrity[mi] = 0;
     const col = this.mastColliders[mi];
@@ -277,11 +289,12 @@ export class Ship implements ContactTarget {
     this.onMastFelled?.(mi);
   }
 
-  /** A ball into the trunk. Two stop the mast cold. */
-  hitMast(mi: number): void {
+  /** A ball into the trunk. Two stop the mast cold. `localY` (ship-local m) is
+   *  where it struck, so a felling hit breaks the trunk at that height. */
+  hitMast(mi: number, localY = -1): void {
     if (!this.mastAlive[mi]) return;
     this.mastHp[mi] -= 1;
-    if (this.mastHp[mi] <= 0) this.fellMast(mi);
+    if (this.mastHp[mi] <= 0) this.fellMast(mi, localY);
   }
 
   /** A ball through the canvas: that mast pulls a little less. */
@@ -309,7 +322,7 @@ export class Ship implements ContactTarget {
     toW: THREE.Vector3,
   ): {
     sails: { rec: SailRecord; y: number; z: number }[];
-    stop: { kind: "mast"; mi: number } | { kind: "rudder" } | null;
+    stop: { kind: "mast"; mi: number; localY: number } | { kind: "rudder" } | null;
   } {
     const p0 = this.worldToLocal(this.tmpHitA.copy(fromW), this.tmpHitA);
     const p1 = this.worldToLocal(this.tmpHitB.copy(toW), this.tmpHitB);
@@ -321,7 +334,7 @@ export class Ship implements ContactTarget {
       if (hit) sails.push({ rec, y: hit.y, z: hit.z });
     }
 
-    let stop: { kind: "mast"; mi: number } | { kind: "rudder" } | null = null;
+    let stop: { kind: "mast"; mi: number; localY: number } | { kind: "rudder" } | null = null;
     this.build.masts.forEach((m, mi) => {
       if (stop || !this.mastAlive[mi]) return;
       const deckTop = (this.build.deckYAt(m.x) + 1) * VOXEL_SIZE;
@@ -332,7 +345,16 @@ export class Ship implements ContactTarget {
         yTop: deckTop + m.h - 0.5,
         r: 0.32,
       };
-      if (segmentMastHit(p0, p1, cyl)) stop = { kind: "mast", mi };
+      if (segmentMastHit(p0, p1, cyl)) {
+        // recover the ship-local hit height: closest-approach param of the xz-projected
+        // segment to the trunk axis (same convention as segmentMastHit), then lerp y.
+        const dx = p1.x - p0.x, dz = p1.z - p0.z;
+        const a = dx * dx + dz * dz;
+        let t = 0;
+        if (a > 1e-12) t = Math.min(Math.max(-((p0.x - cyl.x) * dx + (p0.z - cyl.z) * dz) / a, 0), 1);
+        const localY = p0.y + (p1.y - p0.y) * t;
+        stop = { kind: "mast", mi, localY };
+      }
     });
 
     if (!stop && this.rudderHp > 0) {
