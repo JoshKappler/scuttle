@@ -177,3 +177,170 @@ export function attachedToPin(rig: Rig): boolean[] {
   }
   return attached;
 }
+
+/**
+ * Label every node by its connected component over ALIVE links (a flood fill).
+ * Returns `comp[i]` = component id (0..count-1) and the component `count`. Two
+ * nodes share an id iff a path of alive links joins them. Used to split a felled
+ * mast into rigid chunks: break the trunk link(s) at the hit height, then every
+ * component that no longer reaches the foot falls as ONE stiff body.
+ */
+export function components(rig: Rig): { comp: number[]; count: number } {
+  const n = rig.nodes.length;
+  const comp = new Array<number>(n).fill(-1);
+  const adj: number[][] = Array.from({ length: n }, () => []);
+  for (const lk of rig.links) {
+    if (!lk.alive) continue;
+    adj[lk.a].push(lk.b);
+    adj[lk.b].push(lk.a);
+  }
+  let count = 0;
+  const stack: number[] = [];
+  for (let s = 0; s < n; s++) {
+    if (comp[s] !== -1) continue;
+    comp[s] = count;
+    stack.length = 0; stack.push(s);
+    while (stack.length) {
+      const i = stack.pop()!;
+      for (const j of adj[i]) if (comp[j] === -1) { comp[j] = count; stack.push(j); }
+    }
+    count++;
+  }
+  return { comp, count };
+}
+
+/**
+ * A detached rig section that moves as ONE rigid body (it holds its shape — the
+ * fix for "noodle" falling masts). A felled mast section is frozen into a chunk:
+ * each member node's offset from the centroid is recorded in the chunk's BODY
+ * frame, and thereafter we integrate a single position + orientation and re-derive
+ * the node world positions from that transform. No distance constraints run, so
+ * the section cannot bend, shear or stretch — it falls stiff. Pure & deterministic.
+ */
+export interface RigidChunk {
+  nodeIdx: number[];          // rig.nodes indices that make up this chunk
+  offsets: Vec3[];            // each node's body-frame offset from the centroid (parallel to nodeIdx)
+  mass: number;               // summed node mass
+  inertia: number;            // scalar moment of inertia about the centroid (kg·m²), single-axis approx
+  pos: Vec3;                  // centroid world position
+  vel: Vec3;                  // linear velocity (m/s)
+  /** orientation as a unit quaternion (x,y,z,w). */
+  q: [number, number, number, number];
+  omega: Vec3;                // angular velocity (world axis, rad/s)
+}
+
+/**
+ * Freeze a set of nodes into a RigidChunk: centroid = mass-weighted node mean,
+ * each offset is the node's CURRENT position minus the centroid (so the identity
+ * orientation reproduces the spawn shape), and a scalar inertia from Σ m·r².
+ * Initial linear/angular velocity is supplied by the caller (inherited ship
+ * velocity + topple kick).
+ */
+export function freezeChunk(
+  rig: Rig, nodeIdx: number[],
+  vel: Vec3, omega: Vec3,
+): RigidChunk {
+  let mass = 0, cx = 0, cy = 0, cz = 0;
+  for (const i of nodeIdx) {
+    const n = rig.nodes[i];
+    mass += n.mass; cx += n.pos.x * n.mass; cy += n.pos.y * n.mass; cz += n.pos.z * n.mass;
+  }
+  if (mass <= 0) mass = 1e-6;
+  cx /= mass; cy /= mass; cz /= mass;
+  const offsets: Vec3[] = [];
+  let inertia = 0;
+  for (const i of nodeIdx) {
+    const n = rig.nodes[i];
+    const ox = n.pos.x - cx, oy = n.pos.y - cy, oz = n.pos.z - cz;
+    offsets.push({ x: ox, y: oy, z: oz });
+    inertia += n.mass * (ox * ox + oy * oy + oz * oz);
+  }
+  if (inertia < 1e-6) inertia = 1e-6;
+  return {
+    nodeIdx, offsets, mass, inertia,
+    pos: { x: cx, y: cy, z: cz },
+    vel: { x: vel.x, y: vel.y, z: vel.z },
+    q: [0, 0, 0, 1],
+    omega: { x: omega.x, y: omega.y, z: omega.z },
+  };
+}
+
+/** Rotate body-frame vector v by the chunk's quaternion into world axes (out may alias). */
+export function chunkRotate(c: RigidChunk, v: Vec3, out: Vec3): Vec3 {
+  const [qx, qy, qz, qw] = c.q;
+  // t = 2 * (q.xyz × v); out = v + qw*t + q.xyz × t   (standard quat-vector rotation)
+  const tx = 2 * (qy * v.z - qz * v.y);
+  const ty = 2 * (qz * v.x - qx * v.z);
+  const tz = 2 * (qx * v.y - qy * v.x);
+  out.x = v.x + qw * tx + (qy * tz - qz * ty);
+  out.y = v.y + qw * ty + (qz * tx - qx * tz);
+  out.z = v.z + qw * tz + (qx * ty - qy * tx);
+  return out;
+}
+
+const _wp: Vec3 = { x: 0, y: 0, z: 0 };
+
+/**
+ * Write every member node's world position from the rigid transform: world =
+ * pos + R(q)·offset. prev is set so the implicit (Verlet) velocity each node
+ * carries equals the chunk's rigid velocity at that node — keeps `crushFalling`
+ * (which reads node prev→pos) seeing the true rigid impact speed.
+ */
+export function applyChunk(rig: Rig, c: RigidChunk, dt: number): void {
+  for (let k = 0; k < c.nodeIdx.length; k++) {
+    const n = rig.nodes[c.nodeIdx[k]];
+    chunkRotate(c, c.offsets[k], _wp);
+    const wx = c.pos.x + _wp.x, wy = c.pos.y + _wp.y, wz = c.pos.z + _wp.z;
+    // rigid velocity at this node = vel + omega × r  (r = rotated offset)
+    const vx = c.vel.x + (c.omega.y * _wp.z - c.omega.z * _wp.y);
+    const vy = c.vel.y + (c.omega.z * _wp.x - c.omega.x * _wp.z);
+    const vz = c.vel.z + (c.omega.x * _wp.y - c.omega.y * _wp.x);
+    n.pos.x = wx; n.pos.y = wy; n.pos.z = wz;
+    n.prev.x = wx - vx * dt; n.prev.y = wy - vy * dt; n.prev.z = wz - vz * dt;
+  }
+}
+
+/**
+ * Advance a rigid chunk one step under per-node accelerations (gravity +
+ * buoyancy, supplied by the caller). The accel of each node produces a force at
+ * its world offset, summed into a net force (→ linear) and net torque (→ angular)
+ * about the centroid. Semi-implicit Euler; `linDamp`/`angDamp` are per-step
+ * velocity retention (1 = none). The chunk stays RIGID — node offsets never change.
+ */
+export function integrateChunk(
+  rig: Rig, c: RigidChunk, accel: AccelFn, dt: number,
+  linDamp: number, angDamp: number,
+): void {
+  let fx = 0, fy = 0, fz = 0, tx = 0, ty = 0, tz = 0;
+  for (let k = 0; k < c.nodeIdx.length; k++) {
+    const n = rig.nodes[c.nodeIdx[k]];
+    const a = accel(n, c.nodeIdx[k]);
+    const m = n.mass;
+    const wfx = a.x * m, wfy = a.y * m, wfz = a.z * m; // force at this node (a already net of gravity+buoy)
+    fx += wfx; fy += wfy; fz += wfz;
+    // torque = r × F, r = rotated offset (world)
+    chunkRotate(c, c.offsets[k], _wp);
+    tx += _wp.y * wfz - _wp.z * wfy;
+    ty += _wp.z * wfx - _wp.x * wfz;
+    tz += _wp.x * wfy - _wp.y * wfx;
+  }
+  // linear
+  c.vel.x = (c.vel.x + (fx / c.mass) * dt) * linDamp;
+  c.vel.y = (c.vel.y + (fy / c.mass) * dt) * linDamp;
+  c.vel.z = (c.vel.z + (fz / c.mass) * dt) * linDamp;
+  c.pos.x += c.vel.x * dt; c.pos.y += c.vel.y * dt; c.pos.z += c.vel.z * dt;
+  // angular (scalar inertia approximation — a spar is near-1D, so one moment is plenty)
+  c.omega.x = (c.omega.x + (tx / c.inertia) * dt) * angDamp;
+  c.omega.y = (c.omega.y + (ty / c.inertia) * dt) * angDamp;
+  c.omega.z = (c.omega.z + (tz / c.inertia) * dt) * angDamp;
+  // integrate orientation: q += 0.5 * (omega ⊗ q) * dt, then renormalize
+  const [qx, qy, qz, qw] = c.q;
+  const ox = c.omega.x, oy = c.omega.y, oz = c.omega.z;
+  const dqx = 0.5 * (ox * qw + oy * qz - oz * qy) * dt;
+  const dqy = 0.5 * (oy * qw + oz * qx - ox * qz) * dt;
+  const dqz = 0.5 * (oz * qw + ox * qy - oy * qx) * dt;
+  const dqw = 0.5 * (-ox * qx - oy * qy - oz * qz) * dt;
+  let nx = qx + dqx, ny = qy + dqy, nz = qz + dqz, nw = qw + dqw;
+  const inv = 1 / (Math.hypot(nx, ny, nz, nw) || 1);
+  c.q[0] = nx * inv; c.q[1] = ny * inv; c.q[2] = nz * inv; c.q[3] = nw * inv;
+}
