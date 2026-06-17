@@ -189,10 +189,8 @@ export class Cannons {
       for (const ship of targets) {
         const rig = ship.rigImpacts(b.prev, b.pos);
         for (const s of rig.sails) {
-          // tear the voxel cloth at the crossing (Phase 4); falls back to the alphaMap hole if the
-          // rig layer isn't wired (onSailHit unset) so the ball never silently no-ops.
-          if (ship.onSailHit) ship.onSailHit(s.rec, s.y, s.z);
-          else ship.visual.puncture(s.rec, s.y, s.z);
+          // paint a ragged shot hole into the sail's alphaMap (the sail keeps its shape).
+          ship.visual.puncture(s.rec, s.y, s.z);
           ship.hitSail(s.rec.mastIdx);
           this.effects.muzzleSmoke(b.pos, this.tmpDir.copy(b.vel).normalize());
         }

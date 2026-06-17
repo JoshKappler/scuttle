@@ -1,16 +1,13 @@
 import * as THREE from "three";
 import { TUN } from "../core/tunables";
 import { buildRig, type RigSpec } from "../sim/rigBuild";
-import { type Rig, type RigNode, type RigLink, NodeFlag, LinkKind, dist, relax } from "../sim/rigLattice";
+import { type Rig, NodeFlag, dist, relax } from "../sim/rigLattice";
 import { breakImpulse, splitClosingImpulse } from "../sim/crush";
 import { VOXEL_SIZE, G } from "../core/constants";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { RigPieceVisual } from "../render/rigVisual";
 import type { Ship } from "./ship";
-import type { SailRecord } from "../render/shipVisual";
 import type { Effects } from "../render/effects";
-
-const CLOTH_MASS = 0.4; // per cloth node (matches sim/rigBuild)
 
 /**
  * RigManager — the GAME-side runtime for the voxel rig (sim/rigLattice + sim/rigBuild).
@@ -47,18 +44,6 @@ interface FallingRig {
   footLocal: [number, number, number]; // foot's ship-local rest position (to track the moving hull)
 }
 
-/** A standing sail that's been shot: the static mesh is hidden and replaced by a CLOTH lattice
- *  pinned at the head to the (moving) yard. A cannonball severs the links it crosses, so a struck
- *  section tears open and luffs in the wind, and a fully-cut-off piece blows away — exactly the
- *  "graph of coordinates rendered as a sheet" the design asked for, in place of the alphaMap hole. */
-interface TearSail {
-  rec: SailRecord;
-  ship: Ship;
-  rig: Rig;
-  visual: RigPieceVisual;
-  local: { x: number; y: number; z: number }[]; // ship-local rest pos per node (pin tracking + sever test)
-}
-
 export class RigManager {
   /** main.ts attaches this for bore dust/crunch FX; optional so headless tests no-op. */
   effects?: Effects;
@@ -68,7 +53,6 @@ export class RigManager {
 
   private rigs = new WeakMap<Ship, ShipRig>();
   private falling: FallingRig[] = [];
-  private tears = new Map<SailRecord, TearSail>();
   private aabbA = { min: new THREE.Vector3(), max: new THREE.Vector3() };
   private aabbB = { min: new THREE.Vector3(), max: new THREE.Vector3() };
   private wp = new THREE.Vector3(); // node world pos
@@ -144,100 +128,18 @@ export class RigManager {
     }
 
     if (TUN.rig.masts) this.stepFalling(ships, simTime, dt);
-    if (TUN.rig.sails) this.stepTears(ships, simTime, dt);
   }
 
-  /** Sync the falling-mast + torn-sail visuals to the latest node positions (called from the RENDER
-   *  loop, not the fixed step, so wreckage moves smoothly between physics steps). */
+  /** Sync the falling-mast visuals to the latest node positions (called from the RENDER loop, not
+   *  the fixed step, so wreckage moves smoothly between physics steps). */
   refresh(): void {
     for (const F of this.falling) F.visual.update();
-    for (const T of this.tears.values()) T.visual.update();
-  }
-
-  /** A cannonball through a standing sail: hand the static mesh off to a live CLOTH lattice (once)
-   *  and SEVER the links near the (ship-local) hit so a real voxel-cloth tear opens up. Called from
-   *  the cannon code via Ship.onSailHit. */
-  tearSail(ship: Ship, rec: SailRecord, yHit: number, zHit: number): void {
-    if (!this.scene || !TUN.rig.enabled || !TUN.rig.sails) return;
-    let T = this.tears.get(rec);
-    if (!T) {
-      rec.mesh.visible = false; // hide the static sail; the lattice owns it now
-      const COLS = 8, ROWS = 6;
-      const w = rec.zMax - rec.zMin, h = rec.yMax - rec.yMin;
-      const nodes: RigNode[] = [], links: RigLink[] = [], local: { x: number; y: number; z: number }[] = [];
-      const grid: number[][] = [];
-      for (let r = 0; r < ROWS; r++) {
-        const row: number[] = [];
-        for (let c = 0; c < COLS; c++) {
-          const lx = rec.planeX, ly = rec.yMin + (h * r) / (ROWS - 1), lz = rec.zMin + (w * c) / (COLS - 1);
-          ship.localToWorld([lx, ly, lz], this.wp);
-          const head = r === ROWS - 1; // pin the HEAD row to the upper yard; foot + sides hang & luff
-          nodes.push({ pos: { x: this.wp.x, y: this.wp.y, z: this.wp.z }, prev: { x: this.wp.x, y: this.wp.y, z: this.wp.z }, mass: CLOTH_MASS, pinned: head, flags: NodeFlag.CLOTH });
-          local.push({ x: lx, y: ly, z: lz });
-          row.push(nodes.length - 1);
-        }
-        grid.push(row);
-      }
-      const addL = (a: number, b: number) => links.push({ a, b, rest: dist(nodes[a].pos, nodes[b].pos), breakStrain: TUN.rig.clothBreak, kind: LinkKind.CLOTH, alive: true });
-      for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-        if (c + 1 < COLS) addL(grid[r][c], grid[r][c + 1]);
-        if (r + 1 < ROWS) addL(grid[r][c], grid[r + 1][c]);
-        if (c + 1 < COLS && r + 1 < ROWS) addL(grid[r][c], grid[r + 1][c + 1]);
-        if (c - 1 >= 0 && r + 1 < ROWS) addL(grid[r][c], grid[r + 1][c - 1]);
-      }
-      const rig: Rig = { nodes, links, awake: true, sleepTimer: 0 };
-      const tile = Math.max(w / (COLS - 1), h / (ROWS - 1)) * 1.2;
-      const visual = new RigPieceVisual(rig, tile);
-      this.scene.add(visual.group);
-      T = { rec, ship, rig, visual, local };
-      this.tears.set(rec, T);
-    }
-    // sever every cloth link whose (ship-local) midpoint is within severRadius of the hit
-    const R2 = TUN.rig.severRadius * TUN.rig.severRadius;
-    for (const lk of T.rig.links) {
-      if (!lk.alive) continue;
-      const la = T.local[lk.a], lb = T.local[lk.b];
-      const dy = (la.y + lb.y) * 0.5 - yHit, dz = (la.z + lb.z) * 0.5 - zHit;
-      if (dy * dy + dz * dz < R2) lk.alive = false;
-    }
-  }
-
-  /** Step every torn sail: keep the head row pinned to the moving yard, blow the free cloth in the
-   *  wind (so tatters luff), satisfy + break the cloth links. Drop a sail once its ship is gone. */
-  private stepTears(ships: Ship[], simTime: number, dt: number): void {
-    if (this.tears.size === 0) return;
-    const dt2 = dt * dt;
-    const wob = Math.sin(simTime * 4) * 0.4 + 0.6; // gust flutter
-    for (const [rec, T] of this.tears) {
-      if (ships.indexOf(T.ship) === -1) { T.visual.dispose(); this.tears.delete(rec); continue; }
-      const nodes = T.rig.nodes;
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
-        if (n.pinned) { // ride the moving yard
-          T.ship.localToWorld([T.local[i].x, T.local[i].y, T.local[i].z], this.wp);
-          n.pos.x = this.wp.x; n.pos.y = this.wp.y; n.pos.z = this.wp.z;
-          n.prev.x = this.wp.x; n.prev.y = this.wp.y; n.prev.z = this.wp.z;
-          continue;
-        }
-        const ax = TUN.rig.windForce * wob, ay = -G * 0.15, az = TUN.rig.windForce * 0.3 * wob;
-        const px = n.pos.x, py = n.pos.y, pz = n.pos.z;
-        n.pos.x = px + (px - n.prev.x) * 0.96 + ax * dt2;
-        n.pos.y = py + (py - n.prev.y) * 0.96 + ay * dt2;
-        n.pos.z = pz + (pz - n.prev.z) * 0.96 + az * dt2;
-        n.prev.x = px; n.prev.y = py; n.prev.z = pz;
-      }
-      relax(T.rig, 3);
-    }
   }
 
   /** A mast goes by the board: lift its lattice into WORLD space, hinge the foot, give it a topple
    *  lean + the ship's velocity, and turn it loose. shipVisual has already hidden the static mast. */
   private spawnFallingMast(ship: Ship, mi: number, dt: number): void {
     if (!this.scene || !TUN.rig.masts || mi >= ship.build.masts.length) return;
-    // a torn sail on this mast is superseded by the falling lattice (which carries its own cloth)
-    for (const [rec, T] of this.tears) {
-      if (T.ship === ship && rec.mastIdx === mi) { T.visual.dispose(); this.tears.delete(rec); }
-    }
     const b = ship.build;
     const rig = buildRig({ voxelSize: VOXEL_SIZE, deckTopY: (xv) => (b.deckYAt(xv) + 1) * VOXEL_SIZE, masts: [b.masts[mi]] });
     const sv = ship.body.linvel();

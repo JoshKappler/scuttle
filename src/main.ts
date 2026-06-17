@@ -450,7 +450,6 @@ async function main() {
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
     ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
     ship.onMastFelled = () => gs.msg.post("her mast goes by the board!");
-    ship.onSailHit = (rec, y, z) => world.rig.tearSail(ship, rec, y, z);
     ship.onRudderHit = (hp) => {
       visual.chipRudder(hp / 3);
       gs.msg.post(hp > 0 ? "her rudder is hit!" : "her rudder hangs in splinters!");
@@ -566,7 +565,6 @@ async function main() {
     fresh.body.setRotation(rot, true);
     fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
     fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
-    fresh.onSailHit = (rec, y, z) => world.rig.tearSail(fresh, rec, y, z);
     fresh.onRudderHit = (hp) => {
       visual.chipRudder(hp / 3);
       gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
@@ -610,7 +608,6 @@ async function main() {
   // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
   // equivalents are wired per-spawn in the fleet factory above.
   sloop.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
-  sloop.onSailHit = (rec, y, z) => world.rig.tearSail(sloop, rec, y, z);
   sloop.onRudderHit = (hp) => {
     sloopVisual.chipRudder(hp / 3);
     gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
@@ -1717,15 +1714,11 @@ async function main() {
         { type: "toggle", label: "rig enabled", obj: TUN.rig, key: "enabled" },
         { type: "toggle", label: "bowsprit bore", obj: TUN.rig, key: "bowsprit" },
         { type: "toggle", label: "mast fall", obj: TUN.rig, key: "masts" },
-        { type: "toggle", label: "sail tear", obj: TUN.rig, key: "sails" },
         { type: "slider", label: "bore radius", obj: TUN.rig, key: "boreRadiusVox", min: 0, max: 3, step: 1 },
         { type: "slider", label: "topple kick", obj: TUN.rig, key: "toppleKick", min: 0, max: 6, step: 0.25 },
         { type: "slider", label: "hinge time s", obj: TUN.rig, key: "hingeTime", min: 0, max: 4, step: 0.1 },
         { type: "slider", label: "waterlog /s", obj: TUN.rig, key: "waterlog", min: 0, max: 0.3, step: 0.01 },
         { type: "slider", label: "fall mass kg", obj: TUN.rig, key: "fallMass", min: 100, max: 2000, step: 50 },
-        { type: "slider", label: "wind force", obj: TUN.rig, key: "windForce", min: 0, max: 6, step: 0.2 },
-        { type: "slider", label: "cloth break", obj: TUN.rig, key: "clothBreak", min: 0.1, max: 1.5, step: 0.05 },
-        { type: "slider", label: "sever radius m", obj: TUN.rig, key: "severRadius", min: 0.5, max: 4, step: 0.1 },
       ],
     },
   ]);
