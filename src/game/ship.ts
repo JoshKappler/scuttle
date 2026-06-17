@@ -20,8 +20,8 @@ import {
 } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
 import { mountSolidCount, mountLost } from "../sim/cannonMount";
-import { MATERIALS, breakEnergy } from "../sim/materials";
-import { segmentBoxHit, segmentMastHit, segmentSailHit } from "../sim/rigDamage";
+import { MATERIALS, breakEnergy, SPAR } from "../sim/materials";
+import { segmentBoxHit, segmentSailHit } from "../sim/rigDamage";
 import { meshChunk } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
 import type { ShipVisual, SailRecord } from "../render/shipVisual";
@@ -29,6 +29,65 @@ import type { Physics } from "./physics";
 import { HullCollider } from "./hullCollider";
 import type { HullView } from "../sim/voxelOverlap";
 import type { ContactTarget } from "./voxelContact";
+
+/** Height (m) of the HULL envelope — the tallest non-SPAR (i.e. non-mast) solid voxel + one cell.
+ *  The grid `ny` now contains the tall VOXEL-MAST tower, so it is NOT the hull height; the box inertia
+ *  must use the hull alone (bulwark / quarterdeck top) or the masts' headroom would balloon the tuned
+ *  roll/pitch feel. Cheap: a single descending scan of the topmost layers, short-circuiting per column. */
+function hullHeightMeters(build: ShipBuild): number {
+  const grid = build.grid;
+  const [nx, ny, nz] = grid.dims;
+  for (let y = ny - 1; y >= 0; y--) {
+    for (let x = 0; x < nx; x++) {
+      for (let z = 0; z < nz; z++) {
+        if (grid.isSolid(x, y, z) && grid.get(x, y, z) !== SPAR) {
+          return (y + 1) * VOXEL_SIZE; // top face of the highest hull voxel
+        }
+      }
+    }
+  }
+  return ny * VOXEL_SIZE; // degenerate (no hull) — fall back to the grid height
+}
+
+/** Steps of no-carving before the full-grid sever scan runs (~0.2 s), and the max-stale backstop
+ *  that forces it during a very long continuous grind (~3 s). Exported so the debounce logic is
+ *  unit-testable independent of Rapier. */
+export const SEVER_QUIET = 12;
+export const SEVER_MAX_STALE = 180;
+
+/**
+ * Pure debounce for the expensive full-grid connectivity sever scan (findSevered). It must fire once
+ * carving PAUSES (a chunk has been carved free and should drop off as debris) — but NOT on every carve
+ * (the scan is ~3 ms on a big hull). The earlier in-line version gated this decision behind the
+ * consumable `damageDirty`/10 Hz mass-recompute flag, so a SHORT ram consumed that flag before the
+ * quiet window opened and the scan then never ran — disconnected / corner-only voxels "levitated"
+ * forever. This class is evaluated EVERY fixed step (cheap counter math), independent of that flag, so
+ * the scan is guaranteed to fire within SEVER_QUIET steps of the last carve (or SEVER_MAX_STALE during
+ * a sustained grind). Deterministic: step-counted, no wall clock. */
+export class SeverDebounce {
+  private dirty = false;
+  private framesSinceCarve = 0;
+  private stepsSinceSever = 0;
+
+  /** A carve happened this step → a scan is now pending and the quiet timer restarts. */
+  markCarved(): void {
+    this.dirty = true;
+    this.framesSinceCarve = 0;
+  }
+
+  /** Call once per fixed step. Returns true (and re-arms) when the heavy sever scan is due:
+   *  carving has paused for SEVER_QUIET steps, or a sustained grind has run SEVER_MAX_STALE steps. */
+  due(): boolean {
+    this.framesSinceCarve++;
+    this.stepsSinceSever++;
+    if (this.dirty && (this.framesSinceCarve >= SEVER_QUIET || this.stepsSinceSever >= SEVER_MAX_STALE)) {
+      this.dirty = false;
+      this.stepsSinceSever = 0;
+      return true;
+    }
+    return false;
+  }
+}
 
 // Buoyancy wave-sampling LOD thresholds (distance² to the player) + reuse-cell sizes (m). The swell
 // (λ≥14 m) varies little over a metre, so a distant ship can reuse one surfaceHeight sample across a
@@ -82,15 +141,17 @@ export class Ship implements ContactTarget {
    *  mesh and spawns a falling cannon body that tips off the side and sinks. */
   onCannonLost?: (portIndex: number) => void;
 
-  // ---- rig damage state (round 7) ----
-  /** Per mast: still standing? */
+  // ---- rig state — masts are now VOXELS, this is DERIVED from their survival ----
+  /** Per mast: does any trunk voxel still stand above the deck? DERIVED from the live grid by
+   *  updateMastState() — a mast is "alive" while it still has SPAR voxels rising off the deck.
+   *  The alive→dead edge posts the "mast goes by the board" toast (onMastFelled). The old
+   *  hand-tracked HP / hit-height / foot-count machinery is GONE: masts break voxel-by-voxel
+   *  via the unified crush + 18-connectivity sever, never a scripted one-piece topple. */
   mastAlive: boolean[];
-  /** Per mast: trunk hits it can still take. */
-  mastHp: number[];
-  /** Per mast: ship-local Y (m) of the last trunk hit, so the fall breaks AT the
-   *  hit point — the section above falls rigid, the stub below keeps standing.
-   *  −1 (default) = no recorded hit / foot blown out → the WHOLE mast falls. */
-  mastHitY: number[];
+  /** Per mast: ship-local Y (m) of the HIGHEST surviving SPAR voxel's top, or −Infinity if the
+   *  whole trunk is gone. The render hides any yard/sail whose foot sits above this — so a shot
+   *  that drops the upper trunk drops its canvas, while a low shot drops the lot. */
+  mastTopY: number[];
   /** Per mast: 1 = whole canvas → 0.15 floor as shot full of holes. */
   sailIntegrity: number[];
   rudderHp = 3;
@@ -103,8 +164,10 @@ export class Ship implements ContactTarget {
    *  voxel of this hull, so cannon/ram damage carves fewer cells. 1 = stock oak.
    *  Set from the "Hull Reinforcement" upgrade; read by the carve/impact budget. */
   hullToughness = 1;
-  private mastFootInit: number[];
-  private mastColliders: RAPIER.Collider[] = [];
+  /** Per mast: the SPAR voxels stamped for it (from build.mastVoxels), used to derive mast state
+   *  each step from the live grid. Static list of coords — a coord whose grid cell is no longer
+   *  SPAR has been shot/severed away. */
+  private mastCells: { x: number; y: number; z: number }[][];
 
   // ---- cannon-mount state (Task 8) ----
   /** Per cannon port: is the gun still mounted (and therefore firable)? A port whose hull
@@ -209,9 +272,13 @@ export class Ship implements ContactTarget {
     const mass = build.grid.totalMass();
     const com = build.grid.centerOfMass();
     this.comLocal = com;
-    const [nx, ny, nz] = build.grid.dims;
+    const [nx, , nz] = build.grid.dims;
     const l = nx * VOXEL_SIZE;
-    const h = ny * VOXEL_SIZE;
+    // HULL height (m) for the box-inertia, NOT the grid height: the grid is now much taller than the
+    // hull to contain the VOXEL MAST tower (ny grew ~3×), so `ny·VOXEL_SIZE` would massively inflate
+    // the roll/pitch inertia and dull the tuned ship feel. Use the tallest HULL voxel (bulwark /
+    // quarterdeck top) — the SPAR mast voxels are excluded so the topweight tower never bloats it.
+    const h = hullHeightMeters(build);
     const w = nz * VOXEL_SIZE;
 
     // box-approximated principal inertia about the COM. Pitch/yaw carry a
@@ -247,23 +314,15 @@ export class Ship implements ContactTarget {
     phys.shipBodies.add(this.body.handle);
     this.hull.collider.setActiveHooks(R.ActiveHooks.FILTER_CONTACT_PAIRS);
 
-    // the mast is solid — you should not be able to walk through it
-    // (playtest round 5: "the mast has no physical hitbox")
-    for (const m of build.masts) {
-      const deckTop = (build.deckYAt(m.x) + 1) * VOXEL_SIZE;
-      const mastCol = R.ColliderDesc.cylinder(m.h / 2, 0.18)
-        .setTranslation((m.x + 0.5) * VOXEL_SIZE, deckTop + m.h / 2 - 0.5, (m.z + 0.5) * VOXEL_SIZE)
-        .setDensity(0);
-      const mc = world.createCollider(mastCol, this.body);
-      mc.setActiveHooks(R.ActiveHooks.FILTER_CONTACT_PAIRS); // ship-vs-ship → deformable, not rigid
-      this.mastColliders.push(mc);
-    }
-
+    // No separate mast collider any more: the mast is REAL voxels in the grid, so it's already in
+    // the HullCollider (ship-vs-ship deformable crush) and in the walkable deck trimesh (on-foot
+    // collision) — a dedicated cylinder would just be a GHOST you couldn't walk through after the
+    // voxels were shot away.
+    this.mastCells = (build.mastVoxels ?? build.masts.map(() => [])).map((cells) => cells.slice());
     this.mastAlive = build.masts.map(() => true);
-    this.mastHp = build.masts.map(() => 2);
-    this.mastHitY = build.masts.map(() => -1);
+    this.mastTopY = build.masts.map(() => -Infinity);
     this.sailIntegrity = build.masts.map(() => 1);
-    this.mastFootInit = build.masts.map((m) => this.mastFootCount(m));
+    this.updateMastState(); // seed mastAlive / mastTopY from the freshly-stamped voxels
 
     // cannon mounts: every gun starts bolted on; record its intact mount-cell count so
     // flushDamage can fell it once the hull beneath it is carved below TUN.gun.mountToughness.
@@ -273,40 +332,36 @@ export class Ship implements ContactTarget {
     this.rebuildDeckCollider();
   }
 
-  /** Solid planking left in the disk the mast steps on (deck + the support
-   *  course under it). When most of it is blown away, the mast goes. */
-  private mastFootCount(m: { x: number; z: number }): number {
-    const grid = this.build.grid;
-    const yd = this.build.deckYAt(m.x);
-    let n = 0;
-    for (let dx = -2; dx <= 2; dx++) {
-      for (let dz = -2; dz <= 2; dz++) {
-        if (dx * dx + dz * dz > 5) continue;
-        if (grid.isSolid(m.x + dx, yd, m.z + dz)) n++;
-        if (grid.isSolid(m.x + dx, yd - 1, m.z + dz)) n++;
-      }
-    }
-    return n;
-  }
-
   /**
-   * The mast goes by the board: rig falls, drive dies, trunk stops blocking.
-   * `localY` is the ship-local height (m) of the impact that felled it: the
-   * RigManager breaks the trunk THERE so the section above topples as a rigid
-   * chunk and the stub below keeps standing. Omitted / −1 (foot blown out, or a
-   * non-trunk cause) = the WHOLE mast falls.
+   * Re-derive each mast's state from the LIVE grid: a mast is "alive" while it still has at least
+   * one SPAR voxel rising off the deck, and `mastTopY` is the ship-local Y (m) of the TOP of its
+   * highest surviving voxel (or −Infinity once the trunk is gone). Because masts are real voxels
+   * carved by the unified crush + dropped by the 18-connectivity sever, this DERIVED state is the
+   * single source of truth for the rig: the render hides yards/sails above `mastTopY`, and an
+   * alive→dead edge posts the "mast goes by the board" toast. No scripted topple, no per-mast HP.
+   *
+   * Cheap: a handful of isSolid() reads per mast voxel; called from the throttled flushDamage and
+   * once at construction. Deterministic (grid reads only).
    */
-  fellMast(mi: number, localY = -1): void {
-    if (!this.mastAlive[mi]) return;
-    this.mastHitY[mi] = localY;
-    this.mastAlive[mi] = false;
-    this.sailIntegrity[mi] = 0;
-    const col = this.mastColliders[mi];
-    if (col) this.phys.world.removeCollider(col, false);
-    // NOTE: the static spars/sails are NOT hidden here — RigManager.spawnFallingMast (driven by the
-    // mastAlive alive→dead edge) calls visual.detachMast, which clips the static parts AND spawns the
-    // real falling section in one place, so exactly one mast disappears and one real mast falls.
-    this.onMastFelled?.(mi);
+  private updateMastState(): void {
+    const grid = this.build.grid;
+    for (let mi = 0; mi < this.mastCells.length; mi++) {
+      let topY = -Infinity;
+      for (const c of this.mastCells[mi]) {
+        if (grid.get(c.x, c.y, c.z) === SPAR) {
+          const top = (c.y + 1) * VOXEL_SIZE; // top face of this voxel, ship-local meters
+          if (top > topY) topY = top;
+        }
+      }
+      this.mastTopY[mi] = topY;
+      const aliveNow = topY > -Infinity;
+      if (this.mastAlive[mi] && !aliveNow) {
+        // the trunk has just been carved/severed away entirely → she's lost the mast.
+        this.sailIntegrity[mi] = 0;
+        this.onMastFelled?.(mi);
+      }
+      this.mastAlive[mi] = aliveNow;
+    }
   }
 
   /** A cannon's hull mount has been carved away: the gun is dead. It no longer fires or
@@ -318,13 +373,10 @@ export class Ship implements ContactTarget {
     this.onCannonLost?.(portIndex);
   }
 
-  /** A ball into the trunk. Two stop the mast cold. `localY` (ship-local m) is
-   *  where it struck, so a felling hit breaks the trunk at that height. */
-  hitMast(mi: number, localY = -1): void {
-    if (!this.mastAlive[mi]) return;
-    this.mastHp[mi] -= 1;
-    if (this.mastHp[mi] <= 0) this.fellMast(mi, localY);
-  }
+  /** Legacy shim: a ball into the mast used to deal scripted HP. Masts are VOXELS now, so the ball
+   *  bores through the trunk via the normal voxel crush (rigImpacts no longer reports a mast stop, so
+   *  this is never called) — kept only so the cannon module keeps compiling against the interface. */
+  hitMast(_mi: number, _localY = -1): void { /* masts break voxel-by-voxel via crush() now */ }
 
   /** A ball through the canvas: that mast pulls a little less. */
   hitSail(mi: number): void {
@@ -342,9 +394,14 @@ export class Ship implements ContactTarget {
   private tmpHitB = new THREE.Vector3();
 
   /**
-   * Everything a ball's swept segment hits in the RIG this step: every sail
-   * crossed (cloth never stops a ball) plus the first hard stop (mast trunk
-   * or rudder blade), if any. World-space in, ship-local tests inside.
+   * Everything a ball's swept segment hits in the RIG this step: every sail crossed (cloth never
+   * stops a ball) plus the first hard stop (the rudder blade), if any. World-space in, ship-local
+   * tests inside.
+   *
+   * The MAST is no longer tested here: it's real grid voxels now, so the ball falls through to the
+   * normal voxel march/crush in cannons.ts and BORES the SPAR trunk like any other timber (THE LAW
+   * #4 — one destruction rule). The {kind:"mast"} variant stays in the return type only so the
+   * (un-owned) cannon module keeps compiling; it is never produced.
    */
   rigImpacts(
     fromW: THREE.Vector3,
@@ -358,34 +415,15 @@ export class Ship implements ContactTarget {
 
     const sails: { rec: SailRecord; y: number; z: number }[] = [];
     for (const rec of this.visual.sails) {
-      if (!this.mastAlive[rec.mastIdx]) continue; // fallen rig: rects are stale
+      if (!this.mastAlive[rec.mastIdx]) continue; // whole rig gone: rects are stale
+      // a partly-felled mast keeps its lower canvas: skip a sail whose foot now hangs above the
+      // surviving trunk (its mesh is hidden by updateRig), so a ball can't "tear" a dropped sail.
+      if (rec.yMin > this.mastTopY[rec.mastIdx]) continue;
       const hit = segmentSailHit(p0, p1, rec);
       if (hit) sails.push({ rec, y: hit.y, z: hit.z });
     }
 
     let stop: { kind: "mast"; mi: number; localY: number } | { kind: "rudder" } | null = null;
-    this.build.masts.forEach((m, mi) => {
-      if (stop || !this.mastAlive[mi]) return;
-      const deckTop = (this.build.deckYAt(m.x) + 1) * VOXEL_SIZE;
-      const cyl = {
-        x: (m.x + 0.5) * VOXEL_SIZE,
-        z: (m.z + 0.5) * VOXEL_SIZE,
-        yBase: deckTop,
-        yTop: deckTop + m.h - 0.5,
-        r: 0.32,
-      };
-      if (segmentMastHit(p0, p1, cyl)) {
-        // recover the ship-local hit height: closest-approach param of the xz-projected
-        // segment to the trunk axis (same convention as segmentMastHit), then lerp y.
-        const dx = p1.x - p0.x, dz = p1.z - p0.z;
-        const a = dx * dx + dz * dz;
-        let t = 0;
-        if (a > 1e-12) t = Math.min(Math.max(-((p0.x - cyl.x) * dx + (p0.z - cyl.z) * dz) / a, 0), 1);
-        const localY = p0.y + (p1.y - p0.y) * t;
-        stop = { kind: "mast", mi, localY };
-      }
-    });
-
     if (!stop && this.rudderHp > 0) {
       // the rudder hangs off the stern post (low-x end), reaching from the
       // heel up the transom — mirror of shipVisual's blade construction
@@ -918,6 +956,9 @@ export class Ship implements ContactTarget {
     const rot = this.body.rotation();
     this.visual.group.position.set(tr.x, tr.y, tr.z);
     this.visual.group.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+    // the mast trunk itself is voxels (remeshed automatically as it's carved); push the surviving
+    // trunk height so the visual drops any YARD/SAIL whose foot now hangs above the cut.
+    this.visual.updateRig(this.mastTopY);
   }
 
   /**
@@ -963,7 +1004,7 @@ export class Ship implements ContactTarget {
     this.surfaceCache = null;
     this.registerBreaches(cells);
     this.damageDirty = true; // mass/column recompute is deferred + throttled (flushDamage)
-    this.severDirty = true;  // a full-grid sever scan is pending, debounced to carving-pause
+    this.severDebounce.markCarved(); // a full-grid sever scan is pending, debounced to carving-pause
     this.colliderDirty = true; this.framesSinceCarve = 0; // debounce the heavy deck-collider rebuild
     return gone.length;
   }
@@ -1043,14 +1084,13 @@ export class Ship implements ContactTarget {
   private colliderDirty = false;
   private framesSinceCarve = 0;
   private stepsSinceColliderBuild = 0;
-  /** The full-grid sever BFS (findSevered) is ALSO debounced to carving-pause — see flushDamage. */
-  private severDirty = false;
-  private stepsSinceSever = 0;
+  /** The full-grid sever BFS (findSevered) is debounced to carving-pause — evaluated EVERY step
+   *  (cheap counter math) so it can't be starved by the 10 Hz mass-recompute gate (see SeverDebounce:
+   *  a short ram used to consume `damageDirty` before the quiet window opened → floaters levitated). */
+  private severDebounce = new SeverDebounce();
   flushDamage(): void {
     const COLLIDER_QUIET = 18;      // ~0.3 s of no carving before the deck collider refreshes
     const COLLIDER_MAX_STALE = 300; // ...but a very long continuous grind still refreshes by ~5 s
-    const SEVER_QUIET = 12;         // ~0.2 s of no carving before the full-grid sever scan runs
-    const SEVER_MAX_STALE = 180;    // ...but a long continuous grind still sheds by ~3 s
     this.framesSinceCarve++;
     this.stepsSinceColliderBuild++;
     if (this.colliderDirty && (this.framesSinceCarve >= COLLIDER_QUIET || this.stepsSinceColliderBuild >= COLLIDER_MAX_STALE)) {
@@ -1059,20 +1099,13 @@ export class Ship implements ContactTarget {
       this.rebuildDeckCollider();
     }
 
-    if (!this.damageDirty) return;
-    if (++this.framesSinceFlush < 6) return; // ~10 Hz during sustained carving
-    this.framesSinceFlush = 0;
-    this.damageDirty = false;
-    const grid = this.build.grid;
-
-    // findSevered is a FULL-GRID connectivity BFS (~3 ms on a big hull) — DEBOUNCE it to carving-pause
-    // (like the deck collider) with a max-stale backstop. During a sustained grind a chunk breaking off
-    // can wait a beat; this keeps the per-6-step flush from paying the whole-grid scan every time. The
-    // cheap mass + incremental-column recompute below stays at 10 Hz, so buoyancy keeps tracking the carve.
-    this.stepsSinceSever++;
-    if (this.severDirty && (this.framesSinceCarve >= SEVER_QUIET || this.stepsSinceSever >= SEVER_MAX_STALE)) {
-      this.severDirty = false;
-      this.stepsSinceSever = 0;
+    // The sever scan runs EVERY step through the debounce (NOT gated behind damageDirty below): the heavy
+    // findSevered only actually runs when carving has paused (SEVER_QUIET) or the SEVER_MAX_STALE backstop
+    // fires, but the DECISION is evaluated every step so a brief ram can never leave it un-run. findSevered
+    // is the connectivity BFS (~3 ms on a big hull) — face+edge (18-connectivity), so it sheds both fully
+    // disconnected chunks AND any voxel left attached to the body only at a CORNER.
+    if (this.severDebounce.due()) {
+      const grid = this.build.grid;
       // anything no longer connected to the anchor breaks off as debris; its removed
       // cells are fresh holes too — register them so the stump floods from the cut.
       const islands = findSevered(grid, this.keelAnchor);
@@ -1090,14 +1123,22 @@ export class Ship implements ContactTarget {
         updateSurfaceAfterRemoval(grid, this.surface, islandCells); // shed cells leave the boundary
         this.surfaceCache = null;
         this.registerBreaches(islandCells);
+        this.damageDirty = true;  // shed cells changed mass/columns → recompute on the next 10 Hz flush
         this.colliderDirty = true; this.framesSinceCarve = 0; // geometry changed → refresh (debounced)
         this.onSevered?.(islands);
       }
     }
-    // a mast whose step has been blown out goes by the board (cheap — kept at 10 Hz)
-    this.build.masts.forEach((m, mi) => {
-      if (this.mastAlive[mi] && this.mastFootCount(m) < this.mastFootInit[mi] * 0.5) this.fellMast(mi);
-    });
+
+    if (!this.damageDirty) return;
+    if (++this.framesSinceFlush < 6) return; // ~10 Hz during sustained carving
+    this.framesSinceFlush = 0;
+    this.damageDirty = false;
+    const grid = this.build.grid;
+
+    // re-derive each mast's standing height from its surviving SPAR voxels (the sever pass above may
+    // have just dropped a section, or a cannon bore carved the trunk through). The render reads
+    // mastTopY to drop yards/sails above the cut, and a fully-carved trunk posts the lost-mast toast.
+    this.updateMastState();
     // a cannon whose deck/hull mount has been carved away tips off the side (same cheap 10 Hz
     // sweep, a few isSolid reads per live gun — no per-frame cost on an undamaged ship).
     const mountFrac = TUN.gun.mountToughness;

@@ -3,11 +3,32 @@ import type { VoxelGrid } from "./voxelGrid";
 /**
  * Structural connectivity: after damage, any solid cells no longer connected
  * to the ship's main body (anchored at the keel) are severed islands — they
- * break off as debris. 6-connectivity BFS.
+ * break off as debris.
+ *
+ * 18-CONNECTIVITY BFS (FACE + EDGE adjacency). The player's rule: a voxel survives only if it links
+ * to the body through a shared FACE (±1 on one axis) or a shared flat EDGE (±1 on exactly two axes —
+ * the in-plane diagonal). A voxel touching the body ONLY at a corner (±1 on all THREE axes — a vertex)
+ * is NOT considered attached and is shed as debris. So the 6 face + 12 edge neighbours connect; the 8
+ * pure body-diagonal (corner) neighbours do NOT. A voxel with no face/edge neighbour at all (or whose
+ * only path to the keel runs through corners) ends up in a non-anchor component and breaks off.
  */
 export interface Island {
   cells: { x: number; y: number; z: number; mat: number }[];
 }
+
+// The 18 face+edge neighbour offsets: every (dx,dy,dz) ∈ {-1,0,1}³ with |dx|+|dy|+|dz| ∈ {1,2}.
+// |·|=1 are the 6 faces; |·|=2 are the 12 in-plane (edge-sharing) diagonals. The 8 |·|=3 corner
+// (vertex-only) offsets are deliberately EXCLUDED — a corner touch does not keep a voxel attached.
+const NEIGHBORS18: [number, number, number][] = (() => {
+  const out: [number, number, number][] = [];
+  for (let dz = -1; dz <= 1; dz++)
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const m = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);
+        if (m === 1 || m === 2) out.push([dx, dy, dz]); // face or flat-edge, never corner (m===3) or self (0)
+      }
+  return out;
+})();
 
 export function findSevered(grid: VoxelGrid, keelAnchor: [number, number, number]): Island[] {
   const [nx, ny, nz] = grid.dims;
@@ -35,15 +56,18 @@ export function findSevered(grid: VoxelGrid, keelAnchor: [number, number, number
       const x = cur % nx;
       const y = Math.floor(cur / nx) % ny;
       const z = Math.floor(cur / nxy);
-      // same neighbour order as before (−x,+x,−y,+y,−z,+z) so the LIFO traversal — and thus cell
-      // order within an island — is unchanged. isSolid() is bounds-safe (false past the edge), so
-      // the flat-index step (cur±1 / ±nx / ±nxy) is only used for an in-bounds neighbour.
-      if (grid.isSolid(x - 1, y, z) && !visited[cur - 1]) { visited[cur - 1] = 1; stack.push(cur - 1); }
-      if (grid.isSolid(x + 1, y, z) && !visited[cur + 1]) { visited[cur + 1] = 1; stack.push(cur + 1); }
-      if (grid.isSolid(x, y - 1, z) && !visited[cur - nx]) { visited[cur - nx] = 1; stack.push(cur - nx); }
-      if (grid.isSolid(x, y + 1, z) && !visited[cur + nx]) { visited[cur + nx] = 1; stack.push(cur + nx); }
-      if (grid.isSolid(x, y, z - 1) && !visited[cur - nxy]) { visited[cur - nxy] = 1; stack.push(cur - nxy); }
-      if (grid.isSolid(x, y, z + 1) && !visited[cur + nxy]) { visited[cur + nxy] = 1; stack.push(cur + nxy); }
+      // FACE + EDGE neighbours (18-connectivity). isSolid() is bounds-safe (false past the edge), so
+      // we test it on the neighbour's LOCAL coords first and only compute the flat index for an
+      // in-bounds solid neighbour — never indexing visited[] with a wrapped/out-of-range key.
+      for (let n = 0; n < NEIGHBORS18.length; n++) {
+        const off = NEIGHBORS18[n];
+        const px = x + off[0], py = y + off[1], pz = z + off[2];
+        if (!grid.isSolid(px, py, pz)) continue;
+        const ni = px + nx * (py + ny * pz);
+        if (visited[ni]) continue;
+        visited[ni] = 1;
+        stack.push(ni);
+      }
     }
     return { cells, hasAnchor };
   };

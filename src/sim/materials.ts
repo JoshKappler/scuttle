@@ -4,6 +4,7 @@ export const OAK = 1;
 export const PINE = 2;
 export const IRON = 3;
 export const RAM = 4; // reinforced bow armor (voxel-destruction branch)
+export const SPAR = 13; // mast/spar timber — VOXEL masts (light topweight, shootable). See MATERIALS below.
 // Tropical terrain materials (islands & town). Additive — ships never use these.
 export const SAND = 5;
 export const ROCK = 6;
@@ -56,6 +57,17 @@ export const MATERIALS: Record<number, Material> = {
   // through victims without itself taking damage). Density matched to oak so the OAK→RAM swap is
   // mass-neutral: it changes toughness only, never the hull's tuned draft/trim (THE LAW #2).
   [RAM]: { name: "ram", density: 430, color: [0.04, 0.025, 0.015], strength: 4.5 },
+  // VOXEL MASTS (spar timber). Masts are now real grid voxels (sim/shipwright stampMasts), so they
+  // break voxel-by-voxel under the ONE destruction rule and the 18-connectivity sever sheds whatever
+  // is left above a shot-out base — no special-cased one-piece topple. CRITICAL (THE LAW #2/#3): a
+  // mast is tall TOPWEIGHT entirely ABOVE the waterline (buoyancy only lifts SUBMERGED voxels), so it
+  // adds pure weight that raises the COM and could capsize her under sail. DENSITY is therefore TINY
+  // (120 vs oak 430 — effective light spruce/fir with the standing rigging stripped out): a whole
+  // 3-mast frigate rig weighs ~1 t against an ~880 t hull, lifting the COM only a few mm (verified —
+  // the "rides upright, COM < 0.6·deck" stability test stays green with margin to spare). STRENGTH 1.5
+  // = half of oak, so a cannonball bores clean through and a ram crushes it readily (the user's
+  // "a mast should be shootable"). Colour: a weathered mid-brown spar, lighter than the dark hull oak.
+  [SPAR]: { name: "spar", density: 120, color: [0.085, 0.058, 0.03], strength: 1.5 },
   // Terrain palette — linear RGB. Visual-pass-1: DARKENED + desaturated ~35–45%
   // off the old bright values (player: islands "much too bright … like a super
   // early version of Minecraft"). Weathered, grittier tones; render/islandVisual.ts

@@ -10,10 +10,18 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
   it("is port/starboard symmetric", () => {
     const { grid } = ship;
     const [nx, ny, nz] = grid.dims;
-    for (let x = 0; x < nx; x++)
-      for (let y = 0; y < ny; y++)
+    // Scan every cell but assert ONCE: this first-rate's grid is ~1.27M cells (the tall voxel-mast
+    // tower nearly doubled ny), and an expect() per cell blows the test timeout on pure call overhead.
+    // Capture the first asymmetric coordinate for a useful failure message instead.
+    let firstAsym: string | null = null;
+    for (let x = 0; x < nx && firstAsym === null; x++)
+      for (let y = 0; y < ny && firstAsym === null; y++)
         for (let z = 0; z < nz; z++)
-          expect(grid.get(x, y, z)).toBe(grid.get(x, y, nz - 1 - z));
+          if (grid.get(x, y, z) !== grid.get(x, y, nz - 1 - z)) {
+            firstAsym = `(${x},${y},${z}): ${grid.get(x, y, z)} vs mirror ${grid.get(x, y, nz - 1 - z)}`;
+            break;
+          }
+    expect(firstAsym).toBeNull();
   });
 
   it("is watertight: no interior region leaks to the outside", () => {

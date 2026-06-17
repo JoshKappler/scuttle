@@ -118,14 +118,10 @@ export class RigManager {
   stepAll(ships: Ship[], simTime: number, dt: number): void {
     if (!TUN.rig.enabled) return;
 
-    // a mast going alive→dead (foot shot out / trunk smashed — ship.fellMast) spawns its lattice.
-    for (const A of ships) {
-      const sr = this.rigFor(A);
-      for (let mi = 0; mi < A.mastAlive.length; mi++) {
-        if (sr.alive[mi] && !A.mastAlive[mi]) this.spawnFallingMast(A, mi);
-        sr.alive[mi] = A.mastAlive[mi];
-      }
-    }
+    // MASTS ARE VOXELS NOW: a felled mast is just carved/severed SPAR cells, shed as debris by the
+    // hull's own crush + 18-connectivity sever (game/ship + debris.ts) — there is NO rigid one-piece
+    // topple any more (the old spawnFallingMast is retired; see its note). The lattice this manager
+    // still builds is used only for the BOWSPRIT bore below.
 
     // Phase 2: bowsprit boring (still on-ship, follows the hull rigidly). Task 9: once a spar has
     // shed enough bore-load into hulls, it SNAPS OFF and falls (reusing the mast-fall machinery).
@@ -197,69 +193,6 @@ export class RigManager {
     this._mBack.makeTranslation(-F.pivot0.x, -F.pivot0.y, -F.pivot0.z);
     this._mTrans.makeTranslation(c.pos.x, c.pos.y, c.pos.z);
     F.group.matrix.copy(this._mTrans).multiply(this._mRot).multiply(this._mBack);
-  }
-
-  /**
-   * A mast goes by the board. The VISUAL is the ship's real spars + sail (cloned by
-   * shipVisual.detachMast, which also clips the static parts so EXACTLY one mast disappears and one
-   * real mast falls). The PHYSICS is a lattice for the falling section only: build it ship-local,
-   * GEOMETRICALLY split at the recorded hit height (nodes above hitY fall; below stay as the static
-   * stub — connectivity is NOT used to split, because yards/cloth bridge a single trunk cut and the
-   * top would never separate), lift the falling nodes to WORLD space, and freeze ONE rigid chunk
-   * that topples + crushes the deck. A foot/low hit (hitY < 0) fells the WHOLE mast.
-   */
-  private spawnFallingMast(ship: Ship, mi: number): void {
-    if (!this.scene || !TUN.rig.masts || mi >= ship.build.masts.length) return;
-    const b = ship.build;
-    const hitY = ship.mastHitY[mi];
-
-    // the real cloned spars/sail (clips the static parts as a side effect) — null in headless tests.
-    const detached = ship.visual.detachMast?.(mi, hitY) ?? null;
-
-    const rig = buildRig({ voxelSize: VOXEL_SIZE, deckTopY: (xv) => (b.deckYAt(xv) + 1) * VOXEL_SIZE, masts: [b.masts[mi]] });
-    const foot = rig.nodes.find((n) => n.flags & NodeFlag.FOOT);
-    const footY = foot ? foot.pos.y : 0;
-    // GEOMETRIC split: a node FALLS if its ship-local height clears the hit (a real mid-break leaves a
-    // stub); a foot/low hit (hitY < footY+1) fells everything. Robust where connectivity wasn't.
-    const wholeMast = !(hitY >= footY + 1);
-    const fallIdx: number[] = [];
-    for (let i = 0; i < rig.nodes.length; i++) {
-      if (wholeMast || rig.nodes[i].pos.y > hitY) fallIdx.push(i);
-    }
-    if (fallIdx.length === 0) { if (detached) this.scene.add(detached.group); return; }
-
-    // lift the falling nodes into WORLD space (the stub nodes are irrelevant — the stub is the
-    // clipped static mesh, no physics needed for it).
-    for (const i of fallIdx) {
-      const n = rig.nodes[i];
-      ship.localToWorld([n.pos.x, n.pos.y, n.pos.z], this.wp);
-      n.pos = { x: this.wp.x, y: this.wp.y, z: this.wp.z };
-      n.prev = { x: this.wp.x, y: this.wp.y, z: this.wp.z };
-      n.pinned = false;
-    }
-    rig.awake = true;
-
-    // ONE rigid chunk: inherit the ship's velocity + a topple shove abeam + a roll kick so a vertical
-    // spar goes OVER the side instead of dropping straight down.
-    const sv = ship.body.linvel();
-    const lean = mi % 2 === 0 ? 1 : -1;
-    const vel: Vec3 = { x: sv.x - 0.4 * TUN.rig.toppleKick, y: sv.y, z: sv.z + lean * TUN.rig.toppleKick };
-    const omega: Vec3 = { x: lean * TUN.rig.toppleKick * 0.18, y: 0, z: 0 };
-    const chunk = freezeChunk(rig, fallIdx, vel, omega);
-
-    let group: THREE.Group;
-    let pivot0: THREE.Vector3;
-    if (detached) {
-      group = detached.group;
-      // the clones move rigidly about the CHUNK centroid (its spawn world pos), so the visual ≡ physics.
-      pivot0 = new THREE.Vector3(chunk.pos.x, chunk.pos.y, chunk.pos.z);
-      this.scene.add(group);
-    } else {
-      group = new THREE.Group(); pivot0 = new THREE.Vector3(chunk.pos.x, chunk.pos.y, chunk.pos.z);
-    }
-    const F: FallingRig = { rig, group, chunk, pivot0, age: 0, buoy: TUN.rig.fallFloatBuoy, ship, rested: false };
-    this.poseFalling(F);
-    this.falling.push(F);
   }
 
   /** Integrate every falling piece as ONE RIGID CHUNK (gravity + summed per-node buoyancy off the

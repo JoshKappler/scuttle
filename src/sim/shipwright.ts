@@ -1,6 +1,6 @@
 import { VOXEL_SIZE, VOXEL_VOLUME } from "../core/constants";
 import { createGrid, type VoxelGrid } from "./voxelGrid";
-import { EMPTY, IRON, OAK, PINE, RAM } from "./materials";
+import { EMPTY, IRON, OAK, PINE, RAM, SPAR } from "./materials";
 import { findCompartments, type Compartment } from "./compartments";
 import { weldToSingleComponent } from "./weld";
 
@@ -20,6 +20,11 @@ export interface ShipBuild {
   // bears axially (±x) instead — fired independently of the broadsides.
   cannonPorts: { x: number; y: number; z: number; side: 1 | -1; facing?: "fore" | "aft" }[];
   masts: { x: number; z: number; h: number }[]; // voxel coords on centerline; h = rig height (m)
+  /** Per mast: the SPAR voxels stamped into the grid for that mast (the actual voxel trunk), in
+   *  voxel coords, ascending keel→top. Masts are now REAL grid voxels (stampMasts) so they break
+   *  voxel-by-voxel under the unified destruction + 18-connectivity sever — render/game read this to
+   *  know which voxels carry which mast (e.g. to drop a sail once its supporting trunk is gone). */
+  mastVoxels: { x: number; y: number; z: number }[][];
   hatches: { x: number; z: number; w: number; d: number }[]; // deck openings
   lengthM: number;
   beamM: number;
@@ -209,6 +214,52 @@ function stampBulkheads(
 }
 
 /**
+ * Stamp each mast as a real VOXEL trunk (SPAR) rising from the deck — the change that makes masts
+ * break voxel-by-voxel under the ONE destruction rule (cannons bore through, rams crush) and lets the
+ * 18-connectivity sever pass (sim/connectivity + game/ship flushDamage) shed whatever is left above a
+ * shot-out base as debris. NO more one-piece rigid topple.
+ *
+ * Geometry: a thin column at the mast's (x,z). To stay PORT/STARBOARD SYMMETRIC (every hull has an
+ * even beam, so `round(cz)` is an off-centre cell), the trunk is 2 voxels wide in z spanning the two
+ * true centreline cells {floor(cz), ceil(cz)} (they sum to nz−1 → exact mirror), and 1 voxel in x.
+ * It rises from deckTop+1 up `h` metres. The base voxel sits directly ON the deck plank (face-adjacent
+ * below), and each voxel is face-adjacent to the one beneath, so the whole trunk is 6-/18-connected to
+ * the keel through the deck — a shot-out base severs everything above it (NOT before). Returns the
+ * stamped voxels per mast (keel→top) so the build can expose them. Deterministic (pure integer math).
+ *
+ * Run BEFORE weldToSingleComponent (a stray gap would get welded) and AFTER lowerBallast (which only
+ * relocates IRON BELOW deck, never touches above-deck SPAR). Masts never overwrite existing solid
+ * (bulwark/quarterdeck), and a mast on the centreline is interior, clear of the edge fence.
+ */
+function stampMasts(
+  grid: VoxelGrid,
+  masts: { x: number; z: number; h: number }[],
+  deckYAt: (x: number) => number,
+): { x: number; y: number; z: number }[][] {
+  const [, ny, nz] = grid.dims;
+  const cz = (nz - 1) / 2;
+  const zPair = [Math.floor(cz), Math.ceil(cz)]; // {floor,ceil} → mirror pair (sum = nz−1) for symmetry
+  const out: { x: number; y: number; z: number }[][] = [];
+  for (const m of masts) {
+    const cells: { x: number; y: number; z: number }[] = [];
+    const yBase = deckYAt(m.x) + 1; // first voxel sits on the deck plank (face-adjacent below)
+    const hVox = Math.max(1, Math.round(m.h / VOXEL_SIZE));
+    for (let i = 0; i < hVox; i++) {
+      const y = yBase + i;
+      if (y >= ny) break; // never run off the top of the grid
+      for (const z of zPair) {
+        if (grid.get(m.x, y, z) === EMPTY) {
+          grid.set(m.x, y, z, SPAR);
+          cells.push({ x: m.x, y, z });
+        }
+      }
+    }
+    out.push(cells);
+  }
+  return out;
+}
+
+/**
  * Assign a deck-hatch flooding orifice ONLY to the compartments that actually sit under a
  * deck hatch (one of `hatchXs`), leaving every other hold SEALED (it can only flood via a
  * breach or slow inter-bulkhead seepage). With ~10 holds this is what keeps the ship
@@ -237,7 +288,9 @@ export function buildSloop(): ShipBuild {
   // off for the deck, widest at the waterline belt, narrow rounded bottom,
   // tumblehome above, and a lot of ship under the water
   const nx = 104;
-  const ny = 30;
+  // ny holds the HULL (deckY≈20) PLUS the VOXEL MAST tower above it (15 m ≈ 60 voxels) + headroom —
+  // the trunk is real grid voxels now (stampMasts), so the grid must be tall enough to contain it.
+  const ny = 86;
   const nz = 32;
   const grid = createGrid(nx, ny, nz);
 
@@ -445,6 +498,8 @@ export function buildSloop(): ShipBuild {
 
   // single mast slightly forward of midship
   const masts = [{ x: x0 + Math.round(L * 0.42), z: Math.round(cz), h: 15 }];
+  // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
+  const mastVoxels = stampMasts(grid, masts, () => deckY);
 
   armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
 
@@ -456,6 +511,7 @@ export function buildSloop(): ShipBuild {
     interiorLeaks,
     cannonPorts,
     masts,
+    mastVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
@@ -482,7 +538,11 @@ export function buildSloop(): ShipBuild {
  */
 export function buildBrig(): ShipBuild {
   const nx = 152;
-  const ny = 42;
+  // ny holds the HULL (main deck ≈24, quarterdeck ≈33) PLUS a VOXEL MAST tower. A full 21 m mast in
+  // voxels (+84) would push this wide hull's grid past ~1 M cells (a heavier findSevered scan). The
+  // voxel trunk is CAPPED to the grid top (~16 m of breakable voxel mast — the bulk a fight shoots /
+  // rams); shipVisual keeps the thin cosmetic topmast above it. The small cutter/sloop fit fully.
+  const ny = 90;
   const nz = 44;
   const grid = createGrid(nx, ny, nz);
 
@@ -738,6 +798,8 @@ export function buildBrig(): ShipBuild {
     { x: x0 + Math.round(L * 0.38), z: Math.round(cz), h: 21 },
     { x: x0 + Math.round(L * 0.68), z: Math.round(cz), h: 18 },
   ];
+  // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
+  const mastVoxels = stampMasts(grid, masts, deckYAt);
 
   armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
 
@@ -749,6 +811,7 @@ export function buildBrig(): ShipBuild {
     interiorLeaks,
     cannonPorts,
     masts,
+    mastVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
@@ -773,7 +836,9 @@ export function buildBrig(): ShipBuild {
  */
 export function buildCutter(): ShipBuild {
   const nx = 84;
-  const ny = 26;
+  // ny holds the HULL (deckY≈16) PLUS the VOXEL MAST tower (12 m ≈ 48 voxels) + headroom — the mast
+  // is real grid voxels now (stampMasts), so the grid must be tall enough to contain the trunk.
+  const ny = 70;
   const nz = 26;
   const grid = createGrid(nx, ny, nz);
 
@@ -915,6 +980,8 @@ export function buildCutter(): ShipBuild {
   cannonPorts.push({ x: x0 + 4, y: deckY - 1, z: czi, side: 1, facing: "aft" });
 
   const masts = [{ x: x0 + Math.round(L * 0.44), z: Math.round(cz), h: 12 }];
+  // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
+  const mastVoxels = stampMasts(grid, masts, () => deckY);
 
   armorBow(grid);
 
@@ -926,6 +993,7 @@ export function buildCutter(): ShipBuild {
     interiorLeaks,
     cannonPorts,
     masts,
+    mastVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
@@ -950,7 +1018,11 @@ export function buildCutter(): ShipBuild {
  */
 export function buildFrigate(): ShipBuild {
   const nx = 188;
-  const ny = 50;
+  // ny holds the HULL (main deck ≈28, quarterdeck ≈37) PLUS a VOXEL MAST tower. A full 26 m mast in
+  // voxels (+104) would push this big hull's grid past ~1.3 M cells (a heavier findSevered scan). The
+  // voxel trunk is CAPPED to the grid top (~16 m of breakable voxel mast — the bulk a fight shoots /
+  // rams); shipVisual keeps the thin cosmetic topmast above it. The small cutter/sloop fit fully.
+  const ny = 96;
   const nz = 50;
   const grid = createGrid(nx, ny, nz);
 
@@ -1161,6 +1233,8 @@ export function buildFrigate(): ShipBuild {
     { x: x0 + Math.round(L * 0.52), z: Math.round(cz), h: 26 },
     { x: x0 + Math.round(L * 0.74), z: Math.round(cz), h: 22 },
   ];
+  // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
+  const mastVoxels = stampMasts(grid, masts, deckYAt);
 
   armorBow(grid);
 
@@ -1172,6 +1246,7 @@ export function buildFrigate(): ShipBuild {
     interiorLeaks,
     cannonPorts,
     masts,
+    mastVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
@@ -1189,7 +1264,13 @@ export function buildFrigate(): ShipBuild {
 
 export function buildManOfWar(): ShipBuild {
   const nx = 208;
-  const ny = 54;
+  // ny holds the HULL (weather deck ≈36) PLUS a tall VOXEL MAST tower. This first-rate's grid is
+  // ALREADY huge in plan (208×60), so a full 32 m voxel mast (+128 voxels) would blow it past 2 M
+  // cells (heavy findSevered + a per-cell test that stalls). The voxel trunk is CAPPED to the grid
+  // top here (~16 m of breakable voxel mast — the part a fight actually shoots/rams); stampMasts
+  // truncates cleanly at ny, and shipVisual keeps the thin cosmetic topmast cylinder for the slender
+  // upper third. Every other (smaller) hull fits its WHOLE mast in voxels.
+  const ny = 102;
   const nz = 60;
   const grid = createGrid(nx, ny, nz);
 
@@ -1450,6 +1531,8 @@ export function buildManOfWar(): ShipBuild {
     { x: x0 + Math.round(L * 0.48), z: Math.round(cz), h: 32 },
     { x: x0 + Math.round(L * 0.74), z: Math.round(cz), h: 26 },
   ];
+  // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
+  const mastVoxels = stampMasts(grid, masts, deckYAt);
 
   armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
 
@@ -1461,6 +1544,7 @@ export function buildManOfWar(): ShipBuild {
     interiorLeaks,
     cannonPorts,
     masts,
+    mastVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,

@@ -116,6 +116,12 @@ export class VoxelContact {
   private brokenB: [number, number, number][] = [];
   private poolA: [number, number, number][] = [];
   private poolB: [number, number, number][] = [];
+  // Parallel WORLD contact points for each broken cell (same index as brokenA/brokenB), so an
+  // energy-limited partial carve can order candidates by distance from the impact and bore a COMPACT
+  // cavity instead of pulling soft cells from across the overlap (the "checkerboard" bug). Reused +
+  // pooled, so a sustained ram still allocates nothing.
+  private ptsA: number[] = [];
+  private ptsB: number[] = [];
 
   /** Run the deformable contact for every ship↔ship and ship↔terrain pair this fixed step. */
   stepAll(ships: Ship[], terrain: ContactTarget[], dt: number): void {
@@ -208,8 +214,11 @@ export class VoxelContact {
     // classifying contacts allocates nothing during a sustained ram.
     let bSumX = 0, bSumY = 0, bSumZ = 0;
     const brokenA = this.brokenA, brokenB = this.brokenB;
+    const ptsA = this.ptsA, ptsB = this.ptsB;
     brokenA.length = 0;
     brokenB.length = 0;
+    ptsA.length = 0;
+    ptsB.length = 0;
     if (moving) {
       for (let i = 0; i < count; i++) {
         const o = i * 3;
@@ -220,9 +229,11 @@ export class VoxelContact {
         if (vci <= TUN.crush.vBreak) continue;
         // pooled push (no per-contact allocation in a sustained ram). Only flag B's cell when B can
         // actually be carved — terrain (canCarve === false) is never eroded, so its broken layer is
-        // never collected and ALL the budget falls on the ship.
+        // never collected and ALL the budget falls on the ship. The A and B cells of one contact share
+        // the same world contact point (the A-cell centre), so both get `px,py,pz` for the distance sort.
         this.pushBroken(brokenA, this.poolA, sc.aCells[o], sc.aCells[o + 1], sc.aCells[o + 2]);
-        if (b.canCarve) this.pushBroken(brokenB, this.poolB, sc.bCells[o], sc.bCells[o + 1], sc.bCells[o + 2]);
+        ptsA.push(px, py, pz);
+        if (b.canCarve) { this.pushBroken(brokenB, this.poolB, sc.bCells[o], sc.bCells[o + 1], sc.bCells[o + 2]); ptsB.push(px, py, pz); }
         bSumX += px; bSumY += py; bSumZ += pz;
       }
     }
@@ -246,7 +257,7 @@ export class VoxelContact {
       const sB = this.vB.x * dhx + this.vB.z * dhz; // B's speed along d̂ (0 for static terrain)
       vClose = sA - sB;
       const budget = Math.min(0.5 * mu * vClose * vClose, TUN.crush.maxStepEnergy);
-      energy = this.carveWithinBudget(a, b, brokenA, brokenB, tough, budget);
+      energy = this.carveWithinBudget(a, b, brokenA, brokenB, this.ptsA, this.ptsB, bcx, bcy, bcz, tough, budget);
       removedA = this.lastRemovedA; removedB = this.lastRemovedB;
       // The fracture energy is shed as a DRAG on the hull(s) driving INTO the contact — the crumbling
       // layer carries its momentum off as debris and pushes the body behind it ~nothing, so a heavy
@@ -333,14 +344,26 @@ export class VoxelContact {
    *  Carves only the sides that CAN break (terrain's canCarve === false → all the energy erodes the
    *  ship and the immovable, indestructible wall takes none). Each hull's cells also pay its own
    *  hullToughness (the "Hull Reinforcement" upgrade, ≥1). When the budget covers every broken cell
-   *  (a high-energy hit), carve them all directly — no per-candidate object and no sort, since
-   *  cheapest-first ordering is moot when all are affordable. Only when the energy can't pay for the
-   *  whole flagged layer (the energy-limited bite-and-lodge, or the maxStepEnergy anti-vaporize
-   *  clamp) does it fall back to spending cheapest-first. Writes the removal counts into
-   *  lastRemovedA/lastRemovedB. */
+   *  (a high-energy hit), carve them all directly — no per-candidate object and no sort, order is moot
+   *  when all are affordable. Only when the energy can't pay for the whole flagged layer (the
+   *  energy-limited bite-and-lodge, or the maxStepEnergy anti-vaporize clamp) does it order candidates
+   *  and spend a prefix.
+   *
+   *  ORDERING (the "no checkerboard" fix): the partial bite is taken NEAREST-the-impact first — each
+   *  candidate is keyed by the squared distance of its world contact point to the break centroid
+   *  (cx,cy,cz), so a limited budget removes a COMPACT cavity growing outward from the contact, not a
+   *  cheapest-first scatter. The old rule sorted purely by break energy; with the bow's RAM armor laid
+   *  over OAK that pulled the soft oak from BEHIND the armor across the whole overlap (the player's
+   *  "front of my ship is a checkerboard of voxels"). Break energy is only the tiebreaker now (within
+   *  the same shell of distance the softer cell still goes first), so emergent penetration is kept: a
+   *  tough belt the budget can't reach still survives, but the hole is always one connected bore.
+   *  pointsA/pointsB are the world contact points parallel to brokenA/brokenB (flat [x,y,z,...]).
+   *  Writes the removal counts into lastRemovedA/lastRemovedB. */
   private carveWithinBudget(
     a: ContactTarget, b: ContactTarget,
     brokenA: [number, number, number][], brokenB: [number, number, number][],
+    pointsA: number[], pointsB: number[],
+    cx: number, cy: number, cz: number,
     tough: number, budget: number,
   ): number {
     // each hull's cells also pay its own hullToughness (the "Hull Reinforcement" upgrade, ≥1),
@@ -359,14 +382,26 @@ export class VoxelContact {
       this.lastRemovedB = canB && brokenB.length ? b.carveCells(brokenB) : 0;
       return total;
     }
-    // energy-limited: can't break the whole flagged layer this step — spend cheapest-first so the
-    // ram bites a hole and lodges once its energy is gone (and we never vaporize a deep slab).
-    const cand: { isA: boolean; c: [number, number, number]; e: number }[] = [];
-    if (canA) for (const c of brokenA) cand.push({ isA: true, c, e: a.cellBreakEnergy(c[0], c[1], c[2]) * toughA });
-    if (canB) for (const c of brokenB) cand.push({ isA: false, c, e: b.cellBreakEnergy(c[0], c[1], c[2]) * toughB });
-    cand.sort((x, y) => x.e - y.e);
+    // energy-limited: can't break the whole flagged layer this step — order NEAREST-the-impact first
+    // (squared distance to the break centroid) so the bite is a compact bore, energy as the tiebreaker.
+    const cand: { isA: boolean; c: [number, number, number]; e: number; d2: number }[] = [];
+    if (canA) for (let i = 0; i < brokenA.length; i++) {
+      const c = brokenA[i], o = i * 3;
+      const ddx = pointsA[o] - cx, ddy = pointsA[o + 1] - cy, ddz = pointsA[o + 2] - cz;
+      cand.push({ isA: true, c, e: a.cellBreakEnergy(c[0], c[1], c[2]) * toughA, d2: ddx * ddx + ddy * ddy + ddz * ddz });
+    }
+    if (canB) for (let i = 0; i < brokenB.length; i++) {
+      const c = brokenB[i], o = i * 3;
+      const ddx = pointsB[o] - cx, ddy = pointsB[o + 1] - cy, ddz = pointsB[o + 2] - cz;
+      cand.push({ isA: false, c, e: b.cellBreakEnergy(c[0], c[1], c[2]) * toughB, d2: ddx * ddx + ddy * ddy + ddz * ddz });
+    }
+    cand.sort((x, y) => x.d2 - y.d2 || x.e - y.e); // nearest the impact first; cheaper breaks the tie
     let bud = budget, spent = 0;
     const remA: [number, number, number][] = [], remB: [number, number, number][] = [];
+    // STOP at the first cell the budget can't afford (in nearest-first order): the bite LODGES at that
+    // depth — a compact bore that reaches exactly as far from the impact as the energy can pay for, and
+    // a tough belt it can't reach survives (emergent penetration, THE LAW #4). Because the order is by
+    // distance, stopping leaves a connected cavity, never a scatter.
     for (const k of cand) { if (k.e > bud) break; bud -= k.e; spent += k.e; (k.isA ? remA : remB).push(k.c); }
     this.lastRemovedA = remA.length ? a.carveCells(remA) : 0;
     this.lastRemovedB = remB.length ? b.carveCells(remB) : 0;

@@ -48,6 +48,15 @@ export class ShipVisual {
    *  cross-section interior (lower deck, compartments, flood water) reads as clearly-lit
    *  timber instead of crushing to a dark void on the faces turned away from the sun. */
   private cutawayOn = false;
+  /** The active cutaway clip plane (null = off), stored so cannon meshes built (or rebuilt on a
+   *  hull swap) AFTER setCutaway() still pick up the current clip state. */
+  private cutawayPlane: THREE.Plane | null = null;
+  /** Materials owned by the cannon meshes (barrel/trunnion/axle iron, carriage wood, gunport
+   *  recess). They are clipped in lock-step with the hull so a gun on the cut-away half is sliced
+   *  off too, instead of floating in the opened interior. All are per-ShipVisual-instance — the
+   *  carriage wood is a CLONE of the shared rig woodMat so masts/wheel/rudder stay un-clipped, and
+   *  setCutaway() is only ever called on the PLAYER ship, so enemy cannons are never touched. */
+  private cannonMaterials: THREE.Material[] = [];
   private build: ShipBuild;
 
   /** Real clipped, world-leveled, sloshing flood fluid (round 14): replaced the
@@ -61,6 +70,10 @@ export class ShipVisual {
     group: THREE.Group; fallT: number; fallAxis: THREE.Vector3;
     /** the trunk pole mesh — clipped (scaled down) to the stub on a mid-hit. */
     pole: THREE.Mesh;
+    /** true only on a grid-capped hull (man-o-war): the voxel trunk can't reach the masthead, so
+     *  the thin `pole` cylinder stays visible as the cosmetic TOPMAST above the voxels (dropped by
+     *  updateRig once the voxel base under it is gone). false → the voxels ARE the whole mast. */
+    cosmeticPole: boolean;
     /** each spar/sail part with its mast-local foot height (m above the foot), so a
      *  detach can split the rig at the hit height: parts above the cut fall, below stay. */
     parts: { mesh: THREE.Mesh; yLocal: number }[];
@@ -204,15 +217,8 @@ export class ShipVisual {
     if (this.rudderPivot) this.rudderPivot.rotation.y = -this.dispRudder * 0.55;
     if (this.wheelSpin) this.wheelSpin.rotation.z = -this.dispRudder * 2.6;
 
-    // felled masts topple over their foot, hang, then slip into the sea
-    for (const rig of this.mastRigs) {
-      if (rig.fallT < 0) continue;
-      rig.fallT += dt;
-      const ang = Math.min(rig.fallT * rig.fallT * 1.1, 1.62);
-      rig.group.quaternion.setFromAxisAngle(rig.fallAxis, ang);
-      if (rig.fallT > 3) rig.group.position.y -= dt * 0.55;
-      if (rig.fallT > 14) rig.group.visible = false;
-    }
+    // (Masts no longer topple as a rigid visual group — they're voxels, carved/severed in place.
+    //  updateRig() drops the yards/sails as their supporting trunk voxels go.)
 
     // barrels share the gunnery module's direction math, so what you see is
     // exactly where the ball will go. Yaw-then-pitch keeps carriages upright
@@ -243,10 +249,18 @@ export class ShipVisual {
 
   private static tmpDir = new THREE.Vector3();
 
-  /** Cutaway: clip the hull against a world-space plane (null disables). */
+  /** Cutaway: clip the hull AND the cannon meshes against a world-space plane (null disables).
+   *  The guns use their own materials (not hullMaterial), so without this the gun on the cut-away
+   *  half stayed fully visible floating in the opened interior — they must be sliced off too. */
   setCutaway(plane: THREE.Plane | null): void {
-    this.hullMaterial.clippingPlanes = plane ? [plane] : null;
+    this.cutawayPlane = plane;
+    const planes = plane ? [plane] : null;
+    this.hullMaterial.clippingPlanes = planes;
     this.hullMaterial.needsUpdate = true;
+    for (const m of this.cannonMaterials) {
+      m.clippingPlanes = planes;
+      m.needsUpdate = true;
+    }
     this.cutawayOn = !!plane; // animate() lifts the shade floor while cut away
   }
 
@@ -365,6 +379,33 @@ export class ShipVisual {
     const pivot = new THREE.Vector3();
     rig.group.getWorldPosition(pivot);
     return { group: holder, pivot };
+  }
+
+  /**
+   * Sync the yards + sails to the LIVE voxel trunk. Masts are real voxels now (carved/severed by the
+   * hull), so the trunk itself is handled by the hull remesh; here we just DROP the separate spar/sail
+   * meshes whose foot now hangs above the surviving trunk. `mastTopY[mi]` is the ship-local Y (m) of
+   * the highest surviving SPAR voxel's top (−Infinity once the whole trunk is gone, derived in
+   * game/ship.updateMastState). A yard/sail is hidden once its foot clears that height — so a shot
+   * that lops the top drops just its upper canvas, a shot at the base drops the lot. Idempotent + cheap
+   * (a few visibility flags), called every step from ship.syncVisual.
+   */
+  updateRig(mastTopY: number[]): void {
+    for (let mi = 0; mi < this.mastRigs.length; mi++) {
+      const rig = this.mastRigs[mi];
+      // surviving trunk height measured from the mast-group origin (which sits at the deck top) —
+      // the same convention detachMast uses for its cut height.
+      const top = mastTopY[mi] ?? -Infinity;
+      const survAboveFoot = top - rig.group.position.y;
+      const aliveAtFoot = top > -Infinity; // any voxel trunk still standing off the deck?
+      // the cosmetic TOPMAST cylinder (only present on a grid-capped hull, e.g. the man-o-war) hangs
+      // above the voxels — it shows while the voxel trunk under it stands and drops once it's gone.
+      if (rig.cosmeticPole) rig.pole.visible = aliveAtFoot;
+      for (const part of rig.parts) {
+        // a small slack (0.5 m) keeps a yard whose foot sits right at the surviving top still shown.
+        part.mesh.visible = part.yLocal <= survAboveFoot + 0.5;
+      }
+    }
   }
 
   /** The bowsprit snaps off (Task 9): clone the real spar as a falling-debris mesh and HIDE the
@@ -606,12 +647,23 @@ export class ShipVisual {
       // detachMast(mi, cutY) split the rig at the hit height (above = falls, below = stub).
       const parts: { mesh: THREE.Mesh; yLocal: number }[] = [];
 
+      // The trunk is REAL VOXELS now (sim/shipwright stampMasts), meshed + carved by the hull, so the
+      // smooth cylinder is normally HIDDEN — it would just double the trunk and never break voxel-by-
+      // voxel. EXCEPTION: on a hull whose grid is too short to hold the WHOLE mast in voxels (the
+      // man-o-war, capped for perf), the voxel trunk truncates partway up and the thin cylinder stays
+      // visible as the cosmetic TOPMAST above the voxels. Kept (mesh always present) so detachMast /
+      // the parts list keep a valid `pole` reference. updateRig() keeps it in sync with damage.
+      const vox = this.build.mastVoxels?.[mi] ?? [];
+      const voxTopLocalY = vox.length ? (Math.max(...vox.map((c) => c.y)) + 1) * VOXEL_SIZE : deckTop;
+      const voxTopAboveFoot = voxTopLocalY - deckTop; // mast-group-local height the voxels reach
+      const fullyVoxel = voxTopAboveFoot >= mastH - 1; // voxels reach (near) the masthead → no cylinder
       const mast = new THREE.Mesh(
         new THREE.CylinderGeometry(mastH * 0.006, mastH * 0.012, mastH, 8),
         woodMat,
       );
       mast.position.set(0, mastH / 2 - 0.5, 0);
       mast.castShadow = true;
+      mast.visible = !fullyVoxel; // voxel trunk replaces it unless the voxels were capped short
       mastGroup.add(mast);
 
       this.mastRigs.push({
@@ -619,6 +671,7 @@ export class ShipVisual {
         fallT: -1,
         fallAxis: new THREE.Vector3(df.z, 0, -df.x), // up × df
         pole: mast,
+        cosmeticPole: !fullyVoxel,
         parts,
         mastH,
         poleH: mastH,
@@ -784,6 +837,9 @@ export class ShipVisual {
     // one merged mesh with ~37° of elevation baked into the sculpt, so it
     // could never point where the ball went.
     const ironMat = new THREE.MeshStandardMaterial({ color: 0x14151a, roughness: 0.45, metalness: 0.7 });
+    // the carriage wood: a CLONE of the shared rig woodMat so the cutaway can clip the gun
+    // carriage WITHOUT also slicing the masts/yards/rudder/helm/ladder/bowsprit that share woodMat.
+    const gunWoodMat = woodMat.clone();
     if (!ShipVisual.gunGeo) {
       // classic gun profile, lathe axis +y, trunnion at y=0: cascabel ball,
       // breech ring, first reinforce, tapering chase, muzzle swell, bore face
@@ -813,6 +869,12 @@ export class ShipVisual {
     const gunportFrameGeo = new THREE.BoxGeometry(0.84, 0.74, 0.1);
     const gunportHoleGeo = new THREE.BoxGeometry(0.66, 0.56, 0.18);
     const gunportMat = new THREE.MeshStandardMaterial({ color: 0x07070a, roughness: 1, metalness: 0 });
+    // register the gun materials so setCutaway() clips them with the hull, and seed them with the
+    // CURRENT clip state — covers a hull swap where setCutaway() ran before these were (re)built.
+    this.cannonMaterials = [ironMat, gunWoodMat, gunportMat];
+    if (this.cutawayPlane) {
+      for (const m of this.cannonMaterials) m.clippingPlanes = [this.cutawayPlane];
+    }
     const deckInPivot = -0.62; // the pivot origin floats 0.62 above the deck (model space)
     for (let portIndex = 0; portIndex < this.build.cannonPorts.length; portIndex++) {
       const port = this.build.cannonPorts[portIndex];
@@ -860,12 +922,12 @@ export class ShipVisual {
       // open-deck broadside guns keep their full carriage. The barrel still elevates/traverses.
       if (!port.facing) {
         for (const s of [-1, 1]) {
-          add(gg.cheekF, woodMat, s * 0.15, BORE_UP_B - 0.22, -0.02);
-          add(gg.cheekR, woodMat, s * 0.15, BORE_UP_B - 0.38, -0.45);
-          add(gg.wheelF, woodMat, s * 0.26, deckInPivot + 0.17, 0.18, true);
-          add(gg.wheelR, woodMat, s * 0.26, deckInPivot + 0.15, -0.55, true);
+          add(gg.cheekF, gunWoodMat, s * 0.15, BORE_UP_B - 0.22, -0.02);
+          add(gg.cheekR, gunWoodMat, s * 0.15, BORE_UP_B - 0.38, -0.45);
+          add(gg.wheelF, gunWoodMat, s * 0.26, deckInPivot + 0.17, 0.18, true);
+          add(gg.wheelR, gunWoodMat, s * 0.26, deckInPivot + 0.15, -0.55, true);
         }
-        add(gg.bed, woodMat, 0, deckInPivot + 0.09, -0.18);
+        add(gg.bed, gunWoodMat, 0, deckInPivot + 0.09, -0.18);
         add(gg.axle, ironMat, 0, deckInPivot + 0.17, 0.18, true);
         add(gg.axle, ironMat, 0, deckInPivot + 0.15, -0.55, true);
       }
@@ -892,7 +954,7 @@ export class ShipVisual {
         }
         const wx = (sk + (dir > 0 ? 1 : 0)) * VOXEL_SIZE; // outer face of the skin voxel
         const wz = (port.z + 0.5) * VOXEL_SIZE;
-        const frame = new THREE.Mesh(gunportFrameGeo, woodMat);
+        const frame = new THREE.Mesh(gunportFrameGeo, gunWoodMat);
         frame.position.set(wx, wy, wz);
         frame.rotation.y = Math.PI / 2;
         const hole = new THREE.Mesh(gunportHoleGeo, gunportMat);
@@ -902,7 +964,7 @@ export class ShipVisual {
       } else if (port.y < this.build.deckY) {
         // a below-deck broadside gunport on the hull side
         const wz = (port.z + 0.5) * VOXEL_SIZE;
-        const frame = new THREE.Mesh(gunportFrameGeo, woodMat);
+        const frame = new THREE.Mesh(gunportFrameGeo, gunWoodMat);
         frame.position.set(px, wy, wz);
         const hole = new THREE.Mesh(gunportHoleGeo, gunportMat);
         hole.position.set(px, wy, wz + port.side * 0.05);

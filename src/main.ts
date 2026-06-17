@@ -660,6 +660,10 @@ async function main() {
   let manOverboard = false;
   let respawning = false; // guards the one-shot sink → respawn handoff
   let plugChannel = 0; // seconds remaining on the current plank repair
+  // F = standalone fire key (trackpad fix): you can't hold RMB-aim AND click LMB on a
+  // laptop trackpad, so F fires a broadside on its own — no mouse held, works at the
+  // wheel or on deck. Set in the keydown handler, consumed in the fire block below.
+  let fireKeyQueued = false;
 
   // She's "sunk" only when genuinely FOUNDERED (deep + waterlogged, or fully saturated) — the same
   // single predicate the fleet uses. The old bare `y < -12` fired on a transient deck-dip and reset a
@@ -757,6 +761,19 @@ async function main() {
         }
       } else if (onFoot) {
         slash = true; // a cutlass flourish on deck — nothing to fight anymore
+      }
+    }
+    // F fires a broadside WITHOUT the mouse held (trackpad fix): same path/aim provider
+    // as the RMB+LMB fire above, just not gated on `aiming`. aimBearing() returns a valid
+    // side from the camera look regardless. fireBroadside enforces per-gun reload, so a
+    // spam of F just clicks on empty guns. Don't fire while plugging a breach.
+    if (fireKeyQueued) {
+      fireKeyQueued = false;
+      if (gs.phase === "playing" && plugChannel <= 0) {
+        cannons.fireBroadside(sloop, aimBearing(), t, () => ({
+          elevationDeg: controls.elevationDeg,
+          traverseDeg: controls.traverseDeg,
+        }));
       }
     }
     let kick = false;
@@ -994,7 +1011,12 @@ async function main() {
       controls.syncFirstPerson(firstPerson);
       controls.charFollow = camMode === 0; // wheel zoom works the follow-cam in char 3rd-person
     }
-    if (e.code === "KeyF") toggleFullscreen();
+    // F fires a broadside (trackpad fix — see fireKeyQueued). e.repeat is filtered at the
+    // top of this handler, so holding F won't strobe; fireBroadside enforces reload anyway.
+    if (e.code === "KeyF") fireKeyQueued = true;
+    // G toggles fullscreen (moved off F, which now fires; G is free — grapple/boarding is gone).
+    // Browser F11 also still fullscreens.
+    if (e.code === "KeyG") toggleFullscreen();
     if (e.code === "KeyX") {
       cutaway = !cutaway;
       // only the PLAYER ship is cut — the plane is HER centerline (the camera follows
@@ -1290,8 +1312,8 @@ async function main() {
     if (onFoot && character.player) hudEls.stamBar.style.width = `${character.player.stamina * 100}%`;
 
     hudEls.hints.textContent = onFoot
-      ? `WASD move · Shift sprint · Space jump · C kick · hold RMB aim + LMB fire · E take wheel · V view · Esc menu`
-      : `W/S sails · A/D helm · hold RMB aim + LMB fire · E leave wheel · V view · Q spyglass · R plug breach · P pump · Esc menu · foes ${fleet.enemies.length}`;
+      ? `WASD move · Shift sprint · Space jump · C kick · F fire (or RMB aim + LMB) · E take wheel · V view · G fullscreen · Esc menu`
+      : `W/S sails · A/D helm · F fire (or RMB aim + LMB) · E leave wheel · V view · Q spyglass · R plug breach · P pump · G fullscreen · Esc menu · foes ${fleet.enemies.length}`;
   }
 
   // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
