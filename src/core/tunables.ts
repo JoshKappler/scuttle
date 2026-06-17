@@ -50,7 +50,13 @@ export const TUN = {
      *  0.5), with yawDamp eased 0.7→0.6, roughly halves the turning circle (measured brig ≈327 m → ≈150 m).
      *  Bigger = tighter turn; too big spins her uncontrollably. (The "Sharper Rudder" UPGRADE —
      *  ship.rudderPower — still stacks ON TOP of this for the player.) */
-    rudderGain: 1.0,
+    rudderGain: 2.0,
+    /** SHIP-FEEL R4 — low-speed turn FLOOR fed into the rudder flow term in game/sailing.ts
+     *  (yaw ∝ rudder·(rudderLowFloor+|speed|)·rudderGain). Near a standstill |speed|→0, so this floor
+     *  is essentially ALL the steering authority you have; raised so you can pivot to line up a shot
+     *  without way on (playtest: "very hard to line up shots, everything moves so slow"). Replaces the
+     *  hard-coded 1.5 base that used to live in sailing.ts. */
+    rudderLowFloor: 2.5,
     /** SHIP-FEEL pass — EXTRA roll damping about the ship's FORE-AFT axis only (×roll inertia·wet),
      *  on top of the shared heaveDamp ζ. This stiffens the side-to-side ROLL (less idle wallow and
      *  straight-line sway) WITHOUT over-damping heave/pitch (which the playtest liked light at 0.2).
@@ -272,8 +278,9 @@ export const TUN = {
      *  dev-panel slider in main.ts still binds this key, so keep it to avoid an out-of-scope edit. */
     hingeTime: 1.2,
     /** buoyancy lift decay per second — a downed mast floats on entrained air, then waterlogs and
-     *  founders (cf. debris.wreckLift). */
-    waterlog: 0.06,
+     *  founders (cf. debris.wreckLift). R4: 0.06→0.02 so a felled spar FLOATS and drifts for a good
+     *  while (the user's "fall into the water and then float around") before it slowly waterlogs under. */
+    waterlog: 0.02,
     /** effective mass (kg) of one falling spar/cloth node when it crushes a deck (½·m·v² budget) —
      *  high enough that a toppling mast actually staves in what it lands on. */
     fallMass: 800,
@@ -285,6 +292,16 @@ export const TUN = {
     /** Task 9: bore energy (J) the bowsprit must shed into hulls before it SNAPS OFF and falls. One
      *  good bow-first ram sheds tens of kJ, so this is a few solid bites' worth of damage. */
     spritBreak: 60000,
+    /** R4 mast-FLOAT (game/rig.ts stepFalling): a felled spar must SETTLE and FLOAT, not bob/bounce.
+     *  The old fall used a 1.3 buoyancy spring with no vertical velocity damping → it rocketed back up
+     *  off the swell and bounced. fallFloatBuoy = the target buoyancy multiplier while afloat (≈neutral
+     *  so it rests awash, not a trampoline); fallVertDamp = near-critical vertical velocity damping that
+     *  kills the bob the instant it touches water (cf. debris.ts kv = m·6·wet); fallSinkFloor = the
+     *  buoyancy floor the lift decays toward, kept high enough that it stays awash and drifting for a
+     *  good while before `waterlog` finally pulls it under. */
+    fallFloatBuoy: 1.0,
+    fallVertDamp: 5.0,
+    fallSinkFloor: 0.6,
   },
 
   /** Navigational hazards (game/islandField.ts) — extra terrain scattered at world generation.
@@ -305,15 +322,19 @@ export const TUN = {
      *  nick and a 30-cell gash differ ~30× in area and further by depth (a deep hole has more head).
      *  Tuned WITH pumpRate so the three damage cases land where the player asked: a single waterline
      *  cell is trivially pumped, a ~6-10 cell hole sits about at pump capacity, a big low chunk
-     *  (~25-40 cells, deep) outpaces the pump. 0.2 keeps a holed hull settling/foundering over the
-     *  better part of a minute (fightable: pumps + plank repairs matter), not seconds. */
-    inflowScale: 0.2,
+     *  (~25-40 cells, deep) outpaces the pump. R4: 0.2→0.5 so a hull broken WIDE open (a rammed-off bow,
+     *  a 30-cell gash) floods AND drains FAST — equalising toward the waterline in a few seconds, not the
+     *  "very slowly" the user reported — while the per-cell area scaling keeps a single nick trivial for
+     *  the pump. Flow is signed (same orifice both ways), so the faster-out is automatic. */
+    inflowScale: 0.5,
     /** pump drain rate (m³/s) — the bilge pump empties the single MOST-flooded compartment while ON
      *  (`P` toggles). Set so it beats every case BUT the worst: a small/medium breach is held or
      *  reversed, a gaping low hole still outpaces it. At a ~0.7 m-deep mid hole (~8 cells) the inflow
      *  is ≈0.22 m³/s, just under this; a single waterline cell (~0.013 m³/s) is trivially won; a
-     *  ~30-cell deep gash (~1.4 m³/s) overwhelms it ~5×. Pair with inflowScale when retuning feel. */
-    pumpRate: 0.25,
+     *  ~30-cell deep gash (~1.4 m³/s) overwhelms it ~5×. Pair with inflowScale when retuning feel.
+     *  R4: 0.25→0.3 to keep pace with the faster inflowScale on small/medium holes (pump still loses to
+     *  a gaping low breach). */
+    pumpRate: 0.3,
     /** submerged fraction past which reserve buoyancy is treated as GONE and `waterlog` ramps to
      *  the final plunge. With waterline equilibrium in place a single nick never reaches this — only
      *  deep/progressive flooding does — so she mostly settles & survives (recovers below 0.7× this

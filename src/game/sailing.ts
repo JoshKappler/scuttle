@@ -133,8 +133,11 @@ export class SailingController {
     // rudder: yaw torque scales with water flow over it, with a generous
     // low-speed floor so you can always work the bow off the wind — and with
     // what's LEFT of the blade (round 7: "holes in the rudder should mess
-    // up their maneuverability")
-    const flow = Math.sign(this.speed || 1) * (1.5 + Math.abs(this.speed));
+    // up their maneuverability"). The floor is the steering authority at ~zero
+    // way: TUN.phys.rudderLowFloor (raised from a hard 1.5 so a stopped/slow
+    // ship can still pivot to line up a broadside — playtest "everything moves
+    // so slow, very hard to line up shots").
+    const flow = Math.sign(this.speed || 1) * (TUN.phys.rudderLowFloor + Math.abs(this.speed));
     // rudderEff = damage state (0.15..1); rudderPower = the "Sharper Rudder" upgrade (≥1).
     // SHIP-FEEL pass: the old fixed 0.5 base coefficient is now the live TUN.phys.rudderGain knob
     // (default 2.0 ≈ 4× the old authority → about half the turning circle, paired with a lighter

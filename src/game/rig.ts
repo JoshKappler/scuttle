@@ -176,7 +176,7 @@ export class RigManager {
     if (detached) { group = detached.group; this.scene.add(group); }
     else group = new THREE.Group();
     const pivot0 = new THREE.Vector3(chunk.pos.x, chunk.pos.y, chunk.pos.z);
-    const F: FallingRig = { rig, group, chunk, pivot0, age: 0, buoy: 1.0, ship: A, rested: false };
+    const F: FallingRig = { rig, group, chunk, pivot0, age: 0, buoy: TUN.rig.fallFloatBuoy, ship: A, rested: false };
     this.poseFalling(F);
     this.falling.push(F);
   }
@@ -257,7 +257,7 @@ export class RigManager {
     } else {
       group = new THREE.Group(); pivot0 = new THREE.Vector3(chunk.pos.x, chunk.pos.y, chunk.pos.z);
     }
-    const F: FallingRig = { rig, group, chunk, pivot0, age: 0, buoy: 1.3, ship, rested: false };
+    const F: FallingRig = { rig, group, chunk, pivot0, age: 0, buoy: TUN.rig.fallFloatBuoy, ship, rested: false };
     this.poseFalling(F);
     this.falling.push(F);
   }
@@ -272,24 +272,46 @@ export class RigManager {
       F.age += dt;
       const c = F.chunk;
 
-      // per-node accel = gravity + buoyancy (computed at the node's current world position);
+      // per-node accel = gravity + a GENTLE buoyancy (computed at the node's current world position);
       // integrateChunk sums force+torque about the centroid so the chunk topples while staying rigid.
+      // The OLD spring (1.3·(1+2·sub) ≈ up to +3·G net) rocketed the spar back off the swell and it
+      // bounced. Now buoy≈neutral: a fully-submerged node lifts at only ~+0.4·G so the spar rises just
+      // enough to float AWASH, never trampolines. We also record how WET the chunk is this step so we
+      // can near-critically damp its VERTICAL velocity after integrating (the real anti-bounce lever).
       const buoy = F.buoy;
+      let wet = 0;
       const accel = (n: { pos: Vec3 }): Vec3 => {
         let ay = -G;
         const surf = surfaceHeight(this.waves, n.pos.x, n.pos.z, simTime);
         if (n.pos.y < surf) {
           const sub = Math.min(surf - n.pos.y, 1);
-          ay += G * (1 + 2 * sub) * buoy; // Archimedes-ish lift, scaled by waterlog
+          if (sub > wet) wet = sub;
+          ay += G * (1 + 0.4 * sub) * buoy; // gentle Archimedes-ish lift (≈neutral), scaled by waterlog
         }
         return { x: 0, y: ay, z: 0 };
       };
       integrateChunk(F.rig, c, accel, dt, TUN.rig.linDamp, TUN.rig.angDamp);
+
+      // Anti-bounce: when submerged, damp the chunk's VELOCITY near-critically on the VERTICAL axis
+      // (so the bob dies in ~1 s) and LIGHTLY on the horizontal (so she still drifts), mirroring the
+      // proven debris.ts float (kv = m·6·wet, kh = m·0.8·wet). The chunk stores ONE linear velocity
+      // (c.vel) + an angular velocity (c.omega); damping c.vel post-integrate is cleaner than a
+      // velocity term inside accel (accel only sees position, not the chunk's rigid velocity). The
+      // implicit form v *= 1/(1+k·dt) is unconditionally stable even at a near-critical k.
+      if (wet > 0) {
+        c.vel.y /= 1 + TUN.rig.fallVertDamp * wet * dt;
+        const kh = 0.8 * wet;
+        c.vel.x /= 1 + kh * dt;
+        c.vel.z /= 1 + kh * dt;
+        // bleed the tumble too, so a felled spar lies still on the surface instead of spinning forever.
+        const ka = 1.2 * wet;
+        c.omega.x /= 1 + ka * dt; c.omega.y /= 1 + ka * dt; c.omega.z /= 1 + ka * dt;
+      }
       applyChunk(F.rig, c, dt); // re-derive member node world positions from the rigid transform
 
       this.crushFalling(F, ships, dt);
       this.poseFalling(F); // re-pose the cloned spars/sail from the (possibly bled) transform
-      F.buoy = Math.max(F.buoy - dt * TUN.rig.waterlog, 0.25); // float, then founder
+      F.buoy = Math.max(F.buoy - dt * TUN.rig.waterlog, TUN.rig.fallSinkFloor); // float, drift, then founder
 
       // despawn once the whole section has sunk well under the sea, or it times out.
       let sunk = true;

@@ -285,6 +285,49 @@ export class Effects {
     }
   }
 
+  /** The blast where a ball bites the hull — a punchy, SHORT pop so you can clearly see WHERE
+   *  it landed (the player: "a bit of an explosion when they hit"). A bright flash + a quick
+   *  burst of hot additive sparks + a small grey smoke puff. Deliberately compact: this is a
+   *  hit-marker, NOT a barrel detonation, and it does NOT replace the wood-debris (those are
+   *  the timber chunks; this is the flash on top). */
+  impactBlast(p: THREE.Vector3): void {
+    // hot core: a tight burst of additive sparks flying out in all directions, gone fast.
+    for (let i = 0; i < 14; i++) {
+      const s = 6 + Math.random() * 12;
+      const a = Math.random() * Math.PI * 2;
+      const e = Math.random() * Math.PI - Math.PI / 2;
+      const ce = Math.cos(e);
+      this.spawnInto(
+        this.fire,
+        p.x,
+        p.y,
+        p.z,
+        [Math.cos(a) * ce * s, Math.sin(e) * s + 1.5, Math.sin(a) * ce * s],
+        0.1 + Math.random() * 0.16,
+        [1.0, 0.6 + Math.random() * 0.3, 0.2],
+        -3,
+        3.2,
+      );
+    }
+    // a small grey smoke puff that lingers a moment over the wound.
+    for (let i = 0; i < 8; i++) {
+      const s = 1.6 + Math.random() * 3;
+      const a = Math.random() * Math.PI * 2;
+      this.spawn(
+        p.x,
+        p.y,
+        p.z,
+        [Math.cos(a) * s, 1.0 + Math.random() * 1.8, Math.sin(a) * s],
+        0.5 + Math.random() * 0.5,
+        [0.55, 0.53, 0.5],
+        0.3,
+        2.6,
+      );
+    }
+    // a bright but brief flash so the eye snaps to the hit point.
+    this.flash(p, 70, 0.1, 0xffd28a);
+  }
+
   /** Cannon going off — positional boom at the muzzle (slight per-shot pitch variance). */
   cannonBoom(p: THREE.Vector3): void {
     this.audio?.playAt("cannon", p, { rate: 0.94 + Math.random() * 0.12, refDistance: 30 });
@@ -324,6 +367,25 @@ export class Effects {
         2.2,
       );
     }
+  }
+
+  /** A cannonball's vapor contrail: one thin near-white translucent streak left at the ball's
+   *  current position each frame, fading over ~0.4 s with almost no spread or velocity — the
+   *  "supersonic bubbles / arrow trail" the player asked for. Cheap: one CPU smoke mote per ball
+   *  per call (≤64 balls), reusing the shared spawn helper — NOT a fat smoke cloud. */
+  tracer(x: number, y: number, z: number): void {
+    this.spawn(
+      x,
+      y,
+      z,
+      // near-zero drift so it hangs as a thin line behind the ball (a tiny jitter keeps it
+      // from being a single hard dot), with a faint upward lift like dissipating vapor.
+      [(Math.random() - 0.5) * 0.25, 0.18 + Math.random() * 0.2, (Math.random() - 0.5) * 0.25],
+      0.32 + Math.random() * 0.22, // short life → a streak that trails ~0.4 s then vanishes
+      [0.95, 0.96, 0.98], // near-white, translucent (the smoke layer draws at 0.9 opacity)
+      0,
+      1.4, // light drag bleeds the jitter so the streak stays thin
+    );
   }
 
   splash(x: number, y: number, z: number, scale = 1): void {

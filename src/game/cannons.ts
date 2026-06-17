@@ -22,14 +22,19 @@ interface Ball {
   mesh: THREE.Mesh;
 }
 
+/** Live aim for a battery: read at the MOMENT each gun fires, not when the click landed.
+ *  A scalar pair is also accepted (AI passes fixed numbers) and frozen into a constant aim. */
+export type AimProvider = () => { elevationDeg: number; traverseDeg: number };
+
 export class Cannons {
   private balls: Ball[] = [];
   private pendingShots: {
     delay: number;
     portIndex: number;
     owner: Ship;
-    elevation: number;
-    traverse: number;
+    /** Read at LAUNCH so a gun still in the queue fires along the aim you're holding
+     *  NOW, not the aim at click-time (later guns in a ripple track your live aim). */
+    aim: AimProvider;
   }[] = [];
 
   /** A gun bears for this battery key: a number selects a broadside (by side, chasers
@@ -113,8 +118,24 @@ export class Cannons {
   }
 
   /** Queue a battery: every LOADED gun that bears for `key` fires (a broadside by side,
-   *  or the bow/stern chasers for "fore"/"aft"). */
-  fireBroadside(ship: Ship, key: 1 | -1 | GunFacing, simTime: number, elevationDeg = 5, traverseDeg = 0): boolean {
+   *  or the bow/stern chasers for "fore"/"aft").
+   *
+   *  `aim` is read PER GUN at the instant it actually fires, not at click time — so when a
+   *  ripple volley is mid-flight and you swing your aim, the guns still queued follow the NEW
+   *  trajectory. The bearing/side (which guns fire) is decided here at click; only the aim
+   *  direction tracks. The player passes a live provider over `controls`; the AI passes fixed
+   *  scalars (frozen into a constant aim). The aim-arc preview reads the same live controls,
+   *  so line ≡ ball holds. */
+  fireBroadside(
+    ship: Ship,
+    key: 1 | -1 | GunFacing,
+    simTime: number,
+    aim: AimProvider | number = 5,
+    traverseDeg = 0,
+  ): boolean {
+    // scalar form (AI / tests): freeze the two numbers into a constant provider.
+    const provider: AimProvider =
+      typeof aim === "number" ? () => ({ elevationDeg: aim, traverseDeg }) : aim;
     let i = 0;
     const spread = Math.max(0, TUN.gun.broadsideSpread);
     for (let p = 0; p < ship.build.cannonPorts.length; p++) {
@@ -128,8 +149,7 @@ export class Cannons {
         delay: i === 0 ? 0 : Math.random() * spread,
         portIndex: p,
         owner: ship,
-        elevation: elevationDeg,
-        traverse: traverseDeg,
+        aim: provider,
       });
       i++;
     }
@@ -152,7 +172,10 @@ export class Cannons {
       // outline trajectory to be consistent with that." The aim arc now
       // integrates from the SAME initial velocity, so line ≡ ball, underway
       // or becalmed. (Without carry, broadsides visibly lagged the ship.)
-      const m = muzzleWorld(shot.owner, shot.portIndex, shot.elevation, shot.traverse, this.tmpMuzzle);
+      // read the aim NOW, at launch — a gun still queued from an earlier click swings to
+      // wherever you're aiming at THIS instant (live-aim tracking through a ripple volley).
+      const a = shot.aim();
+      const m = muzzleWorld(shot.owner, shot.portIndex, a.elevationDeg, a.traverseDeg, this.tmpMuzzle);
       velocityAtPoint(shot.owner, m.pos, this.tmpV);
       this.launch(m.pos, m.dir, this.tmpV);
       this.effects.muzzleFlash(m.pos, m.dir);
@@ -176,6 +199,10 @@ export class Cannons {
       b.vel.z += -drag * v * b.vel.z * dt;
       b.pos.addScaledVector(b.vel, dt);
       b.mesh.position.copy(b.pos);
+
+      // vapor contrail: a thin near-white streak dropped at the ball each step, fading over
+      // ~0.4 s (the "supersonic bubbles" the player wanted). Render-only — never feeds the sim.
+      this.effects.tracer(b.pos.x, b.pos.y, b.pos.z);
 
       // water splash
       const sy = surfaceHeight(waves, b.pos.x, b.pos.z, simTime);
@@ -223,6 +250,9 @@ export class Cannons {
             // debris MATCHES the damage: ~one flying mote per voxel removed, thrown out
             // along the bore (dir negated → points outward). No sparks-and-flash storm.
             this.effects.impactDebris(hit.world, dir.negate(), removed);
+            // a quick visible blast (flash + hot sparks + smoke puff) ON TOP of the timber
+            // chunks, so the player clearly sees WHERE the shot landed.
+            this.effects.impactBlast(hit.world);
             this.effects.impact(hit.world, removed);
             // momentum transfer: ball mass × impact velocity. Mass lives in
             // TUN.gun.mass (r18: dropped 9→4.3 so the faster muzzle doesn't shove

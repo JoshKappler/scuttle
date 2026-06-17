@@ -739,7 +739,13 @@ async function main() {
       controls.lmbPressed = false;
       if (controls.aiming) {
         if (plugChannel <= 0) {
-          cannons.fireBroadside(sloop, aimBearing(), t, controls.elevationDeg, controls.traverseDeg);
+          // WP3: pass a LIVE aim provider, not click-time scalars — each gun in the ripple fires along
+          // wherever the aim points at ITS launch instant, so swinging the aim mid-broadside redirects
+          // the guns that haven't gone off yet. (The aim-arc preview reads the same controls → line ≡ ball.)
+          cannons.fireBroadside(sloop, aimBearing(), t, () => ({
+            elevationDeg: controls.elevationDeg,
+            traverseDeg: controls.traverseDeg,
+          }));
         }
       } else if (onFoot) {
         slash = true; // a cutlass flourish on deck — nothing to fight anymore
@@ -1164,7 +1170,10 @@ async function main() {
   const hdgQ = new THREE.Quaternion();
   const hdgV = new THREE.Vector3();
   let wasUnder = false;
-  const underFog = new THREE.FogExp2(0x0c3a44, 0.055);
+  // WP5: a DEEP NAVY underwater fog (was a bright teal 0x0c3a44) close to the ocean's own deep-water
+  // body colour, denser so the submerged view saturates to solid navy within a few metres — the user's
+  // "solid navy blue of the same colour of the ocean", not a thin teal haze over a void.
+  const underFog = new THREE.FogExp2(0x0a2236, 0.08);
   // ABOVE water: a FAR-biased linear haze that fades only DISTANT islands/ships into the same
   // HORIZON_COLOR the sky dome + ocean far-fog converge on — so far land melts into the horizon
   // instead of sitting crisp over a hazy sea, while near gameplay (within ~900 m) stays sharp.
@@ -2211,6 +2220,9 @@ async function main() {
     ocean.setWaterDepth(TUN.gfx.water.visibility, TUN.gfx.water.clarity);
     renderer.toneMappingExposure = TUN.gfx.tone.exposure; // live exposure knob
     islandGritUniforms.uGritStrength.value = TUN.gfx.islandGrit.strength;
+    // WP5: when the lens dips below the sea, close the navy backdrop bowl into a full sphere so the
+    // submerged view is solid navy water in every direction (never the sky through the surface).
+    ocean.setUnderwater(camUnder);
     ocean.update(world.simTime, camera.position);
 
     // the sky dome + drifting clouds follow the camera (camera always at the dome centre);

@@ -16,12 +16,24 @@ import type { Ship } from "./ship";
 // honest for a 6-pounder.
 export const GUN_SCALE = 1.6;
 
-export const BARREL_INBOARD = 2.6; // voxels the carriage sits inboard of the port cell
+// 2026-06-17 (WP2 "nest the guns inboard"): the carriage used to sit only ~1.2 m inboard of
+// its port cell, so the ~2.83 m barrel hung ~1.5 m PAST the hull skin ("the back/front cannons
+// extend much too far out of the ship"). Seat the carriage a full hull-thickness deeper so the
+// breech + trunnion + trucks all stand INSIDE the bulwark and only the muzzle tip pokes out the
+// port. With the port cell AT the skin, muzzle protrusion = (TRUNNION_OUT+TIP_FROM_TRUNNION) −
+// (BARREL_INBOARD·VOXEL_SIZE + GUN_INBOARD_M) = 2.832 − (7.5·0.25 + 0.55) = +0.41 m past the cell
+// centre ≈ +0.28 m proud of the skin's outer face — just the muzzle through the window.
+export const BARREL_INBOARD = 7.5; // voxels the carriage sits inboard of the port cell
 // r18: a CHASER's port cell sits several voxels INSIDE the bow/stern skin (the hull is a thick
-// wedge there), so seating its carriage as far inboard as a broadside gun buried the whole gun
-// — barrel and gunport both vanished inside the timber. Seat it almost AT the port cell so the
-// long barrel clears the skin and pokes out the window like the broadside guns do.
-export const CHASER_INBOARD = 0.5; // voxels inboard of the port cell for a bow/stern chaser
+// wedge there). WP2 (2026-06-17): the wedge is ~5 voxels (~1.25–1.5 m) of solid timber between
+// the port cell and the stem/transom skin, and the ~2.83 m axial barrel from a near-skin seat
+// (CHASER_INBOARD 0.5) shot ~1.3 m clear of the bow ("especially bad with those"). Retreat the
+// chaser carriage ~4 voxels deeper into the bow/stern so the barrel spans the wedge and only the
+// muzzle tip clears the stem. Protrusion past the skin ≈ (port.x−skin)·0.25 + 2.832 −
+// (CHASER_INBOARD−0.5)·0.25: with the 5-voxel wedge that's 2.832 − (5.5+4.6)·0.25 = ~+0.31 m
+// (the shorter-wedge cutter ~+0.56 m). The chaser shows only its barrel (no carriage), so a deep
+// seat just buries the breech in the bow timber — exactly the nested look wanted.
+export const CHASER_INBOARD = 4.6; // voxels inboard of the port cell for a bow/stern chaser
 /** Extra meters inboard of that: round 7 had the carriage so far outboard
  *  "their front wheels are actually off of the ship"; round 8 still saw
  *  wheels over the edge with the bigger guns — pulled well inboard. */

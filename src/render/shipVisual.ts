@@ -4,6 +4,7 @@ import { TUN } from "../core/tunables";
 import { SUN_DIR } from "./sky";
 import {
   barrelDirLocal,
+  BARREL_INBOARD,
   BARREL_PIVOT_UP,
   BORE_UP_B,
   CHASER_INBOARD,
@@ -823,15 +824,18 @@ export class ShipVisual {
       const pivot = new THREE.Group();
       pivot.rotation.order = "YXZ"; // yaw to bear, then elevate — never rolls
       pivot.scale.setScalar(GUN_SCALE);
-      // pivot height + inboard offset mirror pivotLocal() in gunnery. A chaser seats its
-      // carriage inboard along ±x (behind the bow / forward of the stern); a broadside
-      // gun inboard along ±z (3.4 plants all four trucks on deck, round 9).
+      // pivot height + inboard offset mirror pivotLocal() in gunnery EXACTLY — the visible barrel
+      // and the firing solution must seat at the same place (the "bore ≡ ballistics" invariant). A
+      // chaser seats its carriage inboard along ±x (behind the bow / forward of the stern); a
+      // broadside gun inboard along ±z by BARREL_INBOARD (WP2 2026-06-17: this was a hard-coded
+      // 3.4 that drifted 0.2 m from gunnery's 2.6 — now both read the one constant, raised to 7.5
+      // so the carriage nests inside the bulwark and only the muzzle clears the port).
       if (port.facing === "fore") {
         pivot.position.set((port.x + 0.5 - CHASER_INBOARD) * VOXEL_SIZE, cyP, (port.z + 0.5) * VOXEL_SIZE);
       } else if (port.facing === "aft") {
         pivot.position.set((port.x + 0.5 + CHASER_INBOARD) * VOXEL_SIZE, cyP, (port.z + 0.5) * VOXEL_SIZE);
       } else {
-        const pz = (port.z + 0.5 - port.side * 3.4) * VOXEL_SIZE;
+        const pz = (port.z + 0.5 - port.side * BARREL_INBOARD) * VOXEL_SIZE;
         pivot.position.set(px, cyP, pz - port.side * GUN_INBOARD_M);
       }
       // gun space: +z outboard for both sides (animate()'s yaw flips port)

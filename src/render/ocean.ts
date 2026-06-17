@@ -61,18 +61,33 @@ const R_NEAR = 0.8; // m — innermost ring
 const R_FAR = 2400; // m — horizon ring
 const RINGS = 156;
 const SECTORS = 160;
-// The underwater-backdrop bowl's rim depth (world Y). A few metres below the surface so it never pokes
-// up into a horizontal sightline as a horizon wall, yet shallow enough to back the sea the instant it
-// closes over a barely-submerged deck. Below the island sand-shelves so shallows still read through.
+// The underwater-backdrop bowl's rim depth (world Y), used as the FALLBACK floor when the live sea
+// surface isn't known yet. In update() the rim is raised every frame to sit just under the LOCAL sea
+// surface near the camera (see RIM_TROUGH_MARGIN) so the navy wall climbs as close to the waterline as
+// possible — backing near-horizontal sightlines through a holed hull — while always staying below the
+// deepest near-field wave trough, so the OPAQUE near surface still hides it on open water (the bowl is
+// only ever seen DOWN through a transparent/cut/holed patch of sea, never as a horizon wall/ring).
 const BOWL_RIM_Y = -6;
+// How far BELOW the local sea surface the bowl rim is held above water. The near surface chops/swells
+// down to roughly -3 m in a trough; keeping the rim a little below that guarantees the opaque near
+// surface is always IN FRONT of the bowl wall, so raising the rim this close can never bleed navy onto
+// the open sea — it only ever fills the transparent gaps (a submerged deck, a holed bow, the cutaway).
+const RIM_TROUGH_MARGIN = 3.5;
 
 export interface Ocean {
   mesh: THREE.Mesh;
-  /** Opaque dark-water disc UNDER the surface: what shows through wherever the sea goes translucent
-   *  (a submerged deck, the shallows) so it reads as a solid body of water, not a sheet over the void.
-   *  Add it to the scene alongside `mesh`; it follows the camera in `update`. */
+  /** Opaque NAVY body UNDER the surface: what shows through wherever the sea goes translucent or is cut
+   *  away (a submerged deck, the shallows, a holed bow at the waterline, the cutaway wedge) so the sea
+   *  reads as a SOLID body of water, never a thin sheet over a void of sky. A camera-centred downward
+   *  bowl whose rim is held just under the local surface; when the camera dips under, it raises to fully
+   *  enclose the lens in navy. Add it to the scene alongside `mesh`; it follows the camera in `update`. */
   backdrop: THREE.Mesh;
   update(time: number, cameraPos: THREE.Vector3): void;
+  /** Tell the ocean whether the camera is BELOW the sea surface this frame (main.ts samples the Gerstner
+   *  swell at the camera — see report). When on, the navy backdrop is raised to fully ENCLOSE the camera
+   *  and its colour deepens so the whole view reads as being submerged in a solid navy body, never the
+   *  sky dome. main.ts must ALSO swap scene.fog to the dense navy underwater fog (it already does). */
+  setUnderwater(on: boolean): void;
   /** Cutaway support (playtest rounds 2–4): discard the sea (a) inside the
    *  ship's footprint, so the hull never reads "full of ocean", and (b) in a
    *  BOUNDED wedge on the camera side of the cut plane, so the exterior sea
@@ -982,34 +997,66 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
 
   // Underwater backdrop — the fix for "the ocean is just a sheet over the void". The surface mesh is
   // transparent (its alpha fades from ~opaque in deep water to see-through over a shallow floor); in
-  // open water it's fully opaque so this never shows, but where the sea goes translucent — the sea
-  // closing over a submerged deck, looking through a holed bow as it tilts under — what used to show
-  // THROUGH was the sky dome in the background scene, whose below-horizon band reads near-WHITE after
-  // tonemap (the "bright white void beneath the sea"). The backdrop fills that with DEEP NAVY instead.
+  // open water it's fully opaque so this never shows, but where the sea goes translucent or is cut —
+  // the sea closing over a submerged deck, looking down/through a holed bow, the centreline cutaway —
+  // what used to show THROUGH was the sky dome in the background scene, whose below-horizon band reads
+  // a dark navy + drifting clouds (the "void of light beneath the sea"). The backdrop fills every such
+  // gap with SOLID NAVY of the same body-of-water colour, so the sea reads as a solid volume.
   //
-  // It used to be a single FLAT disc at y=-8 — but a flat plane only seals view rays that point
-  // straight DOWN. An ANGLED sightline (a holed bow tilting forward as it sinks → you look down-and-
-  // forward through the gap) passes OVER the rim of a flat disc and escapes to the sky haze → white.
-  // So the backdrop is now a downward BOWL (the lower hemisphere of a big sphere, BackSide so we see
-  // its inner wall) centred under the camera: ANY ray crossing below the surface — straight down OR
-  // angled — terminates on the bowl's navy inner wall, never on the sky. The bowl's RIM is held a few
-  // metres below the surface (clamped per-frame in update()), and the opaque far ocean fills every
-  // near-horizontal sightline, so the bowl is only ever seen DOWN through a transparent patch of sea
-  // and never pokes up as a horizon wall/ring. Dark navy (not the near-black uDeepColor) so it reads
-  // as deep water, not void; fog:true so the far rim melts into the same horizon haze as the sea.
+  // It used to be a single FLAT disc — but a flat plane only seals view rays that point straight DOWN.
+  // An ANGLED sightline (a holed bow tilting forward → you look down-and-forward through the gap) passes
+  // OVER the rim of a flat disc and escapes to the sky. So the backdrop is a downward BOWL (the lower
+  // hemisphere of a big sphere, BackSide so we see its inner wall) centred under the camera: any ray
+  // crossing below the surface terminates on the bowl's navy inner wall, never the sky.
   //
-  // Geometry: a sphere with thetaStart=π/2, thetaLength=π/2 gives only the lower cap (y ≤ 0 in object
-  // space), an upward-opening bowl. Radius < the ocean's R_FAR (2400) so it can never poke past the
-  // horizon. Centre is offset so the rim (object-space y=0) sits at BOWL_RIM_Y world; the bowl bulges
-  // down to (rim − radius), well below any island sand-shelf, so the deep navy backs every gap.
+  // RIM HEIGHT (the old weak point): the rim used to sit a fixed −6 m below the surface, leaving a 6 m
+  // open band just under the waterline through which near-horizontal rays escaped to the sky. The rim
+  // is now raised EVERY FRAME (update()) to sit just under the LOCAL sea surface near the camera — only
+  // RIM_TROUGH_MARGIN below it — so the navy wall climbs right up toward the waterline and backs the
+  // shallow-angle sightlines a hole exposes. This is SAFE because the bowl is drawn at renderOrder −1,
+  // BEFORE the transparent surface: where the near surface is opaque (all of open water) it composites
+  // OVER the bowl and hides it; the bowl only ever shows through a transparent/cut/holed patch, which is
+  // exactly where we want navy. Holding it a margin below the deepest near trough guarantees the opaque
+  // near surface is always in front, so the higher rim can never read as a navy ring/wall on open water.
+  // (Every bowl point has y ≤ rim < camera.y, so the bowl never projects above the horizon onto the sky.)
+  //
+  // Geometry: a sphere with thetaStart=π/2, thetaLength=π/2 gives only the lower cap (an upward-opening
+  // bowl). Radius < the ocean's R_FAR (2400) so it can never poke past the horizon. Colour = the live
+  // deep-water navy (shared uDeepColor, so a dev-panel water-colour tweak carries through and the body
+  // and its backing always match); fog:true so the far rim melts into the same horizon haze as the sea.
   const BOWL_RADIUS = 2350;
+  const backdropMat = new THREE.MeshBasicMaterial({
+    color: (u.uDeepColor.value as THREE.Color).clone(),
+    fog: true,
+    side: THREE.BackSide,
+  });
   const backdrop = new THREE.Mesh(
     new THREE.SphereGeometry(BOWL_RADIUS, 64, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x08182b, fog: true, side: THREE.BackSide }),
+    backdropMat,
   );
-  backdrop.position.y = BOWL_RIM_Y; // rim just under the surface; update() keeps it clamped there
+  backdrop.position.y = BOWL_RIM_Y; // initial; update() raises the rim to just under the surface
   backdrop.renderOrder = -1; // draw before the transparent surface composites over it
   backdrop.frustumCulled = false;
+
+  // UNDERWATER CEILING CAP: the bowl is only the lower hemisphere (so it never paints over the sky
+  // above water). That leaves the view OVERHEAD open — fine above water, but when the camera is SUBMERGED
+  // and the bowl is raised to enclose it, an upward sightline would still see the transparent surface and
+  // the sky dome through it ("never the sky" — the user's explicit ask). This UPPER-hemisphere cap, a
+  // child of the bowl (so it follows + main.ts still only adds `backdrop`), is hidden above water and
+  // shown only when submerged, closing the bowl into a FULL navy sphere around the camera. Together with
+  // the dense underwater fog, the whole submerged view reads as a solid navy body in every direction.
+  const ceilingCap = new THREE.Mesh(
+    new THREE.SphereGeometry(BOWL_RADIUS, 64, 24, 0, Math.PI * 2, 0, Math.PI / 2), // upper cap (object y ≥ 0)
+    backdropMat,
+  );
+  ceilingCap.renderOrder = -1;
+  ceilingCap.frustumCulled = false;
+  ceilingCap.visible = false; // only enclose overhead when submerged
+  backdrop.add(ceilingCap); // child: rides the bowl's position; cap's object-space y=0 = the bowl rim
+
+  // tracks the camera-submerged state (main.ts → setUnderwater): when under, the rim is raised to fully
+  // enclose the camera and the colour deepens so the whole view reads as a solid navy body, not the sky.
+  let underwater = false;
 
   // stern-path ring buffers (one per ship slot): points are laid every few
   // meters of travel and age out; the fragment shader laces foam between them
@@ -1105,6 +1152,9 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     setFogColor(color) {
       (mat.uniforms.uFogColor.value as THREE.Color).copy(color);
     },
+    setUnderwater(on) {
+      underwater = on;
+    },
     setLandField(tex, minX, minZ, sizeX, sizeZ) {
       mat.uniforms.uLandTex.value = tex;
       (mat.uniforms.uLandMin.value as THREE.Vector2).set(minX, minZ);
@@ -1130,14 +1180,35 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       // grid — the round-8 "stuttering".
       mesh.position.x = cameraPos.x;
       mesh.position.z = cameraPos.z;
-      // The underwater-backdrop bowl follows in XZ so deep navy is always under the player. Its rim is
-      // normally pinned at BOWL_RIM_Y (just below the surface), so the camera sits ABOVE the rim and
-      // looks DOWN into the bowl through any transparent patch of sea. If the camera dips UNDERWATER,
-      // keep the rim above the camera (so the camera is inside the bowl, surrounded by navy, never
-      // outside looking at the bowl's far convex back or escaping past the rim to the sky).
+      // The underwater-backdrop bowl follows in XZ so solid navy is always under the player.
       backdrop.position.x = cameraPos.x;
       backdrop.position.z = cameraPos.z;
-      backdrop.position.y = Math.min(BOWL_RIM_Y, cameraPos.y - 2);
+
+      // Live LOCAL sea surface at the camera's XZ on the analytic swell (the same field the physics and
+      // the open-sea vertex shader ride). The bowl rim tracks it so the navy wall climbs right up toward
+      // the waterline regardless of swell state, never a fixed depth that leaves a gap below the crests.
+      const seaY = surfaceHeight(swell, cameraPos.x, cameraPos.z, time);
+
+      if (underwater) {
+        // Camera BELOW the surface: raise the rim ABOVE the camera so the lens is INSIDE the bowl, and
+        // SHOW the ceiling cap so the bowl closes into a full navy sphere — fully enclosed in navy in
+        // EVERY direction, including overhead (no sky through the surface). The dense navy underwater fog
+        // main.ts swaps in melts the far walls into one uniform navy body. Clamp the rim to at least just
+        // over the local surface so a camera hovering right at the waterline is still enclosed.
+        backdrop.position.y = Math.max(cameraPos.y + 2, seaY + 2);
+        ceilingCap.visible = true;
+        // deepen toward a denser navy so the submerged view reads as being INSIDE the water body.
+        (backdropMat.color as THREE.Color).copy(u.uDeepColor.value as THREE.Color).multiplyScalar(0.7);
+      } else {
+        // Above water: hold the rim just under the LOCAL surface (RIM_TROUGH_MARGIN below it) so it backs
+        // shallow-angle sightlines through a holed hull at the waterline, yet stays below the deepest near
+        // trough so the opaque near surface always hides it on open water. Cap it below the camera as a
+        // hard safety so the bowl can never project above the horizon onto the sky, and HIDE the ceiling
+        // cap so the real sky shows overhead.
+        backdrop.position.y = Math.min(seaY - RIM_TROUGH_MARGIN, cameraPos.y - 1.5);
+        ceilingCap.visible = false;
+        (backdropMat.color as THREE.Color).copy(u.uDeepColor.value as THREE.Color);
+      }
     },
   };
 }
