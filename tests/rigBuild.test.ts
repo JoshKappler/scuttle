@@ -74,3 +74,21 @@ describe("buildRig trunk", () => {
     expect(topY).toBeCloseTo(2.0 + 15, 4);
   });
 });
+
+describe("buildRig detach (the tear/topple pipeline)", () => {
+  it("severing the foot's links cuts the whole rig loose from its only anchor", () => {
+    const rig = buildRig(oneMast); // single pin = the mast foot
+    const footIdx = rig.nodes.findIndex((n) => n.pinned);
+    for (const lk of rig.links) {
+      if (lk.a === footIdx || lk.b === footIdx) lk.alive = false;
+    }
+    const att = attachedToPin(rig);
+    // only the foot itself stays attached; the whole rig above it is now loose
+    expect(att.filter(Boolean).length).toBe(1);
+    expect(att[footIdx]).toBe(true);
+    // every cloth node is detached → would fall / blow away
+    rig.nodes.forEach((n, i) => {
+      if (n.flags & NodeFlag.CLOTH) expect(att[i]).toBe(false);
+    });
+  });
+});

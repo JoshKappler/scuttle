@@ -117,9 +117,12 @@ export function buildRig(spec: RigSpec): Rig {
       }
       for (let r = 0; r < CLOTH_ROWS; r++) {
         for (let c = 0; c < CLOTH_COLS; c++) {
+          // structural (horizontal + vertical) + BOTH shear diagonals — a single
+          // diagonal would resist shear in one direction only, tearing asymmetrically
           if (c + 1 < CLOTH_COLS) addLink(grid[r][c], grid[r][c + 1], LinkKind.CLOTH, CLOTH_BREAK);
           if (r + 1 < CLOTH_ROWS) addLink(grid[r][c], grid[r + 1][c], LinkKind.CLOTH, CLOTH_BREAK);
           if (c + 1 < CLOTH_COLS && r + 1 < CLOTH_ROWS) addLink(grid[r][c], grid[r + 1][c + 1], LinkKind.CLOTH, CLOTH_BREAK);
+          if (c - 1 >= 0 && r + 1 < CLOTH_ROWS) addLink(grid[r][c], grid[r + 1][c - 1], LinkKind.CLOTH, CLOTH_BREAK);
         }
       }
       for (let c = 0; c < CLOTH_COLS; c++) {
