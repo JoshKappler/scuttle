@@ -510,8 +510,17 @@ void main() {
         float seaY = uProfileSeaY[s];
         bool open = sealFlag < -500.0; // HULL_PROFILE_OPEN sentinel (≈ -1000) → the deck here is carved away
         if (open) {
-          // OPEN breach: never cut. Let the sea flow in / close over the surviving floor (fade below).
-          if (deckWY <= seaY) floorY = max(floorY, deckWY);
+          // OPEN breach: the deck/upper skin over this column is gone, but the hull SIDES below may
+          // still stand. The exterior sea is only physically continuous with the hull interior UP TO
+          // the waterline — above it, that interior volume belongs to the (separate, dark) flood pool
+          // and the surviving timber. So CUT the open ocean wherever this fragment sits ABOVE the live
+          // waterline inside the footprint: that band is the "strip of bright open-ocean wave surface
+          // floating above the flood line / poking through the hull sides" the playtest reported (the
+          // displaced swell + crests rising over seaY, framed by the intact upper hull). Below the
+          // waterline the sea legitimately flows into the breach — keep it, and record the surviving
+          // floor so it depth-fades into the interior as before.
+          if (vWorldPos.y > seaY) discard; // crest/surface above the waterline inside the hull → no bleed-through strip
+          else if (deckWY <= seaY) floorY = max(floorY, deckWY);
         } else {
           // SEALED deck: cut above the waterline, fade when submerged (the original behaviour).
           if (deckWY > seaY) discard;
