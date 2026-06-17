@@ -68,6 +68,41 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
     }
   });
 
+  it("bow chasers seat near the stem so every barrel pokes OUT the bow face", () => {
+    // regression for "I only see TWO bow cannons": the inner pairs used to seat back at x≈187–189,
+    // where the ~2.1 m barrel stopped inside the solid bow timber (stem skin ≈ x202) — invisible.
+    // All six now seat at x≈199–201 so the barrel tip clears the stem; each still has a real mount.
+    const [nx] = ship.grid.dims;
+    const fore = ship.cannonPorts.filter((p) => p.facing === "fore");
+    expect(fore.length).toBe(6);
+    // distinct seats (no two guns share a voxel)
+    const keys = new Set(fore.map((p) => `${p.x},${p.y},${p.z}`));
+    expect(keys.size).toBe(6);
+    for (const p of fore) {
+      expect(p.x).toBeGreaterThanOrEqual(nx - 12); // hard up against the bow
+      expect(mountSolidCount(ship.grid, p)).toBeGreaterThan(0);
+    }
+  });
+
+  it("stern chasers form an EVEN 4-wide × 2-high grid on the transom (not a fan)", () => {
+    // user fix: the eight stern guns used to fan out in z at descending y (a widening triangle).
+    // Now they're a regular grid — ONE station (the transom face), exactly TWO y rows, FOUR evenly
+    // spaced z columns. Lock that orderly shape in.
+    const aft = ship.cannonPorts.filter((p) => p.facing === "aft");
+    expect(aft.length).toBe(8);
+    const xs = new Set(aft.map((p) => p.x));
+    expect(xs.size).toBe(1); // a single transom station — no fore/aft fan
+    const ys = [...new Set(aft.map((p) => p.y))].sort((a, b) => a - b);
+    expect(ys.length).toBe(2); // exactly two evenly-spaced rows
+    const zs = [...new Set(aft.map((p) => p.z))].sort((a, b) => a - b);
+    expect(zs.length).toBe(4); // four columns
+    // columns are an even pitch (3 voxels) → a neat grid, not a spread
+    const pitches = zs.slice(1).map((z, i) => z - zs[i]);
+    expect(new Set(pitches)).toEqual(new Set([3]));
+    // every (row,col) cell is filled → a full 2×4 lattice
+    expect(new Set(aft.map((p) => `${p.y},${p.z}`)).size).toBe(8);
+  });
+
   it("leaves embrasures in the weather-deck fence for the upper-tier guns", () => {
     for (const p of ship.cannonPorts.filter((p) => !p.facing && p.y > ship.deckY)) {
       expect(ship.grid.get(p.x, ship.deckY + 4, p.z)).toBe(0); // EMPTY — fence open above the gun

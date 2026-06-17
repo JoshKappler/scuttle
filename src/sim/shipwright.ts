@@ -1409,27 +1409,40 @@ export function buildManOfWar(): ShipBuild {
   // the broad transom, so the bow chasers hug the centerline while the stern guns fan wider.
   const cz0 = Math.floor(cz),
     cz1 = Math.ceil(cz); // centre cells; cz0 + cz1 === nz − 1, so spreading both by k mirrors
-  // ---- 6 bow chasers: three mirror pairs stepping down the stem, near the centerline ----
-  // The bow is a fine wedge, so seats stay close to the centerline and step aft+down into the
-  // solid forecastle timber (verified: each has a real hull mount, sim/cannonMount.ts).
-  cannonPorts.push({ x: x0 + L - 7, y: deckY - 5, z: cz0, side: -1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 7, y: deckY - 5, z: cz1, side: 1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 15, y: deckY - 7, z: cz0 - 1, side: -1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 15, y: deckY - 7, z: cz1 + 1, side: 1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 17, y: deckY - 9, z: cz0, side: -1, facing: "fore" });
-  cannonPorts.push({ x: x0 + L - 17, y: deckY - 9, z: cz1, side: 1, facing: "fore" });
-  // ---- 8 stern chasers: four mirror pairs fanning across the broad transom ----
-  // The transom is full and wide up at the cabin deck, so the eight guns fan out in z across
-  // the great cabin (each pair straddles the centerline → port/starboard symmetry).
-  const sternX = x0 + 6;
-  cannonPorts.push({ x: sternX, y: deckY - 1, z: cz0, side: -1, facing: "aft" });
-  cannonPorts.push({ x: sternX, y: deckY - 1, z: cz1, side: 1, facing: "aft" });
-  cannonPorts.push({ x: sternX + 1, y: deckY - 3, z: cz0 - 3, side: -1, facing: "aft" });
-  cannonPorts.push({ x: sternX + 1, y: deckY - 3, z: cz1 + 3, side: 1, facing: "aft" });
-  cannonPorts.push({ x: sternX + 2, y: deckY - 5, z: cz0 - 6, side: -1, facing: "aft" });
-  cannonPorts.push({ x: sternX + 2, y: deckY - 5, z: cz1 + 6, side: 1, facing: "aft" });
-  cannonPorts.push({ x: sternX + 3, y: deckY - 5, z: cz0 - 9, side: -1, facing: "aft" });
-  cannonPorts.push({ x: sternX + 3, y: deckY - 5, z: cz1 + 9, side: 1, facing: "aft" });
+  // ---- 6 bow chasers: three mirror pairs poking OUT through the stem at three heights ----
+  // The cannon barrel reaches ~11.3 voxels forward of its port cell (pivot→tip =
+  // (TRUNNION_OUT_B + TIP_FROM_TRUNNION_B)·GUN_SCALE / VOXEL_SIZE), and the bow stem skin at the
+  // centerline sits at x≈202. The earlier layout seated the inner two pairs back at x≈187–189, so
+  // their barrels stopped at x≈198–200 — still buried INSIDE the solid bow timber, invisible: only
+  // the forward-most pair (x≈197) protruded, which is the "I only see TWO bow cannons" report.
+  // Seat all three pairs FAR forward (x≈194–196) so every tip clears the stem (verified: tip x≈205–207
+  // > skin x≈202), while the port cell + its surrounding wedge stay solid (mountSolidCount ≫ 0,
+  // sim/cannonMount.ts) and below the weather deck (y < deckY). The bow is a fine wedge, so the high
+  // and low pairs hug the centerline (cz0/cz1) and the middle pair fans a little wider — every pair an
+  // exact z-mirror (cz0 + cz1 === nz − 1; 27 + 32 === nz − 1).
+  cannonPorts.push({ x: x0 + L - 4, y: deckY - 5, z: cz0, side: -1, facing: "fore" }); // x=200, high pair (mount≈60)
+  cannonPorts.push({ x: x0 + L - 4, y: deckY - 5, z: cz1, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 5, y: deckY - 8, z: cz0 - 2, side: -1, facing: "fore" }); // x=199, mid pair fanned (mount≈28)
+  cannonPorts.push({ x: x0 + L - 5, y: deckY - 8, z: cz1 + 2, side: 1, facing: "fore" });
+  cannonPorts.push({ x: x0 + L - 3, y: deckY - 11, z: cz0, side: -1, facing: "fore" }); // x=201, low pair at the stem (mount≈49)
+  cannonPorts.push({ x: x0 + L - 3, y: deckY - 11, z: cz1, side: 1, facing: "fore" });
+  // ---- 8 stern chasers: an EVEN 4-wide × 2-high grid across the broad transom ----
+  // (was four pairs fanning out in z at descending y — read as a widening "triangle"). The transom
+  // is full and wide, so stack the eight guns as a neat regular grid: ONE station (the transom face
+  // sternX = x0), TWO rows evenly spaced in y, FOUR evenly-spaced columns in z. Columns are two
+  // mirror pairs (cz∓4, cz∓1 → 25/34 and 28/31, each summing to nz − 1) at a constant 3-voxel pitch,
+  // so it reads as an orderly battery, not a fan. The hull is a HOLLOW shell, so a chaser must seat
+  // ON the solid transom plating: the cabin behind it is open air, and the mount sampler reaches
+  // INBOARD (+x) from the port cell — only at the transom skin (x0) does it bite real timber
+  // (mountSolidCount = 49; one voxel forward it falls to 0). Each barrel runs out aft through the
+  // transom; below the weather deck (y < deckY). cz0 + cz1 === nz − 1, so every column is mirrored.
+  const sternX = x0; // the transom face: the only solid station behind the hollow great cabin
+  const sternZcols = [cz0 - 4, cz0 - 1, cz1 + 1, cz1 + 4]; // 25, 28, 31, 34 — even 3-vox pitch, mirrored
+  for (const gy of [deckY - 3, deckY - 7]) {
+    for (const gz of sternZcols) {
+      cannonPorts.push({ x: sternX, y: gy, z: gz, side: gz < cz ? -1 : 1, facing: "aft" });
+    }
+  }
 
   // three masts: mizzen (aft), main (tallest, amidships), fore (forward)
   const masts = [
