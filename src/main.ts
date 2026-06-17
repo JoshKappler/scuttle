@@ -1792,7 +1792,12 @@ async function main() {
         { type: "slider", label: "cannon crush ×", obj: TUN.gun, key: "crushEfficiency", min: 1, max: 120, step: 1 },
         { type: "slider", label: "ball bore radius", obj: TUN.gun, key: "boreRadiusVox", min: 0, max: 3, step: 1 },
         // how fast the sea pours through a breach (0.15 ≈ "reduce flood ~85%"); 1 = raw rate.
-        { type: "slider", label: "flood inflow ×", obj: TUN.flood, key: "inflowScale", min: 0, max: 1, step: 0.05 },
+        { type: "slider", label: "flood inflow ×", obj: TUN.flood as unknown as Record<string, number>, key: "inflowScale", min: 0, max: 1, step: 0.05 },
+        { type: "slider", label: "pump m³/s", obj: TUN.flood as unknown as Record<string, number>, key: "pumpRate", min: 0, max: 1, step: 0.05 },
+        // flood-water render: side-skirt depth + the band over which the skirt fades out as the
+        // interior pool equalises to the sea (so a big-hole flood blends flush with the breach).
+        { type: "slider", label: "flood skirt m", obj: TUN.flood.render, key: "skirtDepth", min: 0, max: 4, step: 0.1 },
+        { type: "slider", label: "flood blend m", obj: TUN.flood.render, key: "blendBand", min: 0.1, max: 3, step: 0.1 },
       ],
     },
     {

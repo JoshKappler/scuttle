@@ -1,8 +1,41 @@
 import * as THREE from "three";
 import type { Wave } from "../sim/gerstner";
-import { physicsWaves } from "../sim/gerstner";
+import { physicsWaves, surfaceHeight } from "../sim/gerstner";
 import type { OceanField } from "./oceanField";
 import { MAXVIS } from "../core/constants";
+
+/**
+ * SHARED OCEAN LOOK — the live appearance the flood-water surface clones so the interior pool reads as
+ * "the ocean continuing into the room" rather than a separate material (render/compartmentFluid.ts).
+ *
+ * These are the SAME live uniform objects the open-sea ShaderMaterial uses (body colour gradient, the
+ * sky+cloud reflection cube, sun colour/direction, reflection strength/clamp, and the shared clock), so
+ * when the dev panel tunes the ocean's colour or reflection the flood follows automatically — no copy,
+ * no drift. Plus the analytic SWELL wave set + a CPU sampler, so the flood can read the LOCAL sea height
+ * at a breach to fade its side skirt out when the interior level equalises to the sea (big-hole case).
+ * Populated once by createOcean(); consumers read it via getOceanLook() (null before the ocean exists).
+ */
+export interface OceanLook {
+  uShallowColor: { value: THREE.Color };
+  uDeepColor: { value: THREE.Color };
+  uSunColor: { value: THREE.Color };
+  uSkyColor: { value: THREE.Color };
+  uSkyEnv: { value: THREE.CubeTexture | THREE.Texture };
+  uHasEnv: { value: number };
+  uReflStrength: { value: number };
+  uReflClamp: { value: number };
+  uSunDir: { value: THREE.Vector3 };
+  uTime: { value: number };
+  /** the analytic swell wave set the open-sea surface (and physics) ride. */
+  swell: Wave[];
+  /** local sea-surface world-Y at (x,z) on the analytic swell, at the shared clock time. */
+  seaHeight(x: number, z: number): number;
+}
+
+let sharedOceanLook: OceanLook | null = null;
+export function getOceanLook(): OceanLook | null {
+  return sharedOceanLook;
+}
 
 /**
  * Ocean surface: a camera-centered POLAR grid whose vertex shader evaluates
@@ -926,6 +959,26 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
+
+  // Publish the shared ocean look for the flood-water surface to clone (render/compartmentFluid.ts).
+  // We hand it the SAME live uniform OBJECTS the sea shader reads, so any dev-panel colour/reflection
+  // tweak flows through to the interior pool with no copy. seaHeight rides the analytic swell at the
+  // live clock — the flood uses it to fade its skirt out as the interior level reaches the sea level.
+  const u = mat.uniforms;
+  sharedOceanLook = {
+    uShallowColor: u.uShallowColor as { value: THREE.Color },
+    uDeepColor: u.uDeepColor as { value: THREE.Color },
+    uSunColor: u.uSunColor as { value: THREE.Color },
+    uSkyColor: u.uSkyColor as { value: THREE.Color },
+    uSkyEnv: u.uSkyEnv as { value: THREE.CubeTexture | THREE.Texture },
+    uHasEnv: u.uHasEnv as { value: number },
+    uReflStrength: u.uReflStrength as { value: number },
+    uReflClamp: u.uReflClamp as { value: number },
+    uSunDir: u.uSunDir as { value: THREE.Vector3 },
+    uTime: u.uTime as { value: number },
+    swell,
+    seaHeight: (x: number, z: number) => surfaceHeight(swell, x, z, u.uTime.value as number),
+  };
 
   // Underwater backdrop — the fix for "the ocean is just a sheet over the void". The surface mesh is
   // transparent (its alpha fades from ~opaque in deep water to see-through over a shallow floor); in
