@@ -1,7 +1,7 @@
 import { VOXEL_SIZE, VOXEL_VOLUME } from "../core/constants";
 import { createGrid, type VoxelGrid } from "./voxelGrid";
 import { EMPTY, IRON, OAK, PINE, RAM, SPAR } from "./materials";
-import { findCompartments, type Compartment } from "./compartments";
+import { findCompartments, type Compartment, type Opening } from "./compartments";
 import { weldToSingleComponent } from "./weld";
 
 /**
@@ -15,6 +15,9 @@ export interface ShipBuild {
   deckY: number; // voxel y of the MAIN (waist) deck plane
   envelopeVolume: number; // m³ enclosed by the hull up to and including deck
   compartments: Compartment[];
+  /** Designed bulkhead-TOP overflow gaps (round-8 flooding): sill openings between adjacent holds.
+   *  Water crosses a bulkhead only when a hold rises ABOVE the gap (Opening.sillY) — see carveBulkheadGaps. */
+  sillOpenings: Opening[];
   interiorLeaks: number[]; // packed indices of interior regions that escaped (should be empty)
   // voxel coords; side = ±z broadside. `facing` (r17) marks a bow/stern CHASER that
   // bears axially (±x) instead — fired independently of the broadsides.
@@ -211,6 +214,70 @@ function stampBulkheads(
       }
     }
   }
+}
+
+/** Voxels removed from the TOP of every interior bulkhead — the user's "few voxels at the top" overflow
+ *  notch — and the modest weir area of the resulting gap. Starting values; tune for spill speed. */
+const BULKHEAD_TOP_GAP = 2; // voxels left open just under the deck on each interior bulkhead
+const BULKHEAD_GAP_AREA = 0.6; // m² effective overflow-weir area per gap
+
+/**
+ * Round-8 flooding: carve a gap across the TOP of every interior bulkhead and return the SILL OVERFLOW
+ * openings between the holds it separates. Call AFTER findCompartments — detection runs on the FULL
+ * bulkheads so the holds stay separate, watertight reservoirs (real trim + survivability); only then do
+ * we open the notch. Each gap becomes an `Opening` whose `sillY` is the gap's height as a fill fraction,
+ * so floodStep moves water across only once a hold rises over the gap (the user's "fills up, then spills"
+ * — no threshold, the same mechanism a shot-through bulkhead uses). Pure integer geometry → deterministic.
+ */
+function carveBulkheadGaps(
+  grid: VoxelGrid,
+  bulkheadXs: number[],
+  deckY: number,
+  compartments: Compartment[],
+  gap = BULKHEAD_TOP_GAP,
+): Opening[] {
+  const [nx, ny, nz] = grid.dims;
+  const sillVoxelY = deckY - gap; // bottom of the gap
+  const openings: Opening[] = [];
+  // PASS 1 (read-only): pair each bulkhead with the two holds it separates (one ends at bx−1, the next
+  // begins at bx+1) + its sill opening. Done before any mutation so the flanking search reads the
+  // original bboxes. The sillY is the gap height as a fill FRACTION of the shallower hold.
+  const targets: { bx: number; fore: Compartment }[] = [];
+  for (const bx of bulkheadXs) {
+    let foreId = -1, aftId = -1, foreMaxX = -Infinity, aftMinX = Infinity;
+    for (const c of compartments) {
+      if (c.bboxMax[0] < bx && c.bboxMax[0] > foreMaxX) { foreMaxX = c.bboxMax[0]; foreId = c.id; }
+      if (c.bboxMin[0] > bx && c.bboxMin[0] < aftMinX) { aftMinX = c.bboxMin[0]; aftId = c.id; }
+    }
+    if (foreId < 0 || aftId < 0 || foreId === aftId) continue;
+    const fore = compartments[foreId], aft = compartments[aftId];
+    const floor = Math.max(fore.bboxMin[1], aft.bboxMin[1]); // the shallower hold's floor
+    const span = Math.max(deckY - floor, 1);
+    const sillY = Math.min(0.98, Math.max(0, (sillVoxelY - floor) / span));
+    openings.push({ a: foreId, b: aftId, area: BULKHEAD_GAP_AREA, sillY });
+    targets.push({ bx, fore });
+  }
+  // PASS 2 (mutate): open the notch — but ONLY the bulkhead's true interior wall (a cell with hold AIR on
+  // BOTH the fore (bx−1) and aft (bx+1) side). The hull SHELL at the station has the continuous solid hull
+  // side fore/aft, so it is NEVER touched → the hull stays watertight + ONE connected piece (weld); only
+  // the bulkhead gets a window. CLAIM each carved cell into the fore hold so every interior air cell still
+  // belongs to a compartment (the leak audit) and the render fills water up through the gap. Symmetric in
+  // z (the fore/aft-empty test mirrors), so the grid stays port/starboard symmetric.
+  for (const { bx, fore } of targets) {
+    for (let y = sillVoxelY; y < deckY; y++) {
+      for (let z = 0; z < nz; z++) {
+        const m = grid.get(bx, y, z);
+        if ((m === OAK || m === RAM) && grid.get(bx - 1, y, z) === EMPTY && grid.get(bx + 1, y, z) === EMPTY) {
+          grid.set(bx, y, z, EMPTY);
+          fore.cells.add(bx + nx * (y + ny * z));
+          fore.bboxMax[0] = Math.max(fore.bboxMax[0], bx);
+          fore.bboxMax[1] = Math.max(fore.bboxMax[1], y);
+        }
+      }
+    }
+    fore.volume = fore.cells.size * VOXEL_VOLUME;
+  }
+  return openings;
 }
 
 /**
@@ -451,6 +518,8 @@ export function buildSloop(): ShipBuild {
   // only the holds actually UNDER a deck hatch get a flooding orifice; the rest are sealed
   // (resilience: with ~9 holds a normal swell mustn't wash the whole ship via every hatch).
   assignHatchAreas(compartments, hatchXs, hatchAreaM2);
+  // round-8: open the overflow notch across the top of each bulkhead + link the holds it separates.
+  const sillOpenings = carveBulkheadGaps(grid, bulkheadXs, deckY, compartments);
 
   // leak audit: every interior empty region below deck must be a compartment;
   // count interior-ish air cells not claimed by any compartment near the hull interior
@@ -508,6 +577,7 @@ export function buildSloop(): ShipBuild {
     deckY,
     envelopeVolume: envelopeCells * VOXEL_VOLUME,
     compartments,
+    sillOpenings,
     interiorLeaks,
     cannonPorts,
     masts,
@@ -748,6 +818,8 @@ export function buildBrig(): ShipBuild {
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
   // only holds under a deck hatch flood from the deck; the rest stay sealed (resilience).
   assignHatchAreas(compartments, hatchXs, hatchAreaM2);
+  // round-8: open the overflow notch across the top of each bulkhead + link the holds it separates.
+  const sillOpenings = carveBulkheadGaps(grid, bulkheadXs, deckY, compartments);
 
   const claimed = new Set<number>();
   for (const c of compartments) for (const cell of c.cells) claimed.add(cell);
@@ -808,6 +880,7 @@ export function buildBrig(): ShipBuild {
     deckY,
     envelopeVolume: envelopeCells * VOXEL_VOLUME,
     compartments,
+    sillOpenings,
     interiorLeaks,
     cannonPorts,
     masts,
@@ -953,6 +1026,8 @@ export function buildCutter(): ShipBuild {
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
   // only holds under a deck hatch flood from the deck; the rest stay sealed (resilience).
   assignHatchAreas(compartments, hatchXs, hatchAreaM2);
+  // round-8: open the overflow notch across the top of each bulkhead + link the holds it separates.
+  const sillOpenings = carveBulkheadGaps(grid, bulkheadXs, deckY, compartments);
 
   const claimed = new Set<number>();
   for (const c of compartments) for (const cell of c.cells) claimed.add(cell);
@@ -990,6 +1065,7 @@ export function buildCutter(): ShipBuild {
     deckY,
     envelopeVolume: envelopeCells * VOXEL_VOLUME,
     compartments,
+    sillOpenings,
     interiorLeaks,
     cannonPorts,
     masts,
@@ -1189,6 +1265,8 @@ export function buildFrigate(): ShipBuild {
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
   // only holds under a deck hatch flood from the deck; the rest stay sealed (resilience).
   assignHatchAreas(compartments, hatchXs, hatchAreaM2);
+  // round-8: open the overflow notch across the top of each bulkhead + link the holds it separates.
+  const sillOpenings = carveBulkheadGaps(grid, bulkheadXs, deckY, compartments);
 
   const claimed = new Set<number>();
   for (const c of compartments) for (const cell of c.cells) claimed.add(cell);
@@ -1243,6 +1321,7 @@ export function buildFrigate(): ShipBuild {
     deckY,
     envelopeVolume: envelopeCells * VOXEL_VOLUME,
     compartments,
+    sillOpenings,
     interiorLeaks,
     cannonPorts,
     masts,
@@ -1451,6 +1530,8 @@ export function buildManOfWar(): ShipBuild {
   const hatchAreaM2 = 2 * 2 * VOXEL_SIZE * VOXEL_SIZE;
   // only holds under a deck hatch flood from the deck; the rest stay sealed (resilience).
   assignHatchAreas(compartments, hatchXs, hatchAreaM2);
+  // round-8: open the overflow notch across the top of each bulkhead + link the holds it separates.
+  const sillOpenings = carveBulkheadGaps(grid, bulkheadXs, deckY, compartments);
 
   const claimed = new Set<number>();
   for (const c of compartments) for (const cell of c.cells) claimed.add(cell);
@@ -1541,6 +1622,7 @@ export function buildManOfWar(): ShipBuild {
     deckY,
     envelopeVolume: envelopeCells * VOXEL_VOLUME,
     compartments,
+    sillOpenings,
     interiorLeaks,
     cannonPorts,
     masts,

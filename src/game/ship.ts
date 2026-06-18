@@ -9,7 +9,6 @@ import { planCrush } from "../sim/crush";
 import { computeSurface, updateSurfaceAfterRemoval, unpackCell, packCell } from "../sim/surfaceSet";
 import {
   floodStep,
-  equalizeFlooding,
   floodBallastLocal,
   buildFillCurve,
   fillHeightLocal,
@@ -317,6 +316,9 @@ export class Ship implements ContactTarget {
       for (const cell of c.cells) this.cellComp.set(cell, c.id);
       this.breachCells.set(c.id, []);
     }
+    // seed the designed bulkhead-TOP overflow gaps (round-8): water crosses a bulkhead only once a hold
+    // rises over the gap (Opening.sillY). Battle damage (registerBreaches) appends more openings at sillY 0.
+    this.openings.push(...build.sillOpenings);
 
     const { world, RAPIER: R } = phys;
     const mass = build.grid.totalMass();
@@ -680,6 +682,13 @@ export class Ship implements ContactTarget {
     return this.build.compartments.reduce((s, c) => s + c.waterVolume, 0);
   }
 
+  /** World-Y of compartment `id`'s pool surface (the live flood waterline). The render clamps the
+   *  interior water to this in WORLD space, so each hold's surface stays level and SLOSHES as she
+   *  pitches/heels. Computed in updateFloodGeom; −Infinity for a dry/unbreached hold (render hides it). */
+  poolWorldY(id: number): number {
+    return this.floodGeom.get(id)?.poolY ?? -Infinity;
+  }
+
   /**
    * Advance flooding one fixed step. Each breach is a TWO-RESERVOIR orifice between the sea and the
    * compartment's own pool: we resolve the sea surface and the pool surface AT each hole and hand
@@ -708,11 +717,11 @@ export class Ship implements ContactTarget {
     if (geomTick) this.updateFloodGeom();
     if (geomTick || this.breachListDirty) this.rebuildBreachInputs(waves, t);
 
+    // floodStep now carries BOTH the breach inflow AND the inter-hold SILL OVERFLOW (this.openings): the
+    // designed bulkhead-top gaps (seeded from build.sillOpenings) + any shot-through holes. Water crosses
+    // a bulkhead only once a hold rises over its gap — the old fixed-fraction `equalizeFlooding` seep is
+    // gone, replaced by that one hydrostatic rule (round-8 flooding rewrite).
     floodStep(this.build.compartments, this.openings, this.breachInputs, dt);
-    // Bulkheads aren't watertight under a head: a substantially-flooded compartment slowly seeps into
-    // its neighbours so she fills EVENLY (balanced, bottom-heavy) instead of pooling in one end and
-    // listing/trimming hard. Slow + mass-conserving; pairs with the low floodwater ballast below.
-    equalizeFlooding(this.build.compartments, dt);
 
     // Foundering is the END stage, gated on lost reserve buoyancy (she's settling under), NOT on a
     // compartment merely topping up — so a single waterline breach settles & survives. `waterlog`
@@ -1505,7 +1514,9 @@ export class Ship implements ContactTarget {
         this.breachCells.get(id)?.push([x, y, z]);
       } else if (adj.size >= 2) {
         const ids = [...adj];
-        for (let i = 0; i < ids.length - 1; i++) this.openings.push({ a: ids[i], b: ids[i + 1], area: VOXEL_SIZE * VOXEL_SIZE });
+        // a shot-through bulkhead is a HOLE, so it conducts at any level → sillY 0 (vs the designed
+        // top gaps' positive sill). One opening mechanism, two sill heights.
+        for (let i = 0; i < ids.length - 1; i++) this.openings.push({ a: ids[i], b: ids[i + 1], area: VOXEL_SIZE * VOXEL_SIZE, sillY: 0 });
       }
     }
     // the orifice set just grew (new hull holes / bulkhead openings) → force the cached breach heads

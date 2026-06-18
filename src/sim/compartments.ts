@@ -22,11 +22,17 @@ export interface Compartment {
   bboxMax: [number, number, number];
 }
 
-/** A hole connecting two compartments (e.g. a shot-through bulkhead). */
+/** A connection between two compartments. Two kinds, ONE mechanism (sill overflow):
+ *  - a battle-damage HOLE in a bulkhead → `sillY: 0` (conducts at any water level, a bottom hole);
+ *  - the designed bulkhead-TOP GAP → `sillY` = the fill-FRACTION of the gap, so water only crosses
+ *    once a hold rises ABOVE the gap (the user's "fills up, THEN spills" — no threshold logic, just
+ *    water over a wall). Dimensionless (a fill fraction, not meters) so the rule stays pose-free + pure. */
 export interface Opening {
   a: number; // compartment id
   b: number; // compartment id
   area: number; // m²
+  /** Fill-fraction sill: only the water ABOVE this fraction on each side conducts. 0 = bottom hole. */
+  sillY: number;
 }
 
 /** One hull breach (a hole cell) this step, resolved as a two-reservoir orifice. */
@@ -90,9 +96,14 @@ export function floodStep(
     const a = compartments[o.a];
     const b = compartments[o.b];
     if (!a || !b) continue;
-    const fillA = a.waterVolume / a.volume;
-    const fillB = b.waterVolume / b.volume;
-    const head = (fillA - fillB) * EXCHANGE_HEAD_SCALE;
+    // SILL OVERFLOW: only the water standing ABOVE the gap conducts. For a bottom hole (sillY 0) this
+    // is the full fill on each side (the old always-on exchange). For a bulkhead-TOP gap (sillY > 0)
+    // nothing moves until a hold rises over the gap — then the over-sill water spills toward the lower
+    // side, exactly like water topping a wall. No threshold/seep constants — it's just the head.
+    const overA = Math.max(0, a.waterVolume / a.volume - o.sillY);
+    const overB = Math.max(0, b.waterVolume / b.volume - o.sillY);
+    if (overA === 0 && overB === 0) continue; // neither hold tops the sill → no flow
+    const head = (overA - overB) * EXCHANGE_HEAD_SCALE;
     if (Math.abs(head) < 1e-9) continue;
     const rate = DISCHARGE * o.area * Math.sqrt(2 * 9.81 * Math.abs(head)) * Math.sign(head);
     let flow = rate * dt; // + = a→b
@@ -204,40 +215,11 @@ export function fillHeightLocal(curve: FillCurve, waterVolume: number): number {
   return (curve.layerY[lo] + frac) * VOXEL_SIZE;
 }
 
-const SEEP_FILL_GATE = 0.5; // a compartment only sheds to a neighbour once it's HALF full (was 0.8 — too
-// gated: a holed end stayed full while the rest read dry; 0.5 lets a substantially-flooded hold start
-// overtopping into its fore-aft neighbours so the spread is VISIBLE bow↔stern, still only once it's a
-// real standing pool, not a nick).
-const SEEP_RATE = 0.04; // per-second fraction of the fill-fraction gap moved (was 0.015 — overtopping
-// crawled too slowly to propagate across a 10-compartment hull; 0.04 spreads it in seconds while
-// staying a "seep", not a gush — see the SLOW-sliver test).
-
-/**
- * Slow cross-compartment seepage: real bulkheads aren't watertight under a standing head — once a
- * compartment is substantially flooded, water overtops/seeps into its fore-aft neighbours. Modelling
- * that makes a foundering hull fill EVENLY (staying balanced and bottom-heavy) instead of pooling all
- * the water in the one breached end and trimming/listing hard. Consecutive ids are physical neighbours
- * (compartments are sorted bow→stern in findCompartments). Slow, fill-driven, mass-conserving, clamped
- * so it can never push a compartment below 0 or over capacity. Deterministic — safe for the oracle.
- */
-export function equalizeFlooding(compartments: Compartment[], dt: number): void {
-  for (let i = 0; i + 1 < compartments.length; i++) {
-    const a = compartments[i];
-    const b = compartments[i + 1];
-    if (a.volume <= 0 || b.volume <= 0) continue;
-    const fillA = a.waterVolume / a.volume;
-    const fillB = b.waterVolume / b.volume;
-    if (Math.max(fillA, fillB) < SEEP_FILL_GATE) continue; // neither side full enough to overtop
-    const gap = fillA - fillB; // + → a is fuller, sheds to b
-    if (Math.abs(gap) < 1e-6) continue;
-    // move toward equal FILL at a slow rate; size by the smaller capacity so neither side overshoots
-    let flow = gap * SEEP_RATE * dt * Math.min(a.volume, b.volume); // + = a→b
-    flow = Math.min(flow, a.waterVolume, b.volume - b.waterVolume);
-    flow = Math.max(flow, -b.waterVolume, -(a.volume - a.waterVolume));
-    a.waterVolume -= flow;
-    b.waterVolume += flow;
-  }
-}
+// (REMOVED 2026-06-18) `equalizeFlooding` + SEEP_FILL_GATE/SEEP_RATE — the "once a hold is half full,
+// seep a fixed fraction toward its neighbour" hack. Replaced by real SILL OVERFLOW through the
+// bulkhead-top gaps, modelled in floodStep's opening loop above (Opening.sillY). Water now crosses a
+// bulkhead only when a hold rises over the gap, driven by the over-sill head — one mechanism, no
+// threshold constants. See the round-8 flooding rewrite spec.
 
 /**
  * Find watertight compartments: connected regions of empty cells strictly

@@ -3,7 +3,6 @@ import {
   orificeFlow,
   floodStep,
   floodBallastLocal,
-  equalizeFlooding,
   buildFillCurve,
   fillHeightLocal,
   type Compartment,
@@ -100,23 +99,56 @@ describe("floodStep", () => {
     expect(gash.waterVolume).toBeGreaterThan(nick.waterVolume * 50);
   });
 
-  it("water equalizes through an opening between connected compartments", () => {
+  it("water equalizes through a BOTTOM hole (sillY 0) between connected compartments", () => {
     const a = comp(10, 8, 0);
     const b = comp(10, 0, 1);
-    const openings: Opening[] = [{ a: 0, b: 1, area: 0.5 }];
+    const openings: Opening[] = [{ a: 0, b: 1, area: 0.5, sillY: 0 }];
     for (let i = 0; i < 1200; i++) floodStep([a, b], openings, [], 1 / 60);
     expect(a.waterVolume).toBeCloseTo(b.waterVolume, 0);
     // mass conserved
     expect(a.waterVolume + b.waterVolume).toBeCloseTo(8, 6);
   });
 
-  it("flow through an opening follows the fuller compartment", () => {
+  it("flow through a bottom hole follows the fuller compartment", () => {
     const a = comp(10, 1, 0);
     const b = comp(10, 6, 1);
-    const openings: Opening[] = [{ a: 0, b: 1, area: 0.5 }];
+    const openings: Opening[] = [{ a: 0, b: 1, area: 0.5, sillY: 0 }];
     floodStep([a, b], openings, [], 0.5);
     expect(a.waterVolume).toBeGreaterThan(1); // gained from b
     expect(b.waterVolume).toBeLessThan(6);
+  });
+});
+
+// The user's spill model: a few voxels removed from the TOP of each bulkhead. Water crosses ONLY when a
+// hold rises ABOVE that gap (sillY = the gap's fill fraction) — "fills up, then spills", no threshold
+// logic. This REPLACES equalizeFlooding; the overflow lives in floodStep's opening loop now.
+describe("sill overflow through a bulkhead-top gap", () => {
+  it("water does NOT cross the sill while a hold is below it", () => {
+    const a = comp(10, 4, 0); // 40% full — below an 0.8 gap
+    const b = comp(10, 0, 1);
+    const openings: Opening[] = [{ a: 0, b: 1, area: 0.25, sillY: 0.8 }];
+    floodStep([a, b], openings, [], 1);
+    expect(b.waterVolume).toBeCloseTo(0, 9); // nothing topped the gap → no spill
+  });
+
+  it("a hold that tops its sill spills into the neighbour, mass-conserving", () => {
+    const a = comp(10, 9.5, 0); // 95% — well over the 0.8 gap
+    const b = comp(10, 0, 1);
+    const openings: Opening[] = [{ a: 0, b: 1, area: 0.25, sillY: 0.8 }];
+    const before = a.waterVolume + b.waterVolume;
+    floodStep([a, b], openings, [], 1);
+    expect(b.waterVolume).toBeGreaterThan(0); // spilled over
+    expect(a.waterVolume + b.waterVolume).toBeCloseTo(before, 9); // conserved
+  });
+
+  it("settles with both holds filled to the gap and stops (no over-drain past the sill)", () => {
+    const a = comp(10, 10, 0); // full
+    const b = comp(10, 0, 1); // empty; sill at 0.5 → equalised fill (total 10 / cap 20) sits AT the sill
+    const openings: Opening[] = [{ a: 0, b: 1, area: 0.5, sillY: 0.5 }];
+    for (let i = 0; i < 4000; i++) floodStep([a, b], openings, [], 1 / 60);
+    expect(a.waterVolume).toBeCloseTo(5, 1); // both rest at the gap (0.5 fill)
+    expect(b.waterVolume).toBeCloseTo(5, 1);
+    expect(a.waterVolume + b.waterVolume).toBeCloseTo(10, 6); // conserved
   });
 });
 
@@ -144,54 +176,6 @@ describe("floodBallastLocal (flood weight settles low & centred)", () => {
     const midY = ((c.bboxMin[1] + c.bboxMax[1] + 1) / 2) * VOXEL_SIZE;
     c.waterVolume = 5;
     expect(floodBallastLocal(c)[1]).toBeLessThanOrEqual(midY);
-  });
-});
-
-// Bulkheads aren't perfectly watertight under a head: a substantially-flooded compartment slowly
-// overtops/seeps into its fore-aft neighbours, so a foundering hull fills EVENLY (balanced, bottom-
-// heavy) instead of pooling all in one end. Slow, fill-driven, mass-conserving, clamped.
-describe("equalizeFlooding (slow cross-compartment seepage)", () => {
-  it("a nearly-full compartment slowly sheds into its drier neighbour", () => {
-    const a = comp(10, 9, 0);
-    const b = comp(10, 0, 1);
-    equalizeFlooding([a, b], 1 / 60);
-    expect(b.waterVolume).toBeGreaterThan(0);
-    expect(a.waterVolume).toBeLessThan(9);
-    expect(a.waterVolume + b.waterVolume).toBeCloseTo(9, 9); // mass conserved
-  });
-
-  it("does NOT spread while both compartments are only lightly flooded", () => {
-    const a = comp(10, 2, 0); // 20% — below the overtopping gate
-    const b = comp(10, 0, 1);
-    equalizeFlooding([a, b], 1 / 60);
-    expect(b.waterVolume).toBe(0);
-  });
-
-  it("is SLOW — a single step moves only a sliver, not a gush", () => {
-    const a = comp(10, 10, 0);
-    const b = comp(10, 0, 1);
-    equalizeFlooding([a, b], 1 / 60);
-    expect(b.waterVolume).toBeGreaterThan(0);
-    expect(b.waterVolume).toBeLessThan(0.2);
-  });
-
-  it("narrows the fill gap over time (PARTIAL leveller) but never overshoots; mass conserved", () => {
-    const a = comp(10, 10, 0);
-    // b is a MUCH larger drier neighbour so that even fully fraction-equalized the pair would sit
-    // below the SEEP_FILL_GATE (0.5): the fuller side (a) drops under the gate at fillA≈0.5 (water≈5)
-    // and seepage STALLS there, leaving a residual gap. (With the old 0.8 gate a smaller b sufficed;
-    // the lowered gate needs a deeper sink for the fuller side to drop under it — same physical intent.)
-    const b = comp(30, 0, 1); // capacity 30 → equalized fraction would be 10/40 = 0.25, under the gate
-    const gap0 = a.waterVolume / a.volume - b.waterVolume / b.volume; // = 1.0 initially
-    for (let i = 0; i < 6000; i++) equalizeFlooding([a, b], 1 / 60);
-    const gap1 = a.waterVolume / a.volume - b.waterVolume / b.volume;
-    // seepage SHEDS from the fuller side toward the drier one — the gap shrinks…
-    expect(gap1).toBeLessThan(gap0);
-    expect(gap1).toBeGreaterThan(0); // …but only PARTIALLY: it stalls once the fuller side drops below
-    // the overtopping gate, so a flooded end stays heavier and the hull keeps its trim (TASK 5).
-    expect(a.waterVolume).toBeGreaterThanOrEqual(0);
-    expect(b.waterVolume).toBeLessThanOrEqual(b.volume);
-    expect(a.waterVolume + b.waterVolume).toBeCloseTo(10, 6); // mass conserved
   });
 });
 

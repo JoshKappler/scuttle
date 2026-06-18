@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { buildSloop, buildCutter, buildFrigate, type ShipBuild } from "../src/sim/shipwright";
-import { findCompartments } from "../src/sim/compartments";
 import { mountSolidCount } from "../src/sim/cannonMount";
 import { WATER_DENSITY, VOXEL_SIZE } from "../src/core/constants";
 import { RAM } from "../src/sim/materials";
@@ -58,7 +57,10 @@ describe("shipwright sloop", () => {
   });
 
   it("has ~9 watertight compartments (more bulkheads = a single breach floods one section)", () => {
-    const comps = findCompartments(ship.grid, ship.deckY);
+    // round-8: assert the AUTHORITATIVE build set (the holds the game floods), not a re-detect of the
+    // grid — bulkheads now carry a carved TOP overflow notch, so re-running findCompartments would merge
+    // adjacent holds through the gap. The holds are still separate flooding reservoirs (sill overflow).
+    const comps = ship.compartments;
     expect(comps.length).toBe(9);
     // bow→stern invariant: dense ids 0..N-1, centroid-x strictly ascending (each adjacent
     // pair is a real fore-aft neighbour — what equalizeFlooding seepage relies on).

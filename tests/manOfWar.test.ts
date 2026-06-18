@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { buildManOfWar } from "../src/sim/shipwright";
-import { findCompartments } from "../src/sim/compartments";
 import { mountSolidCount } from "../src/sim/cannonMount";
 import { RAM } from "../src/sim/materials";
 
@@ -163,7 +162,10 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
   });
 
   it("subdivides the hold into ~12 watertight compartments, three masts, three hatches", () => {
-    const comps = findCompartments(ship.grid, ship.deckY);
+    // round-8: the authoritative build set (the holds the game floods). Bulkheads now carry a carved TOP
+    // overflow notch, so a grid re-detect would merge holds through the gap; the holds remain separate
+    // flooding reservoirs (sill overflow only once a hold tops the gap).
+    const comps = ship.compartments;
     // many transverse bulkheads → a single breach floods one section, not the whole ship.
     expect(comps.length).toBeGreaterThanOrEqual(10);
     // bow→stern invariant: dense ids, ascending centroid-x (real fore-aft neighbours for seepage).
