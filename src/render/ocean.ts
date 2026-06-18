@@ -141,6 +141,10 @@ export interface Ocean {
   setDynamicField(tex: THREE.Texture | null, windowSize: number, originX: number, originZ: number, on: boolean, scale?: number): void;
   /** dev-panel chop controls: overall strength (0 = pure swell) + crest-pinch choppiness. */
   setChop(strength: number, choppiness: number): void;
+  /** Storminess 0..1 → darken/desaturate the body + add a rain dapple. VISUAL only. */
+  setStorm(s: number): void;
+  /** Lightning flash 0..1 from horizontal direction (dx,dz) → a brief specular brighten. */
+  setFlash(f: number, dx: number, dz: number): void;
   /** Re-read the analytic swell waves into the GPU uniforms. Call after the shared wave array's
    *  amplitudes change at runtime (sim/gerstner.applySeaScale → sandbox "sea state") so the visible
    *  surface matches the physics swell again. CPU samplers read the array live; the GPU needs this. */
@@ -436,6 +440,11 @@ uniform sampler2D uDynDisp; // B = dynamic-wave foam coverage
 uniform vec2 uDynOrigin;
 uniform float uDynWindow;
 uniform float uDynOn;
+
+// WEATHER (visual only, fed by the WeatherController): storminess darkens/desaturates
+// the body + adds a rain dapple; a lightning flash briefly brightens the surface from
+// the strike's horizontal direction. Never touches geometry/physics (THE LAW #1).
+uniform float uStorm; uniform float uFlash; uniform vec2 uFlashDir;
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -769,6 +778,17 @@ void main() {
   // upstream; they are simply no longer sampled into the surface colour.
   col = mix(col, vec3(0.92, 0.96, 0.95), clamp(wash * 0.6, 0.0, 0.95));
 
+  // WEATHER (visual only). Applied to the fully-composed water body BEFORE the distance fog,
+  // so a storm darkens the near sea while the far sea still melts into the horizon haze.
+  // STORM: darker, less saturated body.
+  col.rgb = mix(col.rgb, vec3(0.02, 0.035, 0.05), uStorm * 0.6);
+  // RAIN DAPPLE: cheap high-freq sparkle on the surface, gated by storm.
+  float dap = fract(sin(dot(floor(vWorldPos.xz * 6.0), vec2(12.99, 78.23))) * 43758.5);
+  col.rgb += uStorm * 0.04 * smoothstep(0.92, 1.0, dap);
+  // FLASH: a directional specular pop (the bolt lighting the sea from its side).
+  float fd = max(0.0, dot(normalize(vec3(uFlashDir.x, 0.6, uFlashDir.y)), normalize(N)));
+  col.rgb += vec3(0.7, 0.75, 0.9) * uFlash * (0.3 + 0.7 * fd);
+
   // exponential-squared fog toward the horizon, with a CLEAR-ZONE: the near/mid sea (and the islands
   // you sail up to) stays crisp, and haze only builds past uFogStart, fading the far sea into the
   // sky's HORIZON_COLOR by the horizon. (Was an immediate exp² from the camera → a veil over the
@@ -962,6 +982,10 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
       uFftOn: { value: field.active ? 1 : 0 },
       uChopScale: { value: 1 },
       uChoppiness: { value: 1 },
+      // WEATHER (visual only, driven by setStorm/setFlash from the WeatherController).
+      uStorm: { value: 0 },
+      uFlash: { value: 0 },
+      uFlashDir: { value: new THREE.Vector2(0, 1) },
       // shore shoaling land field (bound once via setLandField from the IslandField)
       uLandTex: { value: dummyTex },
       uLandMin: { value: new THREE.Vector2() },
@@ -1140,6 +1164,13 @@ export function createOcean(waves: Wave[], sunDir: THREE.Vector3, field: OceanFi
     setChop(strength, choppiness) {
       mat.uniforms.uChopScale.value = strength;
       mat.uniforms.uChoppiness.value = choppiness;
+    },
+    setStorm(s) {
+      mat.uniforms.uStorm.value = Math.max(0, Math.min(1, s));
+    },
+    setFlash(f, dx, dz) {
+      mat.uniforms.uFlash.value = Math.max(0, f);
+      (mat.uniforms.uFlashDir.value as THREE.Vector2).set(dx, dz);
     },
     refreshSwell() {
       const { a: na, b: nb } = waveUniforms(swell); // re-derive from the (mutated) swell amplitudes

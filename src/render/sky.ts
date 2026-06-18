@@ -47,6 +47,10 @@ export interface SkySetup {
    *  camera and the env-cube camera, and the camera can never sail "out" of the dome).
    *  Call once per frame before render + before updateEnv. */
   follow(center: THREE.Vector3): void;
+  /** Storm darkening [0,1]: fade the sun, slate the sky, and dim+grey the lights. */
+  setStorm(s: number): void;
+  /** Lightning flash [0,..]: a brief desaturated brighten of the sky dome. */
+  setFlash(f: number): void;
   /** Re-render the background scene (sky + clouds) into envCube from `center` (the
    *  player camera position, so the camera-following cloud dome is sampled at its
    *  own centre). */
@@ -87,6 +91,8 @@ uniform vec3 uSunDir;
 uniform vec3 uSunColor;
 uniform vec3 uZenith;
 uniform vec3 uHorizon;
+uniform float uStorm;   // 0..1
+uniform float uFlash;   // 0..1 lightning flash
 varying vec3 vDir;
 
 void main() {
@@ -107,8 +113,14 @@ void main() {
   float md = max(dot(d, normalize(uSunDir)), 0.0);
   float halo = pow(md, 230.0) * 0.40 + pow(md, 22.0) * 0.11;
   float disc = smoothstep(0.9972, 0.9990, md);
-  col += uSunColor * halo;
-  col += uSunColor * disc * 8.0;
+  col += uSunColor * halo * (1.0 - uStorm);
+  col += uSunColor * disc * 8.0 * (1.0 - uStorm);
+
+  // STORM: drag the whole sky toward a dark slate and crush the sun disc/halo.
+  vec3 slate = vec3(0.06, 0.08, 0.10);
+  col = mix(col, slate, uStorm * 0.85);
+  // FLASH: a brief desaturated brighten (lightning lights the cloud deck).
+  col += vec3(0.9, 0.92, 1.0) * uFlash;
 
   gl_FragColor = vec4(col, 1.0);
 }
@@ -134,6 +146,8 @@ export function createSky(): SkySetup {
       uSunColor: { value: sunColor.clone() },
       uZenith: { value: ZENITH_COLOR.clone() },
       uHorizon: { value: HORIZON_COLOR.clone() },
+      uStorm: { value: 0 },
+      uFlash: { value: 0 },
     },
   });
   const sky = new THREE.Mesh(new THREE.SphereGeometry(4000, 32, 16), domeMat);
@@ -175,6 +189,10 @@ export function createSky(): SkySetup {
   // range from both ends rather than just dropping exposure (which would darken the shade further).
   const fillLight = new THREE.HemisphereLight(0xc6dce6, 0x586f78, 2.4);
 
+  // Base (clear-weather) intensities — setStorm dims relative to these.
+  const baseSun = sunLight.intensity;
+  const baseFill = fillLight.intensity;
+
   // Live sky+cloud reflection cube for the ocean. 128² — round 2 tried 512 for a sharper
   // reflection, but baking 6 faces of the FBM cloud scene is a periodic main-thread STALL
   // (512 read as "performance tanked"; 256 was round 1's smooth value). The water is matte
@@ -210,6 +228,17 @@ export function createSky(): SkySetup {
     },
     follow(center: THREE.Vector3) {
       sky.position.copy(center);
+    },
+    setStorm(s: number) {
+      const k = Math.max(0, Math.min(1, s));
+      domeMat.uniforms.uStorm.value = k;
+      // dim + grey the direct + fill light so lit hulls go flat-overcast, not sunny.
+      sunLight.intensity = baseSun * (1 - 0.85 * k);
+      fillLight.intensity = baseFill * (1 - 0.45 * k);
+      sunLight.shadow.needsUpdate = true;
+    },
+    setFlash(f: number) {
+      domeMat.uniforms.uFlash.value = Math.max(0, f);
     },
     updateEnv(renderer, bgScene, center) {
       cubeCam.position.copy(center);

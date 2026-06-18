@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { TUN } from "../core/tunables";
+import { cloudStormParams } from "./weatherMath";
 
 /**
  * Procedural cloud dome — a large inward-facing sphere whose fragment shader
@@ -32,6 +33,7 @@ uniform float uCoverage;  // 0..1 — how much sky is cloud
 uniform float uDensity;   // 0..1 — opacity/contrast of each puff
 uniform float uSpeed;     // drift rate
 uniform vec3 uHorizon;    // sky horizon-haze colour — low clouds dissolve into it (no "wall")
+uniform float uStorm;     // 0..1 storm darkening
 varying vec3 vDir;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -92,6 +94,10 @@ void main() {
   float haze = 1.0 - smoothstep(0.16, 0.52, up);
   col = mix(col, uHorizon, haze * 0.85);
 
+  // STORM: charcoal the bases and kill the bright sunlit tops so it reads as heavy overcast.
+  vec3 storm = vec3(0.10, 0.11, 0.13);
+  col = mix(col, storm, uStorm * 0.8);
+
   gl_FragColor = vec4(col, alpha);
 }
 `;
@@ -99,6 +105,7 @@ void main() {
 export class CloudDome {
   readonly mesh: THREE.Mesh;
   private mat: THREE.ShaderMaterial;
+  private storm = 0;
 
   constructor(sunDir: THREE.Vector3, sunColor: THREE.Color, horizonColor: THREE.Color, radius = 2000) {
     const geo = new THREE.SphereGeometry(radius, 32, 24);
@@ -122,6 +129,7 @@ export class CloudDome {
         uDensity: { value: TUN.gfx.clouds.density },
         uSpeed: { value: TUN.gfx.clouds.speed },
         uHorizon: { value: horizonColor.clone() },
+        uStorm: { value: 0 },
       },
     });
     this.mesh = new THREE.Mesh(geo, this.mat);
@@ -130,12 +138,19 @@ export class CloudDome {
     this.mesh.renderOrder = -999;
   }
 
+  setStorm(s: number): void {
+    this.storm = Math.max(0, Math.min(1, s));
+  }
+
   /** Advance the drift and follow the camera so clouds stay at "infinity". */
   update(time: number, cameraPos: THREE.Vector3): void {
     this.mat.uniforms.uTime.value = time;
-    this.mat.uniforms.uCoverage.value = TUN.gfx.clouds.coverage;
-    this.mat.uniforms.uDensity.value = TUN.gfx.clouds.density;
-    this.mat.uniforms.uSpeed.value = TUN.gfx.clouds.speed;
+    // storm raises coverage/density/speed ABOVE the base tunables and darkens.
+    const p = cloudStormParams(this.storm);
+    this.mat.uniforms.uCoverage.value = Math.max(TUN.gfx.clouds.coverage, p.coverage);
+    this.mat.uniforms.uDensity.value = Math.max(TUN.gfx.clouds.density, p.density);
+    this.mat.uniforms.uSpeed.value = Math.max(TUN.gfx.clouds.speed, p.speed);
+    this.mat.uniforms.uStorm.value = p.darken;
     this.mesh.position.copy(cameraPos);
   }
 }

@@ -53,6 +53,8 @@ const MANIFEST: Record<string, string | string[]> = {
   reload_bell: "sfx/reload_bell.wav", // struck ship's bell — rung when the guns finish reloading
   ocean_loop: "ambient/ocean_loop.ogg",
   wind_loop: "ambient/wind_loop.ogg",
+  rain_loop: "ambient/rain_loop.wav",
+  thunder: ["sfx/thunder_1.wav", "sfx/thunder_2.wav", "sfx/thunder_3.wav"],
   menu_theme: "music/menu_theme.ogg",
   sea_ambient: "music/sea_ambient.wav", // unused — at sea is ambience-only (no music track)
   harbor: "music/harbor.ogg",
@@ -81,6 +83,7 @@ export class AudioManager {
   private uiBusy: number[] = [];
   private ocean: THREE.Audio;
   private wind: THREE.Audio;
+  private rain: THREE.Audio;
   private musicVoices: THREE.Audio[];
   private activeMusic = 0;
   private currentTrack = "";
@@ -120,6 +123,7 @@ export class AudioManager {
     }
     this.ocean = new THREE.Audio(listener);
     this.wind = new THREE.Audio(listener);
+    this.rain = new THREE.Audio(listener);
     this.musicVoices = [new THREE.Audio(listener), new THREE.Audio(listener)];
 
     this.ready = this.loadAll();
@@ -213,10 +217,16 @@ export class AudioManager {
     this.uiBusy[i] = now + buf.duration;
   }
 
+  /** A thunderclap — 2D so it surrounds regardless of where the bolt struck. */
+  thunder(volume: number): void {
+    this.playUi("thunder", { volume: Math.max(0, Math.min(1, volume)) });
+  }
+
   /** Start/stop a looping bed. `on=false` just mutes it (keeps it warm for re-fade). */
-  ambient(which: "ocean" | "wind", on: boolean, gain?: number): void {
-    const v = which === "ocean" ? this.ocean : this.wind;
-    const id = which === "ocean" ? "ocean_loop" : "wind_loop";
+  ambient(which: "ocean" | "wind" | "rain", on: boolean, gain?: number): void {
+    const v = which === "ocean" ? this.ocean : which === "wind" ? this.wind : this.rain;
+    const id = which === "ocean" ? "ocean_loop" : which === "wind" ? "wind_loop" : "rain_loop";
+    const dflt = which === "ocean" ? OCEAN_GAIN : which === "wind" ? WIND_BASE : 0.5;
     const buf = this.buffers.get(id)?.[0];
     if (!buf) return;
     if (on) {
@@ -224,7 +234,7 @@ export class AudioManager {
         v.setBuffer(buf);
         v.setLoop(true);
       }
-      v.setVolume(gain ?? (which === "ocean" ? OCEAN_GAIN : WIND_BASE));
+      v.setVolume(gain ?? dflt);
       if (!v.isPlaying) v.play();
     } else if (v.isPlaying) {
       v.setVolume(0);

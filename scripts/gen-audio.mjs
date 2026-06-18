@@ -206,6 +206,35 @@ function pad(chord, sec) {
   return loopFade(out);
 }
 
+// looping rain bed: dense filtered noise (lots of high-freq "hiss" + a little body), seamless loop.
+function rainLoop() {
+  const n = N(4.0), out = new Array(n);
+  let lp = 0, hp = 0, prev = 0;
+  for (let i = 0; i < n; i++) {
+    const w = noise();
+    lp += (w - lp) * 0.5;            // mild lowpass for body
+    const hiss = w - lp;             // highpassed sparkle = "rain on water"
+    hp = 0.92 * (hp + w - prev); prev = w;
+    out[i] = (hiss * 0.8 + hp * 0.15) * 0.5;
+  }
+  return loopFade(out);
+}
+// thunder: a delayed low rumble with a crack, decaying over ~3-5s. `seed` varies the shape per take.
+function thunder(seed = 0) {
+  const n = N(4.5), out = new Array(n).fill(0);
+  let r1 = 0, r2 = 0;
+  const crackAt = 0.05 + 0.04 * seed;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    r1 += (noise() - r1) * 0.04;                   // deep rumble
+    r2 += (noise() - r2) * 0.12;                   // mid body
+    const crack = Math.exp(-90 * Math.abs(t - crackAt)) * noise(); // the initial CRACK
+    const body = (r1 * 1.0 + r2 * 0.5) * Math.exp(-0.8 * t);       // rolling rumble
+    out[i] = Math.tanh((crack * 0.8 + body * 1.4) * 1.2) * env(i, n, 0.002, 1.2);
+  }
+  return out;
+}
+
 // Only the ids STILL on a procedural placeholder are generated here. The rest (cannon, the
 // wood-crack damage pool, creak, rope, coins, port_open, ui_click/ui_buy, ocean/wind beds, and
 // the menu/harbor music) now have real recordings under public/assets/audio/ — see that README's
@@ -218,4 +247,8 @@ save("sfx/ui_confirm.wav", chime([784, 1175], 0.18, 14));
 save("sfx/ship_ready.wav", chime([392, 523, 659, 784], 0.8, 3));
 save("sfx/reload_bell.wav", bell(740, 1.1)); // "guns reloaded" ship's-bell cue
 save("music/sea_ambient.wav", pad([147, 220, 247], 6)); // unused — at sea is ambience-only
+save("ambient/rain_loop.wav", rainLoop());
+save("sfx/thunder_1.wav", thunder(0));
+save("sfx/thunder_2.wav", thunder(1));
+save("sfx/thunder_3.wav", thunder(2));
 console.log("done — placeholders only; real audio lives beside these and is not regenerated");

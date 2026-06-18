@@ -11,6 +11,10 @@ import { createOceanField } from "./render/oceanField";
 import { createDynamicWaves, type DynShip } from "./render/dynamicWaves";
 import { buildHullProfile } from "./sim/buoyancy";
 import { createSky, HORIZON_COLOR } from "./render/sky";
+import { RainSystem } from "./render/rain";
+import { LightningSystem } from "./render/lightning";
+import { WeatherController } from "./render/weather";
+import { stormFromSeaScale } from "./render/weatherMath";
 import { CloudDome } from "./render/clouds";
 import { islandGritUniforms } from "./render/islandVisual";
 import { buildCutter, buildSloop, type ShipBuild } from "./sim/shipwright";
@@ -282,6 +286,13 @@ async function main() {
   scene.add(ocean.backdrop); // opaque deep-water disc UNDER the surface (kills the void; renderOrder -1)
   scene.add(ocean.mesh);
 
+  // dynamic weather visuals: rain (camera-locked instanced streaks) + lightning (forked bolts + flash).
+  // The WeatherController (built below, once the player ship exists) drives both each frame.
+  const rain = new RainSystem();
+  const lightning = new LightningSystem();
+  scene.add(rain.object);
+  scene.add(lightning.object);
+
   const physics = await initPhysics();
   // rigged character pack — loaded up front so every Pirate can be built
   // synchronously. Default is the Bugrimov semi-realistic pirate; ?char=q the
@@ -434,7 +445,18 @@ async function main() {
   effects.attachSpray(spray);
   const cannons = new Cannons(scene, effects);
   const debris = new DebrisManager(physics, scene, effects);
-  sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
+  // When a sever drops a MAST section, clone THAT mast's still-standing sails/yards (with their
+  // shot-holes) so they fall WITH the spar debris instead of vanishing. ship.mastIndexForIsland maps
+  // the SPAR island → its mast index + break height; shipVisual.cloneMastRig builds the detached
+  // canvas group. Returns null for a non-mast island (debris.spawn then just makes the usual body).
+  const mastClonesFor = (
+    ship: Ship,
+    island: { cells: { x: number; y: number; z: number; mat: number }[] },
+  ): THREE.Group | null => {
+    const m = ship.mastIndexForIsland(island as Parameters<typeof ship.mastIndexForIsland>[0]);
+    return m ? ship.visual.cloneMastRig(m.mi, m.cutLocalY) : null;
+  };
+  sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop, mastClonesFor(sloop, i)));
   sloop.onCannonLost = (pi) => debris.spawnFallingCannon(sloop, pi);
 
   // ---- the hostile fleet (game/fleet.ts) ----
@@ -475,7 +497,7 @@ async function main() {
     const ship = new Ship(physics, build, visual, { x: ex, y: 0.2, z: ez }, false); // enemy → no walkable deck collider
     const ea = -Math.atan2(cz - ez, cx - ex); // bow toward the ring centre
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
-    ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
+    ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship, mastClonesFor(ship, i)));
     ship.onCannonLost = (pi) => debris.spawnFallingCannon(ship, pi);
     ship.onMastFelled = () => gs.msg.post("her mast goes by the board!");
     ship.onRudderHit = (hp) => {
@@ -599,7 +621,7 @@ async function main() {
     const visual = new ShipVisual(build);
     const fresh = new Ship(physics, build, visual, { x: at.x, y: Math.max(at.y, 0.5), z: at.z });
     fresh.body.setRotation(rot, true);
-    fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
+    fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh, mastClonesFor(fresh, i)));
     fresh.onCannonLost = (pi) => debris.spawnFallingCannon(fresh, pi);
     fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
     fresh.onRudderHit = (hp) => {
@@ -850,7 +872,8 @@ async function main() {
     if (prevGunsReady >= 0 && gunsReady > prevGunsReady) audio.playUi("reload_bell", { volume: 0.5 });
     prevGunsReady = gunsReady;
     // ship-vs-ship destruction now runs inside world.step (world.contact.stepAll), not here.
-    debris.update(dt, t, waves);
+    // pass the live hulls so a FALLING MAST staves in whatever it lands on (its own deck / another ship).
+    debris.update(dt, t, waves, [sloop, ...fleet.enemies]);
     charSpike?.update(dt, controls.cameraYaw());
 
     // enemy sunk → plunder + unlock that class for the shipyard (proving your guns
@@ -1055,6 +1078,27 @@ async function main() {
     }
   });
 
+  // Dynamic weather controller — one eased storminess fans out to sky/clouds/ocean/rain/lightning/audio.
+  // Sandbox pins it to the chosen sea (applyChoice); Career drifts it with weather fronts, and the swell
+  // follows. THE LAW #1: the only physics it touches is swell amplitude, via applySeaScale (a supported
+  // runtime op) — sim/ is untouched.
+  const weather = new WeatherController({
+    sky: skySetup,
+    clouds,
+    ocean,
+    rain,
+    lightning,
+    audio,
+    applySwell: (sea) => {
+      applySeaScale(waves, sea);
+      ocean.refreshSwell();
+    },
+    baseWind: () => {
+      const v = sloop.body.linvel();
+      return Math.hypot(v.x, v.z);
+    },
+  });
+
   // dev console handle (also used by Playwright-driven verification)
   (window as unknown as Record<string, unknown>).DEBUG = {
     // getter: the player ship is reassigned on a hull swap, so expose it live
@@ -1079,6 +1123,7 @@ async function main() {
     debris,
     ocean, // ocean surface (setFogColor / setWaterDepth / setReflStrength) — live shader tuning
     sky: skySetup, // gradient dome (sky.material.uniforms uZenith/uHorizon/uSunColor) — live sky tuning
+    weather, // WeatherController — DEBUG.weather.triggerStrike(DEBUG.camera.position); DEBUG.TUN.weather.override
     oceanField,
     dynWaves,
     spray,
@@ -1954,6 +1999,21 @@ async function main() {
         { type: "slider", label: "fall mass kg", obj: TUN.rig, key: "fallMass", min: 100, max: 2000, step: 50 },
       ],
     },
+    {
+      title: "🌧 Weather",
+      controls: [
+        { type: "slider", label: "override (-1=auto)", obj: TUN.weather, key: "override", min: -1, max: 1, step: 0.01 },
+        { type: "slider", label: "ease", obj: TUN.weather, key: "ease", min: 0.02, max: 1, step: 0.01 },
+        { type: "slider", label: "rain ×", obj: TUN.weather, key: "rain", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "lightning ×", obj: TUN.weather, key: "lightning", min: 0, max: 3, step: 0.05 },
+        { type: "slider", label: "cloud dark ×", obj: TUN.weather, key: "cloudDark", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "sky dark ×", obj: TUN.weather, key: "skyDark", min: 0, max: 1.5, step: 0.05 },
+        { type: "slider", label: "wind boost ×", obj: TUN.weather, key: "windBoost", min: 0, max: 2, step: 0.05 },
+        { type: "slider", label: "front period s", obj: TUN.weather, key: "frontPeriod", min: 30, max: 400, step: 5 },
+        { type: "slider", label: "front intensity", obj: TUN.weather, key: "frontIntensity", min: 0, max: 1, step: 0.05 },
+        { type: "button", label: "⚡ strike now", onClick: () => weather.triggerStrike(camera.position) },
+      ],
+    },
   ]);
   // ONE-PRESS Esc → pause menu. The camera captures the mouse via the Pointer Lock
   // API; the browser reserves Esc to EXIT that lock and swallows the keydown, so the
@@ -2029,6 +2089,10 @@ async function main() {
     // shared wave set (physics reads it live); refreshSwell re-uploads the GPU swell to match.
     applySeaScale(waves, choice.kind === "sandbox" ? choice.cfg.seaRoughness : 1);
     ocean.refreshSwell();
+    // weather: sandbox pins storminess to the chosen pill (clear→nightmare); career drifts it with
+    // weather fronts (and the swell then follows storminess live).
+    if (choice.kind === "sandbox") weather.setMode("fixed", stormFromSeaScale(choice.cfg.seaRoughness));
+    else weather.setMode("dynamic");
     if (choice.kind === "career") {
       forcedEnemyTier = null; // Career always uses the notoriety-scaled spawn spread
       if (choice.fresh) {
@@ -2074,6 +2138,7 @@ async function main() {
       const atSea = gs.phase === "playing" || gs.phase === "port";
       audio.ambient("ocean", atSea);
       audio.ambient("wind", atSea);
+      if (!atSea) audio.ambient("rain", false); // weather owns the rain bed at sea; ensure it's off in menu/pause
       // Music: real tracks now — menu/pause theme, the harbor track at port, and NOTHING at sea
       // (open-water sailing is ambience-only; music() fades out for the "playing" state).
       const ms: MusicState =
@@ -2081,8 +2146,7 @@ async function main() {
       audio.music(ms);
     }
     {
-      const pv = sloop.body.linvel();
-      audio.setWind(Math.hypot(pv.x, pv.z)); // louder under way
+      // wind loudness is now owned by the WeatherController (base sail/speed wind + storm boost).
       audio.setUnderwater(camera.position.y < 0.2); // the listener (camera) dips below the sea
       if (gs.phase === "playing") {
         const now = performance.now() / 1000;
@@ -2342,6 +2406,9 @@ async function main() {
     // then re-bake the sky+cloud reflection cube at TUN.gfx.reflection.rebakeHz.
     skySetup.follow(camera.position);
     clouds.update(world.simTime, camera.position);
+    // dynamic weather: eases storminess + fans out to sky/clouds/ocean/rain/lightning/audio, schedules
+    // strikes + thunder. `active` (at sea) gates rain/strikes; menu returns earlier so this is skipped there.
+    weather.update(dt, world.simTime, camera.position, gs.phase === "playing" || gs.phase === "port");
     const bakeInterval = 1 / Math.max(0.1, TUN.gfx.reflection.rebakeHz);
     if (lastEnvBake < 0 || world.simTime - lastEnvBake >= bakeInterval) {
       skySetup.updateEnv(renderer, bgScene, camera.position);
