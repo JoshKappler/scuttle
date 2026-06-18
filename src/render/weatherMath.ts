@@ -1,8 +1,20 @@
 // Pure, Three-free weather decision logic so it is unit-testable (mirrors audioMath.ts).
 // WeatherController (render/weather.ts) consumes these; nothing here touches sim/ (THE LAW #1).
 
-export const STORM_CLEAR = 1.0; // seaScale at/below which it's fully clear ("the regular one")
 export const STORM_FULL = 2.6; // seaScale of a full nightmare (== the Stormy pill)
+
+/**
+ * Sea-state pill → storminess anchors. Each Sandbox sea level carries roughly HALF the storm of the
+ * one above it, with only the calmest level fully clear: Calm→0, Moderate→0.25, Rough→0.5, Stormy→1.
+ * (Keys are the four sea-roughness pill values in render/menuScreen.ts.) Interpolated piecewise so a
+ * dev-panel seaScale between pills still reads a sensible in-between storm.
+ */
+const STORM_ANCHORS: ReadonlyArray<readonly [number, number]> = [
+  [0.45, 0.0], // Calm — fully clear/sunny
+  [1.0, 0.25], // Moderate — a little stormy (overcast, no rain yet)
+  [1.7, 0.5], // Rough — half the final intensity
+  [2.6, 1.0], // Stormy — full nightmare
+];
 export const SEA_CALM = 0.6; // swell scale at storminess 0 in Career (gentle, not glassy)
 const RAIN_START = 0.25; // storminess at which rain begins
 const LIGHT_START = 0.55; // storminess at which lightning begins
@@ -20,9 +32,18 @@ export function smoothstep(e0: number, e1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-/** Sea-roughness scalar → storminess [0,1]. Clear through Moderate (≤1.0), full at Stormy (2.6). */
+/** Sea-roughness scalar → storminess [0,1]. Gradual halving up the sea levels (see STORM_ANCHORS):
+ *  clear at Calm, a little stormy at Moderate, half at Rough, full at Stormy. Clamped outside range. */
 export function stormFromSeaScale(seaScale: number): number {
-  return smoothstep(STORM_CLEAR, STORM_FULL, seaScale);
+  const a = STORM_ANCHORS;
+  if (seaScale <= a[0][0]) return a[0][1];
+  for (let i = 1; i < a.length; i++) {
+    if (seaScale <= a[i][0]) {
+      const t = (seaScale - a[i - 1][0]) / (a[i][0] - a[i - 1][0]);
+      return lerp(a[i - 1][1], a[i][1], t);
+    }
+  }
+  return a[a.length - 1][1];
 }
 /** Career: storminess → swell-amplitude scale fed to applySeaScale. */
 export function seaScaleFromStorm(storminess: number): number {

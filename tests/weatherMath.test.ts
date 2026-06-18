@@ -14,12 +14,17 @@ import {
 } from "../src/render/weatherMath";
 
 describe("storminess mapping", () => {
-  it("is clear through Moderate, full at Stormy", () => {
-    expect(stormFromSeaScale(0.45)).toBe(0); // Calm
-    expect(stormFromSeaScale(1.0)).toBe(0); // Moderate = "the regular one"
-    expect(stormFromSeaScale(1.7)).toBeGreaterThan(0.3); // Rough = building
-    expect(stormFromSeaScale(1.7)).toBeLessThan(0.6);
-    expect(stormFromSeaScale(2.6)).toBe(1); // Stormy
+  it("scales by halves across the sea levels — clear at Calm, full at Stormy", () => {
+    expect(stormFromSeaScale(0.45)).toBeCloseTo(0, 5); // Calm — fully clear
+    expect(stormFromSeaScale(1.0)).toBeCloseTo(0.25, 5); // Moderate — a little stormy (¼)
+    expect(stormFromSeaScale(1.7)).toBeCloseTo(0.5, 5); // Rough — half the final
+    expect(stormFromSeaScale(2.6)).toBeCloseTo(1, 5); // Stormy — full nightmare
+  });
+  it("is monotonic and clamps outside the sea-level range", () => {
+    expect(stormFromSeaScale(0.2)).toBe(0); // below Calm → still clear
+    expect(stormFromSeaScale(3.5)).toBe(1); // above Stormy → capped at full
+    expect(stormFromSeaScale(1.35)).toBeGreaterThan(stormFromSeaScale(0.7)); // rising between anchors
+    expect(stormFromSeaScale(2.15)).toBeGreaterThan(stormFromSeaScale(1.35));
   });
   it("seaScaleFromStorm spans calm..full and is monotonic", () => {
     expect(seaScaleFromStorm(0)).toBeCloseTo(0.6, 5);
