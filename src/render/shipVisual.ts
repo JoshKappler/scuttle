@@ -234,7 +234,7 @@ export class ShipVisual {
     // per-voxel flood fluid: water fills the compartment's interior cells (lowest world-Y
     // first), parented under the ship group. Replaces the round-14 clipped plane the player
     // saw as "blue rectangles not bound to the inside" — and the older deck-parallel cubes.
-    this.fluid = new CompartmentFluid(this.build.compartments, this.build.grid.dims);
+    this.fluid = new CompartmentFluid(this.build.compartments, this.build.grid.dims, this.build.deckY);
     // seed the fluid with the CURRENT cutaway clip (mirrors the cannon-material seed above): on a
     // hull swap setCutaway(cutPlane) is also re-applied by main.ts, but seeding here covers any
     // ordering and keeps the fresh hull's water sliced from birth if the cut is already on.
