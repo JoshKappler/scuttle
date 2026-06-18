@@ -35,5 +35,10 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     environment: "node",
+    // The big-hull "port/starboard symmetric" scans run hundreds of thousands of
+    // per-cell expect()s (frigate/man-o'-war), which legitimately take ~10s and
+    // FALSE-FAIL the 5s default under any CPU contention (a known load flake).
+    // 20s gives headroom without masking a genuinely hung test.
+    testTimeout: 20000,
   },
 });
