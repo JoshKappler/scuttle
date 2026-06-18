@@ -361,8 +361,14 @@ export class DebrisManager {
     this.pieces.push({
       body,
       mesh: group,
-      // entrained air + light spar wood ⇒ it rides awash; tuned together with fallFloatBuoy.
-      volume: island.cells.length * VOXEL_VOLUME * 1.6,
+      // Buoyant displacement (m³). CRITICAL: SPAR is FEATHER-light (density 120 vs seawater 1025), so
+      // displacing 1.6× its own wood volume — the factor a heavier HULL wreck uses — gave a felled mast
+      // ~13.7× its weight in lift (1025·1.6/120). At liftMul=1 that rocketed it off the swell, and since
+      // it's pulled OUT of the rigid ship solver (physics.debrisBodies, the anti-launch fix) it then sank
+      // through the hull to the waterline INSIDE her and bobbed/spun there — the "spasms, stuck in the
+      // ship, spins fast" bug. Displace ~0.2× the wood volume instead → a gentle ~1.7× net lift
+      // (1025·0.2/120): she rides awash like a log and settles, then `waterlog` decays liftMul under.
+      volume: island.cells.length * VOXEL_VOLUME * 0.2,
       // span for the submerged-fraction reads off the spar's THICKNESS (its small cross-section), not
       // the long axis — a felled mast lies FLAT on the water, so only its ~0.3 m girth is the
       // float-depth scale. Using the tall pre-fall Y half-extent would make `sub` tiny and it would
@@ -605,9 +611,18 @@ export class DebrisManager {
         p.body.addForce({ x: -v.x * kh, y: -v.y * kv, z: -v.z * kh }, true);
         if (p.mast) {
           const av = p.body.angvel();
-          const ka = m * 0.5 * wet;
+          const ka = m * 1.5 * wet; // was 0.5 — a felled spar must settle FLAT, not keep tumbling in the chop
           p.body.addTorque({ x: -av.x * ka, y: -av.y * ka, z: -av.z * ka }, true);
         }
+      }
+      // SAFETY (masts): hard-cap the spin so a felled spar can never read as "rotating very quickly".
+      // With the calmed buoyancy above this is rarely reached, but it guarantees the symptom can't recur
+      // from any transient (the spawn topple kick + a wave slap). 4 rad/s ≈ 0.6 rev/s — a believable
+      // tumble, never a blur. Applies in air or water (a dry spinning spar gets caught too).
+      if (p.mast) {
+        const av = p.body.angvel();
+        const sp = Math.hypot(av.x, av.y, av.z);
+        if (sp > 4) { const s = 4 / sp; p.body.setAngvel({ x: av.x * s, y: av.y * s, z: av.z * s }, true); }
       }
 
       // sync visual
