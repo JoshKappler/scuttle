@@ -460,6 +460,26 @@ export const TUN = {
      *  ship instead of being a sliver only at the exact sun-dead-behind angle. */
     sail: { glow: 0.6 },
   },
+
+  /** Dynamic weather (render/weather.ts) — storms scale with sea roughness. Pure visuals/audio +
+   *  swell amplitude (the only physics input, via applySeaScale). NOT read by the vitest oracle.
+   *  One eased `storminess` [0,1] drives sky/sun darkening, cloud thickening, rain, and lightning;
+   *  Sandbox pins it to the chosen pill, Career drifts it with weather fronts (swell follows). */
+  weather: {
+    /** -1 = auto (sandbox: from the pill; career: weather fronts). 0..1 forces storminess for testing. */
+    override: -1,
+    /** storminess ease rate toward target (per second). */
+    ease: 0.15,
+    /** multipliers so the feel can be dialed live. */
+    rain: 1,
+    lightning: 1,
+    cloudDark: 1,
+    skyDark: 1,
+    windBoost: 1,
+    /** career weather-front shape (period in seconds, peak storminess 0..1). */
+    frontPeriod: 140,
+    frontIntensity: 1,
+  },
 };
 
 export type Tunables = typeof TUN;
