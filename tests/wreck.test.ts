@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { wreckLift, WRECK_CELLS } from "../src/game/debris";
-import { findSevered } from "../src/sim/connectivity";
+import { wreckLift, WRECK_CELLS, BIG_SEVER, routeIsland, islandHasSpar } from "../src/game/debris";
+import { findSevered, type Island } from "../src/sim/connectivity";
 import { createGrid } from "../src/sim/voxelGrid";
-import { PINE } from "../src/sim/materials";
+import { PINE, OAK, SPAR } from "../src/sim/materials";
+
+/** Build a synthetic severed island of `n` cells, all of material `mat`. */
+const island = (n: number, mat: number): Island => ({
+  cells: Array.from({ length: n }, (_, i) => ({ x: i, y: 0, z: 0, mat })),
+});
 
 describe("ship splitting (round 7)", () => {
   it("cutting a hull's waist clean through severs the far end as one island", () => {
@@ -29,5 +34,46 @@ describe("ship splitting (round 7)", () => {
     // monotonic decay, floored above zero so the descent stays gentle
     expect(wreckLift(30)).toBeLessThan(wreckLift(10));
     expect(wreckLift(500)).toBeGreaterThan(0);
+  });
+});
+
+describe("severed-island routing (BUG-4: shot masts must FALL, not vanish)", () => {
+  it("a small SPAR (mast) island routes to a floating BODY, not dust", () => {
+    // a felled mast is only ~150 cells — far below BIG_SEVER — but it carries SPAR, so it must
+    // become a persistent floating body instead of a one-shot dust puff (the disappear bug).
+    const mast = island(150, SPAR);
+    expect(mast.cells.length).toBeLessThan(BIG_SEVER);
+    expect(islandHasSpar(mast)).toBe(true);
+    expect(routeIsland(mast)).toBe("mast");
+  });
+
+  it("a small NON-spar hull fragment still DUSTS (no floating beams)", () => {
+    // the design keeps small destroyed hull chips as loose voxels/dust — gating on SPAR CONTENT
+    // (not a lowered global threshold) is what preserves that.
+    const chip = island(150, OAK);
+    expect(islandHasSpar(chip)).toBe(false);
+    expect(routeIsland(chip)).toBe("dust");
+  });
+
+  it("a hull torn clean in half (≥ BIG_SEVER) is still a WRECK", () => {
+    expect(routeIsland(island(BIG_SEVER, OAK))).toBe("wreck");
+    // and a BIG piece that happens to include spar (whole mast + the deck around it) is a wreck too
+    // (the big-body path already meshes any material), so wreck takes precedence over mast.
+    expect(routeIsland(island(BIG_SEVER, SPAR))).toBe("wreck");
+  });
+
+  it("a mixed island with even ONE spar voxel routes to the mast body", () => {
+    const mixed: Island = {
+      cells: [
+        ...Array.from({ length: 80 }, (_, i) => ({ x: i, y: 0, z: 0, mat: OAK })),
+        { x: 0, y: 1, z: 0, mat: SPAR },
+      ],
+    };
+    expect(islandHasSpar(mixed)).toBe(true);
+    expect(routeIsland(mixed)).toBe("mast");
+  });
+
+  it("pine flotsam (no spar, sub-BIG) is unaffected — still dust", () => {
+    expect(routeIsland(island(300, PINE))).toBe("dust");
   });
 });
