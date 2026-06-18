@@ -89,13 +89,18 @@ export class SeverDebounce {
   }
 }
 
-// Buoyancy wave-sampling LOD thresholds (distance² to the player) + reuse-cell sizes (m). The swell
-// (λ≥14 m) varies little over a metre, so a distant ship can reuse one surfaceHeight sample across a
-// small world-space cell with imperceptible error — and the per-column trig is a fleet's CPU wall.
-const BUOY_LOD_NEAR2 = 70 * 70; // ≤70 m from the player: EXACT per-column sampling (no LOD)
-const BUOY_LOD_FAR2 = 140 * 140; // >140 m: coarsest sampling
-const BUOY_CELL_MID = 0.8; // m reuse radius at mid range (~5× fewer evals, <5% amplitude error)
-const BUOY_CELL_FAR = 1.8; // m reuse radius far away (~10×; slight bob, invisible at distance)
+// Buoyancy wave-FIELD (the fleet's old CPU wall). surfaceHeight() is a ~40-trig Gerstner inversion,
+// and a Man-o'-War has ~8,450 hull columns spaced 0.25 m apart — but the PHYSICS swell is band-limited
+// to λ≥14 m and SMOOTH, so sampling it per column was a ~56×/axis OVERSAMPLE. applyForces instead
+// samples the swell once on a COARSE world-aligned lattice (BUOY_FIELD_M ≪ λ) over the hull and
+// bilinearly interpolates per column (~16× fewer trig evals, sub-cm error on the resting waterline:
+// the big-amplitude waves are long → finely sampled, the short 14 m wave carries only ~7 cm so even
+// its interpolation error is ~1 cm). The distance² thresholds fold the old near/far LOD into the
+// lattice spacing (a far ship's swell can be coarser still). THE LAW #1 holds — it is still the
+// analytic swell, just spatially down-sampled.
+const BUOY_LOD_NEAR2 = 70 * 70; // ≤70 m from the player: finest lattice
+const BUOY_LOD_FAR2 = 140 * 140; // >140 m: coarsest lattice
+const BUOY_FIELD_M = 2.5; // m — base wave-field lattice spacing (≪ the 14 m min swell wavelength)
 
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
@@ -235,6 +240,15 @@ export class Ship implements ContactTarget {
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
+  /** Coarse buoyancy wave-height lattice (perf): a reused scratch grown on demand, filled with
+   *  surfaceHeight samples over the hull each step and bilinearly read per column. See applyForces. */
+  private waveField = new Float64Array(0);
+  /** Cached LOCAL hull-top Y (m): the tallest non-SPAR voxel's top face, for hullAabbTopWorldY (the
+   *  enemy-wreck cull). The scan that finds it (descending past the tall SPAR mast tower) is ~10^5
+   *  cell reads, and the fleet ran it for every enemy EVERY substep — a steady combat-CPU wall. The
+   *  local value only changes when the hull is CARVED, so cache it and recompute lazily only then
+   *  (−1 = dirty). The world Y still tracks the live pose via the cheap corner transform. */
+  private hullTopLocalY = -1;
   /** live heave stiffness k = ρg·waterplaneArea·buoyancy (N/m), set each step for damping. */
   private heaveStiffness = 0;
 
@@ -888,35 +902,64 @@ export class Ship implements ContactTarget {
     let sxz = 0; // Σ area·rx·rz
     let bowMaxX = -Infinity; // r18: frontmost wet column → voxel bow-spray origin
     this.waterlineN = 0;
-    // Buoyancy wave-sampling LOD: a ship far from the focus (the player) reuses a surfaceHeight sample
-    // until the column's world position moves past `waveCell` metres — invisible at range, ~5-10× fewer
-    // trig-heavy evals. Near/player ships (or no focus → tests/headless) keep waveCell 0 = EXACT per column.
-    let waveCell = 0;
-    if (focusX !== undefined && focusZ !== undefined) {
-      const fdx = tr.x - focusX,
-        fdz = tr.z - focusZ;
+    // Buoyancy WAVE-FIELD (the fleet's old CPU wall): when a focus is set (the GAME path) the swell is
+    // sampled ONCE on a coarse world-aligned lattice over the hull and bilinearly interpolated per
+    // column, instead of a ~40-trig surfaceHeight inversion per 0.25 m column (a ~56×/axis oversample of
+    // a smooth λ≥14 m swell). The headless / oracle path (no focus) keeps EXACT per-column sampling, so
+    // determinism + the vitest tests are bit-identical. See BUOY_FIELD_M.
+    const useField = focusX !== undefined && focusZ !== undefined;
+    let fX0 = 0, fZ0 = 0, fNX = 0, fNZ = 0, fH = BUOY_FIELD_M;
+    if (useField) {
+      // world XZ AABB that bounds EVERY column centre: transform the 8 corners of the local grid
+      // envelope (every column lies inside it). Snap the origin to the world lattice so the sample
+      // points are stable frame-to-frame (no temporal popping as she moves), + one cell of margin.
+      const [gnx, gny, gnz] = this.build.grid.dims;
+      const ex = gnx * VOXEL_SIZE, ey = gny * VOXEL_SIZE, ez = gnz * VOXEL_SIZE;
+      let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+      for (let i = 0; i < 8; i++) {
+        this.tmpV.set(i & 1 ? ex : 0, i & 2 ? ey : 0, i & 4 ? ez : 0).applyQuaternion(this.tmpQ);
+        const cx = this.tmpV.x + tr.x, cz = this.tmpV.z + tr.z;
+        if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+        if (cz < minZ) minZ = cz; if (cz > maxZ) maxZ = cz;
+      }
+      // a far ship's swell can be coarser still (it's tiny on screen) — fold the old distance LOD into
+      // the lattice spacing rather than a separate reuse cache.
+      const fdx = tr.x - focusX!, fdz = tr.z - focusZ!;
       const fd2 = fdx * fdx + fdz * fdz;
-      if (fd2 > BUOY_LOD_FAR2) waveCell = BUOY_CELL_FAR;
-      else if (fd2 > BUOY_LOD_NEAR2) waveCell = BUOY_CELL_MID;
+      fH = fd2 > BUOY_LOD_FAR2 ? BUOY_FIELD_M * 2.4 : fd2 > BUOY_LOD_NEAR2 ? BUOY_FIELD_M * 1.6 : BUOY_FIELD_M;
+      fX0 = Math.floor(minX / fH) * fH - fH;
+      fZ0 = Math.floor(minZ / fH) * fH - fH;
+      fNX = Math.ceil((maxX - fX0) / fH) + 2;
+      fNZ = Math.ceil((maxZ - fZ0) / fH) + 2;
+      const need = fNX * fNZ;
+      if (this.waveField.length < need) this.waveField = new Float64Array(need);
+      const wf = this.waveField;
+      for (let iz = 0; iz < fNZ; iz++) {
+        const zc = fZ0 + iz * fH;
+        const row = iz * fNX;
+        for (let ix = 0; ix < fNX; ix++) wf[row + ix] = surfaceHeight(waves, fX0 + ix * fH, zc, t);
+      }
     }
-    let cacheWx = Infinity,
-      cacheWz = Infinity,
-      cacheSurf = 0;
+    const invH = 1 / fH;
     for (const col of this.columns) {
-      // column anchor (its lowest cell) → world; sample the surface once here
+      // column anchor (its lowest cell) → world
       const aw = this.tmpV.set(col.x, col.cellY[0], col.z).applyQuaternion(this.tmpQ);
       const wx = aw.x + tr.x;
       const wz = aw.z + tr.z;
       const anchorWY = aw.y + tr.y;
-      // LOD: reuse the cached sample while still within waveCell metres of it (Manhattan); else resample.
+      // bilinear read off the coarse lattice (game), or an EXACT inversion (headless/oracle).
       let surfaceY: number;
-      if (waveCell > 0 && Math.abs(wx - cacheWx) + Math.abs(wz - cacheWz) < waveCell) {
-        surfaceY = cacheSurf;
+      if (useField) {
+        const u = (wx - fX0) * invH, v = (wz - fZ0) * invH;
+        let iu = u | 0; if (iu < 0) iu = 0; else if (iu > fNX - 2) iu = fNX - 2;
+        let iv = v | 0; if (iv < 0) iv = 0; else if (iv > fNZ - 2) iv = fNZ - 2;
+        const fu = u - iu, fv = v - iv;
+        const wf = this.waveField, b = iv * fNX + iu;
+        const h0 = wf[b] + (wf[b + 1] - wf[b]) * fu;
+        const h1 = wf[b + fNX] + (wf[b + fNX + 1] - wf[b + fNX]) * fu;
+        surfaceY = h0 + (h1 - h0) * fv;
       } else {
         surfaceY = surfaceHeight(waves, wx, wz, t);
-        cacheWx = wx;
-        cacheWz = wz;
-        cacheSurf = surfaceY;
       }
       const rx = wx - com0.x; // horizontal lever arm of this column from the COM
       const rz = wz - com0.z;
@@ -1170,6 +1213,7 @@ export class Ship implements ContactTarget {
     updateSurfaceAfterRemoval(grid, this.surface, gone); // keep the boundary SET fresh
     this.applySurfaceDelta(gone); // mirror the same change into the packed view incrementally (O(changes))
     this.registerBreaches(cells);
+    this.hullTopLocalY = -1; // the carve may have lowered the hull top → recompute it lazily
     this.damageDirty = true; // mass/column recompute is deferred + throttled (flushDamage)
     this.severDebounce.markCarved(); // a full-grid sever scan is pending, debounced to carving-pause
     this.colliderDirty = true; this.framesSinceCarve = 0; // debounce the heavy deck-collider rebuild
@@ -1325,18 +1369,27 @@ export class Ship implements ContactTarget {
   hullAabbTopWorldY(): number {
     const grid = this.build.grid;
     const [nx, ny, nz] = grid.dims;
-    // local top face of the tallest HULL (non-SPAR) voxel — descending scan, short-circuits per column
-    let hullTopY = 0;
-    scan: for (let y = ny - 1; y >= 0; y--) {
-      for (let x = 0; x < nx; x++) {
-        for (let z = 0; z < nz; z++) {
-          if (grid.isSolid(x, y, z) && grid.get(x, y, z) !== SPAR) {
-            hullTopY = (y + 1) * VOXEL_SIZE;
-            break scan;
+    // local top face of the tallest HULL (non-SPAR) voxel — descending scan, short-circuits per column.
+    // CACHED: this scan reads ~10^5 cells (it walks down past the whole SPAR mast tower), and the
+    // fleet's per-substep wreck cull called it for every enemy EVERY step — the steady combat-`fixed`
+    // CPU wall. The local hull-top only moves when the hull is CARVED, so recompute only when dirty
+    // (carveCells + the sever shed reset hullTopLocalY to −1); the live pose is folded in by the
+    // corner transform below, so a bobbing/sinking/capsizing hull is still exact.
+    if (this.hullTopLocalY < 0) {
+      let topY = 0;
+      scan: for (let y = ny - 1; y >= 0; y--) {
+        for (let x = 0; x < nx; x++) {
+          for (let z = 0; z < nz; z++) {
+            if (grid.isSolid(x, y, z) && grid.get(x, y, z) !== SPAR) {
+              topY = (y + 1) * VOXEL_SIZE;
+              break scan;
+            }
           }
         }
       }
+      this.hullTopLocalY = topY;
     }
+    const hullTopY = this.hullTopLocalY;
     const ex = nx * VOXEL_SIZE, ez = nz * VOXEL_SIZE;
     const tr = this.body.translation();
     const rot = this.body.rotation();
@@ -1406,6 +1459,7 @@ export class Ship implements ContactTarget {
         updateSurfaceAfterRemoval(grid, this.surface, islandCells); // shed cells leave the boundary
         this.applySurfaceDelta(islandCells); // mirror into the packed view incrementally
         this.registerBreaches(islandCells);
+        this.hullTopLocalY = -1; // a shed section may have taken the hull top → recompute it lazily
         this.damageDirty = true;  // shed cells changed mass/columns → recompute on the next 10 Hz flush
         this.colliderDirty = true; this.framesSinceCarve = 0; // geometry changed → refresh (debounced)
         this.onSevered?.(islands);

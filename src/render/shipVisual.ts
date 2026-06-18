@@ -112,6 +112,11 @@ export class ShipVisual {
     mastH: number;
     /** the FULL pole height (m) — restore target if the mast is repaired/reset. */
     poleH: number;
+    /** m above the foot the BUILD-time voxel trunk reaches (the grid cap on a capped hull). The
+     *  cosmetic topmast + its upper canvas only show at full rigged height while the trunk still
+     *  stands to ~this; once a shot carves the trunk BELOW it, the rig drops to the surviving voxel
+     *  height (the felled section went with the debris) — so a downed mast leaves nothing upright. */
+    capAboveFoot: number;
   }[] = [];
 
   /** Real CC0 plank photos (ambientCG), shared by every ship. */
@@ -643,19 +648,22 @@ export class ShipVisual {
       // the same convention detachMast uses for its cut height.
       const top = mastTopY[mi] ?? -Infinity;
       const aliveAtFoot = top > -Infinity; // any voxel trunk still standing off the deck?
-      let survAboveFoot = top - rig.group.position.y;
-      // a grid-CAPPED mast (the man-o-war: its voxel trunk truncates partway up, with a thin
-      // cosmetic topmast carrying the upper rig) reaches its FULL rigged height as long as any
-      // trunk stands — the voxel top is artificially low, so don't cull the upper yards/sails by
-      // it. Only an actual sever (aliveAtFoot → false) drops the whole rig. This is what restores
-      // the man-o-war's missing top sails (the voxel-mast change had hidden everything above ~16 m).
-      if (rig.cosmeticPole && aliveAtFoot) survAboveFoot = Math.max(survAboveFoot, rig.mastH);
-      // the cosmetic TOPMAST cylinder (only present on a grid-capped hull, e.g. the man-o-war) hangs
-      // above the voxels — it shows while the voxel trunk under it stands and drops once it's gone.
-      if (rig.cosmeticPole) rig.pole.visible = aliveAtFoot;
+      const survAboveFoot = aliveAtFoot ? top - rig.group.position.y : -Infinity;
+      // a grid-CAPPED mast (the man-o-war: its voxel trunk truncates at the grid cap, with a thin
+      // cosmetic topmast carrying the upper rig) shows its FULL rigged height ONLY while the trunk
+      // still stands to ~that build cap. The OLD rule extended to full height for ANY surviving foot
+      // stub, so a shot that severed the upper trunk left the cosmetic pole + its canvas hanging in
+      // the air while the felled voxels fell away as debris — the "mast clones itself, one stays
+      // upright" bug. Now once the trunk is carved BELOW the cap the rig drops to the real surviving
+      // voxel height (the upper section went with the debris); at full health it still shows the lot.
+      const intactAtCap = aliveAtFoot && survAboveFoot >= rig.capAboveFoot - 0.75;
+      const effHeight = rig.cosmeticPole && intactAtCap ? Math.max(survAboveFoot, rig.mastH) : survAboveFoot;
+      // the cosmetic TOPMAST cylinder hangs ABOVE the voxels: show it only while the trunk still
+      // reaches the cap, so a shot through the trunk drops it instead of leaving it floating.
+      if (rig.cosmeticPole) rig.pole.visible = intactAtCap;
       for (const part of rig.parts) {
         // a small slack (0.5 m) keeps a yard whose foot sits right at the surviving top still shown.
-        part.mesh.visible = part.yLocal <= survAboveFoot + 0.5;
+        part.mesh.visible = aliveAtFoot && part.yLocal <= effHeight + 0.5;
       }
     }
   }
@@ -981,6 +989,7 @@ export class ShipVisual {
         parts,
         mastH,
         poleH: mastH,
+        capAboveFoot: voxTopAboveFoot,
       });
 
       // square rig, canvas up to the masthead (playtest round 4): three

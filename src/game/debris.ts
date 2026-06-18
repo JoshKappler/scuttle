@@ -304,6 +304,11 @@ export class DebrisManager {
       .setLinearDamping(0.4)
       .setAngularDamping(1.2);
     const body = world.createRigidBody(desc);
+    // exclude this body from Rapier's rigid solver against any SHIP (see physics.debrisBodies): the
+    // spar spawns DEEP inside the hull it tore off, and the solver's penetration recovery on that
+    // overlap launched the unclamped debris hundreds of metres skyward. Landing damage is a manual
+    // voxel-crush probe (mastLandingDamage), so the rigid contact is unnecessary anyway.
+    this.physics.debrisBodies.add(body.handle);
 
     // SOLID, DEFAULT-GROUP collider (NOT a sensor, NOT group 0x0002, NOT FILTER_CONTACT_PAIRS): this
     // is what makes the fallen spar walkable — the captain's KCC query (filter 0xfffffffd) collides
@@ -546,6 +551,7 @@ export class DebrisManager {
       if (p.age > lifetime || tr.y < sinkFloorY) {
         this.scene.remove(p.mesh);
         this.disposeRig(p); // free the cloned yard/sail materials a felled mast carried down
+        this.physics.debrisBodies.delete(p.body.handle); // drop the stale handle (recycled by Rapier)
         this.physics.world.removeRigidBody(p.body);
         this.pieces.splice(i, 1);
         continue;

@@ -129,6 +129,15 @@ export class Cannons {
   private tmpQ = new THREE.Quaternion();
   private tmpLocal = new THREE.Vector3();
   private tmpLocalDir = new THREE.Vector3();
+  // marchGrid scratch — reused so a ball's per-step ray-march allocates NOTHING (it ran per ball ×
+  // per target × per substep and was a fresh Vector3 every quarter-voxel step = the combat GC churn).
+  private tmpInv = new THREE.Quaternion();
+  private tmpSeg = new THREE.Vector3();
+  private tmpMP = new THREE.Vector3();
+  private tmpML = new THREE.Vector3();
+  /** Per-target padded world AABBs, recomputed once per update(): a ball whose short segment misses a
+   *  hull's box skips that hull's rig + voxel march entirely (don't compute the hit when not near). */
+  private targetBounds: { min: THREE.Vector3; max: THREE.Vector3 }[] = [];
 
   constructor(
     scene: THREE.Scene,
@@ -219,6 +228,18 @@ export class Cannons {
       this.effects.cannonBoom(m.pos);
     }
 
+    // Per-target padded world AABBs (computed ONCE this step): the broad reject in the ball loop skips
+    // a ball's rig + voxel march against any hull its short segment doesn't reach — so a ball racing
+    // past the player no longer ray-marches through every distant enemy grid every substep.
+    const TB = this.targetBounds;
+    for (let ti = 0; ti < targets.length; ti++) {
+      let tb = TB[ti];
+      if (!tb) { tb = { min: new THREE.Vector3(), max: new THREE.Vector3() }; TB[ti] = tb; }
+      targets[ti].aabbWorld(tb);
+      tb.min.x -= 0.5; tb.min.y -= 0.5; tb.min.z -= 0.5;
+      tb.max.x += 0.5; tb.max.y += 0.5; tb.max.z += 0.5;
+    }
+
     // integrate balls
     for (const b of this.balls) {
       if (!b.alive) continue;
@@ -248,10 +269,18 @@ export class Cannons {
         continue;
       }
 
+      // ball segment AABB (prev→pos), shared by the rig + voxel broad rejects below.
+      const sMinX = Math.min(b.prev.x, b.pos.x), sMaxX = Math.max(b.prev.x, b.pos.x);
+      const sMinY = Math.min(b.prev.y, b.pos.y), sMaxY = Math.max(b.prev.y, b.pos.y);
+      const sMinZ = Math.min(b.prev.z, b.pos.z), sMaxZ = Math.max(b.prev.z, b.pos.z);
+
       // rig first (round 7): cloth tears and the ball flies on; a mast trunk
       // or the rudder blade stops it cold
       let stopped = false;
-      for (const ship of targets) {
+      for (let ti = 0; ti < targets.length; ti++) {
+        const tb = TB[ti];
+        if (sMaxX < tb.min.x || sMinX > tb.max.x || sMaxY < tb.min.y || sMinY > tb.max.y || sMaxZ < tb.min.z || sMinZ > tb.max.z) continue;
+        const ship = targets[ti];
         const rig = ship.rigImpacts(b.prev, b.pos);
         for (const s of rig.sails) {
           // one ball tears a given sail AT MOST ONCE — rigImpacts re-tests the whole flight every
@@ -276,8 +305,11 @@ export class Cannons {
       }
       if (stopped) continue;
 
-      // voxel impact: march the segment prev→pos through each target grid
-      for (const ship of targets) {
+      // voxel impact: march the segment prev→pos through each target grid (broad-rejected first)
+      for (let ti = 0; ti < targets.length; ti++) {
+        const tb = TB[ti];
+        if (sMaxX < tb.min.x || sMinX > tb.max.x || sMaxY < tb.min.y || sMinY > tb.max.y || sMaxZ < tb.min.z || sMinZ > tb.max.z) continue;
+        const ship = targets[ti];
         const hit = this.marchGrid(ship, b.prev, b.pos);
         if (hit) {
           // poke a hole through, but DEPTH IS EMERGENT: the ball spends its kinetic energy
@@ -339,22 +371,20 @@ export class Cannons {
   ): { cell: [number, number, number]; world: THREE.Vector3 } | null {
     const tr = ship.body.translation();
     const rot = ship.body.rotation();
-    const inv = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w).invert();
+    const inv = this.tmpInv.set(rot.x, rot.y, rot.z, rot.w).invert();
 
     const stepLen = VOXEL_SIZE * 0.5;
-    const seg = this.tmpV.copy(to).sub(from);
+    const seg = this.tmpSeg.copy(to).sub(from);
     const len = seg.length();
     if (len < 1e-6) return null;
     const steps = Math.max(Math.ceil(len / stepLen), 1);
 
-    const p = new THREE.Vector3();
+    const p = this.tmpMP;
+    const local = this.tmpML;
     for (let i = 0; i <= steps; i++) {
       p.copy(from).addScaledVector(seg, i / steps);
-      // world → ship local
-      const lx = p.x - tr.x;
-      const ly = p.y - tr.y;
-      const lz = p.z - tr.z;
-      const local = new THREE.Vector3(lx, ly, lz).applyQuaternion(inv);
+      // world → ship local (reused scratch — no per-step allocation)
+      local.set(p.x - tr.x, p.y - tr.y, p.z - tr.z).applyQuaternion(inv);
       const cx = Math.floor(local.x / VOXEL_SIZE);
       const cy = Math.floor(local.y / VOXEL_SIZE);
       const cz = Math.floor(local.z / VOXEL_SIZE);
