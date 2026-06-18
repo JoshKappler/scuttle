@@ -960,15 +960,21 @@ async function main() {
   // to rebuild the world-space centerline cut plane from the live hull pose.
   const cutNormalWorld = new THREE.Vector3();
   const cutPointWorld = new THREE.Vector3();
-  // dark abyss disc under the ship: the cutaway trench shows "the depths"
-  // instead of glowing white skybox-below-the-sea
+  // CUTAWAY SEA BACKING (round 8): when the hull is cut open, everything BELOW the waterline must read as
+  // deep-blue SOLID water — the sea you cut through — never the white sky/void leaking through the keel at
+  // a grazing angle (the user's "white ballast … cutting into the void"). A navy lower-hemisphere BOWL
+  // centred on the ship with its rim AT the live waterline, opening downward: any cut sightline that exits
+  // the hull below the surface lands on its inner navy wall, while the opaque hull (much closer) still
+  // occludes it so the timber/ballast cross-section shows IN FRONT. It sits at/below the surface, so the
+  // opaque sea hides it everywhere EXCEPT the cutaway hole. Replaces the old flat disc at y=−9, which
+  // grazing waterline sightlines escaped clean over. fog:false so it stays deep blue, not fogged pale.
   const abyss = new THREE.Mesh(
-    new THREE.CircleGeometry(70, 40),
-    new THREE.MeshBasicMaterial({ color: 0x0a2832 }),
+    new THREE.SphereGeometry(70, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), // lower hemisphere = bowl
+    new THREE.MeshBasicMaterial({ color: 0x0a2236, side: THREE.DoubleSide, fog: false }),
   );
-  abyss.geometry.rotateX(-Math.PI / 2);
-  abyss.position.y = -9;
+  abyss.position.y = 0; // rim tracked to the live sea surface each frame while cut away (see updateHole site)
   abyss.visible = false;
+  abyss.renderOrder = -2; // draw behind the hull + flood water (opaque depth still lets the nearer hull win)
   scene.add(abyss);
   // INTERIOR FILL — "the inside of the ship is always well lit and visible". The sun +
   // hemisphere only graze the deck; the hold, the lower deck, and anything seen through a
@@ -2358,6 +2364,9 @@ async function main() {
       const com = sloop.body.worldCom();
       abyss.position.x = com.x;
       abyss.position.z = com.z;
+      // rim at the LIVE sea surface at the ship (+ a hair) so the navy bowl backs the cut right up to the
+      // waterline — no white sliver even when she rides a swell crest. The bowl opens downward from here.
+      abyss.position.y = surfaceHeight(waves, com.x, com.z, world.simTime) + 0.3;
     }
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
