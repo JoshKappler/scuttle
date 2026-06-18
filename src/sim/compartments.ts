@@ -20,6 +20,17 @@ export interface Compartment {
   /** Cell-space bounding box (inclusive), for water-plane rendering. */
   bboxMin: [number, number, number];
   bboxMax: [number, number, number];
+  /** Packed solid cells directly BELOW this hold's air — the floor its water rests on. Captured once at
+   *  build (computeCompartmentShells); the runtime counts how many still test solid to detect a blown-out
+   *  bottom. Optional — only the game ship populates it. */
+  floorCells?: number[];
+  /** Packed solid cells face-adjacent to this hold's air — its enclosing HOUSING (floor + sides + ends +
+   *  deck). The runtime counts survivors each damage flush; too few left ⇒ the housing is destroyed. */
+  shellCells?: number[];
+  /** Set at runtime when the housing is destroyed: a torn-open hold is part of the SEA — it can no longer
+   *  retain water (drains, render collapses) nor trap buoyant air (its cells stop displacing → that end
+   *  loses reserve buoyancy and founders). Terminal once true. */
+  open?: boolean;
 }
 
 /** A connection between two compartments. Two kinds, ONE mechanism (sill overflow):
@@ -314,4 +325,39 @@ export function findCompartments(grid: VoxelGrid, deckY: number): Compartment[] 
   compartments.sort((a, b) => a.centroid[0] - b.centroid[0]);
   compartments.forEach((c, i) => (c.id = i));
   return compartments;
+}
+
+/**
+ * Capture each compartment's enclosing solid HOUSING — the floor its water rests on and the full shell of
+ * solid cells wrapping its trapped air — so the runtime can later detect when that housing has been shot or
+ * rammed away. A torn-open hold is no longer a watertight reservoir: it can't hold water (it drains to the
+ * sea) and its air no longer displaces (it floods through). Pure grid reads; run ONCE at build AFTER all
+ * carving (bulkhead gaps, ballast cast) so the captured shell reflects the as-built hull. Stores packed
+ * cell indices on each compartment; the runtime counts how many still test solid each damage flush.
+ */
+export function computeCompartmentShells(grid: VoxelGrid, compartments: Compartment[]): void {
+  const [nx, ny, nz] = grid.dims;
+  const idx = (x: number, y: number, z: number) => x + nx * (y + ny * z);
+  for (const c of compartments) {
+    const shell = new Set<number>();
+    const floor = new Set<number>();
+    for (const p of c.cells) {
+      const x = p % nx;
+      const y = Math.floor(p / nx) % ny;
+      const z = Math.floor(p / (nx * ny));
+      const nb: [number, number, number][] = [
+        [x - 1, y, z], [x + 1, y, z], [x, y - 1, z], [x, y + 1, z], [x, y, z - 1], [x, y, z + 1],
+      ];
+      for (const [qx, qy, qz] of nb) {
+        if (qx < 0 || qy < 0 || qz < 0 || qx >= nx || qy >= ny || qz >= nz) continue;
+        if (!grid.isSolid(qx, qy, qz)) continue;
+        const sp = idx(qx, qy, qz);
+        shell.add(sp);
+        if (qy < y) floor.add(sp); // a solid directly UNDER an air cell = the pool floor
+      }
+    }
+    c.shellCells = [...shell];
+    c.floorCells = [...floor];
+    c.open = false;
+  }
 }

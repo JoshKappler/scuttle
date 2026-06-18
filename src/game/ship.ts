@@ -12,6 +12,7 @@ import {
   floodBallastLocal,
   buildFillCurve,
   fillHeightLocal,
+  computeCompartmentShells,
   type FillCurve,
   type BreachInput,
   type Opening,
@@ -28,6 +29,13 @@ import type { Physics } from "./physics";
 import { HullCollider } from "./hullCollider";
 import type { HullView } from "../sim/voxelOverlap";
 import type { ContactTarget } from "./voxelContact";
+
+// A flooded hold is flagged OPEN (part of the sea: drains, render collapses, its air stops displacing)
+// once its enclosing housing is mostly gone. Conservative starting values — only a genuinely torn-open
+// hold trips them; a few cannon holes leave the shell well above these, so the hold still holds water and
+// bobs. Tune by feel. See updateCompartmentOpenness / computeCompartmentShells.
+const FLOOD_OPEN_FLOOR_MIN = 0.4; // drains once >60% of the floor it rests on is shot/rammed away
+const FLOOD_OPEN_SHELL_MIN = 0.5; // ...or >50% of its enclosing housing is gone ("the housing is destroyed")
 
 /** Height (m) of the HULL envelope — the tallest non-SPAR (i.e. non-mast) solid voxel + one cell.
  *  The grid `ny` now contains the tall VOXEL-MAST tower, so it is NOT the hull height; the box inertia
@@ -299,6 +307,9 @@ export class Ship implements ContactTarget {
     this.visual = visual;
     this.walkable = walkable;
     this.enclosed = enclosedCellSet(build.compartments);
+    // capture each hold's enclosing housing (floor + shell) so a torn-open hold can be detected at runtime
+    // and flipped OPEN (drains + stops trapping buoyant air). Runs once on the as-built (carved) grid.
+    computeCompartmentShells(build.grid, build.compartments);
     this.columns = makeVoxelColumns(build.grid, build.compartments);
     this.totalCellVolume = this.sumColumnVolume();
     this.surface = computeSurface(build.grid);
@@ -722,16 +733,22 @@ export class Ship implements ContactTarget {
     // a bulkhead only once a hold rises over its gap — the old fixed-fraction `equalizeFlooding` seep is
     // gone, replaced by that one hydrostatic rule (round-8 flooding rewrite).
     floodStep(this.build.compartments, this.openings, this.breachInputs, dt);
+    // An OPEN hold (housing destroyed) is part of the sea: keep it drained even if a neighbour spills into
+    // it through a bulkhead opening (its own breach inflow is already skipped in rebuildBreachInputs).
+    let anyOpen = false;
+    for (const c of this.build.compartments) if (c.open) { c.waterVolume = 0; anyOpen = true; }
 
     // Foundering is the END stage, gated on lost reserve buoyancy (she's settling under), NOT on a
     // compartment merely topping up — so a single waterline breach settles & survives. `waterlog`
-    // bleeds her remaining lift once she's that deep; she recovers if drained/pumped back up.
+    // bleeds her remaining lift once she's that deep; she recovers if drained/pumped back up — UNLESS a
+    // hold is torn open (anyOpen), in which case she's gutted and goes down (no recovery, ramp on even
+    // after the open holds have drained to the sea).
     let totWater = 0;
     for (const c of this.build.compartments) totWater += c.waterVolume;
     const founder = TUN.flood.founderSubmerge;
-    if (totWater > 0 && this.submergedFrac > founder) {
+    if ((totWater > 0 || anyOpen) && this.submergedFrac > founder) {
       this.waterlog = Math.min(this.waterlog + 0.02 * dt, 0.5);
-    } else if (this.submergedFrac < founder * 0.7) {
+    } else if (!anyOpen && this.submergedFrac < founder * 0.7) {
       this.waterlog = Math.max(this.waterlog - 0.02 * dt, 0);
     }
 
@@ -764,6 +781,7 @@ export class Ship implements ContactTarget {
     const cellArea = VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale;
 
     for (const c of this.build.compartments) {
+      if (c.open) continue; // a torn-open hold is part of the sea — no inflow, it stays drained
       const poolY = this.floodGeom.get(c.id)?.poolY ?? -Infinity;
 
       // each hull hole is its own orifice (a low hole floods while a high one on the same
@@ -831,7 +849,7 @@ export class Ship implements ContactTarget {
     const qx = rot.x, qy = rot.y, qz = rot.z, qw = rot.w;
     for (const c of this.build.compartments) {
       const breached = (this.breachCells.get(c.id)?.length ?? 0) > 0;
-      if (c.waterVolume <= 1e-6 && !breached) {
+      if (c.open || (c.waterVolume <= 1e-6 && !breached)) {
         const old = this.floodGeom.get(c.id);
         if (old) { old.hasWater = false; old.poolY = -Infinity; }
         continue;
@@ -1032,8 +1050,10 @@ export class Ship implements ContactTarget {
         this.waterlineN++;
       }
     }
-    // flooded water is accounted as WEIGHT below (not as a lift cut) — scaling lift
-    // AND adding weight would double-count; weight-only handles partial submersion.
+    // netLift is the FULL displacement — the loop above credits a flooded hold's trapped-air cells with
+    // lift just like intact ones (they're still in `enclosed`). The flood loop below then bears DOWN at
+    // the ×buoyancy coefficient, which exactly CANCELS that credited lift for the flooded fraction (a
+    // full submerged hold nets zero), so flooding actually sinks + trims her. See there.
     body.addForce({ x: 0, y: netLift, z: 0 }, true);
     body.addTorque({ x: torqueX, y: 0, z: torqueZ }, true);
     this.submergedFrac = this.totalCellVolume > 0 ? submergedVolume / this.totalCellVolume : 0;
@@ -1051,19 +1071,22 @@ export class Ship implements ContactTarget {
     // diagnostic only now (the heel force comes from applying lateral drag at the CB).
     this.heelArm = com0.y - cbWorldY;
 
-    // Flooded water is cargo that has SETTLED: its weight bears LOW and CENTRED in each compartment
-    // (floodBallastLocal), so flooding makes her more bottom-heavy and the per-voxel buoyancy holds
-    // her upright as she sinks. This replaced the wet-cell centroid, which ranked cells by world-Y and
-    // slid to the LOW side as she heeled — a free-surface moment that deepened any list until she
-    // turned turtle and bobbed there inverted. Fore/aft trim from an unevenly-flooded hull still
-    // emerges (compartments bear at their own x); the slow seep above keeps it from running away.
-    // Asymmetric LATERAL capsize is intentionally gone — a foundering ship should settle and go down.
+    // Flooded water bears DOWN at the SAME ×buoyancy·(1−waterlog) coefficient the per-voxel lift uses, so
+    // it CANCELS the reserve buoyancy the loop above still credits a flooded hold's trapped-air cells:
+    //   • a fully-flooded submerged hold → lift(1.5V) − weight(1.5V) = ZERO net (its air is gone),
+    //   • a half-flooded one keeps half its reserve buoyancy (1.5·½V), so she settles progressively,
+    //   • an unevenly-flooded hull noses down toward the heavy end (each hold bears at its own x).
+    // Was ×1.0 (no buoyancy factor) → a flooded hold stayed +0.5V buoyant and she "floated and equalised
+    // without sinking". The point is the heel-INDEPENDENT floodBallastLocal centre, so this trims fore/aft
+    // WITHOUT the free-surface roll that would capsize her — asymmetric lateral capsize stays gone, a
+    // foundering ship settles and goes down upright (THE LAW #2/#3).
+    const floodCoef = WATER_DENSITY * G * TUN.phys.buoyancy * (1 - this.waterlog);
     for (const c of this.build.compartments) {
       if (c.waterVolume <= 0) continue;
       const [lx, ly, lz] = floodBallastLocal(c);
       const wp = this.tmpV.set(lx, ly, lz).applyQuaternion(this.tmpQ);
       body.addForceAtPoint(
-        { x: 0, y: -c.waterVolume * WATER_DENSITY * 9.81, z: 0 },
+        { x: 0, y: -c.waterVolume * floodCoef, z: 0 },
         { x: wp.x + tr.x, y: wp.y + tr.y, z: wp.z + tr.z },
         true,
       );
@@ -1493,7 +1516,44 @@ export class Ship implements ContactTarget {
         this.loseCannon(i);
       }
     }
+    // BEFORE the column rebuild: flag any hold whose housing is now destroyed as OPEN and pull its air out
+    // of the displacing set, so the very next recomputeMassProperties rebuilds those columns without it.
+    this.updateCompartmentOpenness();
     this.recomputeMassProperties();
+  }
+
+  /** Detect holds whose enclosing HOUSING has been shot/rammed away and flip them OPEN — a torn-open hold
+   *  is part of the sea: it can't retain water (drains to 0; the render hides a dry hold) and its trapped
+   *  air no longer displaces (its cells leave `enclosed` → that end loses reserve buoyancy and founders,
+   *  the "completely torn open bow should tip her forward and sink"). Runs on the 10 Hz damage flush right
+   *  before the column rebuild, only over breached/wet holds, once per hold (open is terminal). Removing
+   *  the air from `enclosed` + dirtying its columns here makes the subsequent updateVoxelColumns rebuild
+   *  them without it. Deterministic — pure grid.isSolid counts, no RNG/clock. */
+  private updateCompartmentOpenness(): void {
+    const grid = this.build.grid;
+    const [nx, ny, nz] = grid.dims;
+    const solidAt = (sp: number) => grid.isSolid(sp % nx, Math.floor(sp / nx) % ny, Math.floor(sp / (nx * ny)));
+    for (const c of this.build.compartments) {
+      if (c.open || !c.shellCells || !c.floorCells) continue;
+      const breached = (this.breachCells.get(c.id)?.length ?? 0) > 0;
+      if (!breached && c.waterVolume <= 1e-6) continue; // an intact, dry hold can't be open
+      let floorAlive = 0;
+      for (const sp of c.floorCells) if (solidAt(sp)) floorAlive++;
+      let shellAlive = 0;
+      for (const sp of c.shellCells) if (solidAt(sp)) shellAlive++;
+      const floorFrac = c.floorCells.length > 0 ? floorAlive / c.floorCells.length : 1;
+      const shellFrac = c.shellCells.length > 0 ? shellAlive / c.shellCells.length : 1;
+      if (floorFrac >= FLOOD_OPEN_FLOOR_MIN && shellFrac >= FLOOD_OPEN_SHELL_MIN) continue; // housing holds
+      // HOUSING DESTROYED → open to the sea.
+      c.open = true;
+      c.waterVolume = 0; // drains; compartmentFluid hides a dry hold so the body collapses
+      for (const cell of c.cells) {
+        if (this.enclosed.delete(cell)) {
+          const x = cell % nx, z = Math.floor(cell / (nx * ny));
+          this.dirtyColumns.add(x * nz + z); // rebuild this column WITHOUT the now-flooded-through air
+        }
+      }
+    }
   }
 
   /** Register removed hull cells as breaches: a removed cell adjacent to ONE
