@@ -881,7 +881,12 @@ async function main() {
     for (const e of fleet.enemies) {
       if (isSunk(e) && !salvaged.has(e)) {
         salvaged.add(e);
-        audio.playAt("sink", e.body.translation()); // her death groan, out where she went down
+        const sinkPos = e.body.translation();
+        audio.playAt("sink", sinkPos); // her death groan, out where she went down
+        // a foam ring erupts at the waterline as she founders — a visible "she's going down" beat,
+        // scaled to hull size (a frigate throws a bigger splash than a cutter), then she keeps
+        // settling under during the fleet sink-out grace.
+        effects.splash(sinkPos.x, 0, sinkPos.z, Math.min(4, (e.build?.lengthM ?? 24) / 11));
         const goldBefore = economy.state.doubloons;
         port.plunder(e); // loot → economy → mirrors gs.wallet + toast
         runEarned += Math.max(0, economy.state.doubloons - goldBefore); // size-scaled loot → sandbox score
