@@ -223,20 +223,22 @@ export class ShipVisual {
     // casting under any light. Lifted a touch while cut away (animate()) so the revealed block isn't a void.
     this.ironMaterial = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      color: 0xffffff,
+      color: 0x8a8a8a, // darken the neutral 0.09 iron vertex tint so it reads charcoal once lit (was 0xffffff)
       roughness: 0.9,
       metalness: 0.1,
-      // THE real "pale ballast" cause: the scene uses the bright sky as an environment map
-      // (sky.ts sets mainScene.environment), which lights the DIFFUSE channel via image-based
-      // lighting — and diffuse IBL is INDEPENDENT of metalness. So every past metalness tweak
-      // (0.85->0.45->0.1) only killed the specular sky mirror; the dark iron's diffuse was still
-      // being washed to a light blue-grey by the sky. envMapIntensity 0 removes that wash entirely,
-      // so the ballast reads as the dark charcoal iron its albedo + interior fill light actually give.
+      // Why the ballast read LIGHT GREY for ~10 rounds and NOTHING fixed it: TWO stacked, additive lifts,
+      // both independent of the knobs everyone kept turning:
+      //  1) the bright sky environment map lit the iron's DIFFUSE via IBL — independent of metalness, so
+      //     the 0.85->0.45->0.1 metalness tweaks never touched it. envMapIntensity 0 kills that.
+      //  2) THE one that survived even (1): a grey EMISSIVE self-glow (was 0.06 grey, boosted x1.5 in the
+      //     cutaway below). Emissive is light the surface EMITS — added on top, independent of albedo,
+      //     metalness AND env, so no lighting/reflection change could ever move it. Cut ~3x to a dark floor
+      //     that still keeps the cut-open interior off pure black, but reads as dark iron, not a grey card.
       envMapIntensity: 0,
       transparent: false,
       depthWrite: true,
       side: THREE.DoubleSide,
-      emissive: new THREE.Color(0.06, 0.06, 0.06),
+      emissive: new THREE.Color(0.02, 0.02, 0.024),
       emissiveIntensity: 0.9,
     });
     this.remeshAll();
@@ -284,7 +286,10 @@ export class ShipVisual {
     // lift the solid ballast's self-lit floor while cut away so the revealed iron reads as a solid charcoal
     // block, not a dark void on the faces turned away from the sun (matches the hull lift). Kept modest +
     // NEUTRAL so it never washes back to the old pale-white/blue — it's a grey floor against black, not a glow.
-    this.ironMaterial.emissiveIntensity = this.cutawayOn ? 1.5 : 0.9;
+    // Boost cut WAY back (was 1.5): with emissive base 0.06 that ×1.5 = 0.09 linear of constant grey glow —
+    // THE thing that read as "light grey ballast" no matter what (independent of albedo/metalness/env). Now a
+    // dark floor (0.02 base × 1.0 = 0.02 linear) that lifts off pure black without washing it pale.
+    this.ironMaterial.emissiveIntensity = this.cutawayOn ? 1.0 : 0.7;
     // rudder convention: sailing.rudder + = port turn → trailing edge swings
     // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
     // puts the trailing edge at −z for +r. Wheel turns the same sense as a
