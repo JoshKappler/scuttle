@@ -1,0 +1,21 @@
+# Binary game assets — mark explicitly so core.autocrlf (this repo has it ON)
+# never applies CRLF normalization to them. Without this, Windows checkouts can
+# show phantom "modified" diffs on binaries (or worse, corrupt them). See the
+# audio-cleanup worklog: the audio .wav churn that looked like "uncommitted work".
+*.wav   binary
+*.ogg   binary
+*.mp3   binary
+*.flac  binary
+*.glb   binary
+*.fbx   binary
+*.tga   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.wasm  binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
