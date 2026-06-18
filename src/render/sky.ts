@@ -26,6 +26,16 @@ import * as THREE from "three";
 export const HORIZON_COLOR = new THREE.Color().setRGB(0.56, 0.65, 0.72);
 /** Zenith blue overhead. */
 const ZENITH_COLOR = new THREE.Color().setRGB(0.17, 0.35, 0.58);
+/** The deep-water navy the sea reads as when you look DOWN into it — the SAME colour the ocean
+ *  surface uses for its straight-down "deep" gradient (render/ocean.ts uDeepColor = 0x0a1a2e) and the
+ *  underwater backdrop bowl. This dome is the absolute BACKDROP behind the whole scene (drawn first,
+ *  depth cleared, everything composites over it). On open water the opaque sea hides it; it only shows
+ *  through a GAP — a hull cut, a shot-through hole, a hull clipping the surface, the centreline cutaway,
+ *  the camera dipping under. Painting the dome's below-horizon band THIS colour makes every such gap
+ *  read as "more water underneath" instead of the pale sky-haze void — the sea becomes a solid volume.
+ *  (Constructed from the same hex as ocean.ts uDeepColor so they tonemap identically; keep them in sync
+ *  if that is ever retuned.) */
+export const UNDERWATER_COLOR = new THREE.Color(0x0a1a2e);
 
 export interface SkySetup {
   /** The gradient sky dome mesh (lives in the background scene). */
@@ -91,6 +101,7 @@ uniform vec3 uSunDir;
 uniform vec3 uSunColor;
 uniform vec3 uZenith;
 uniform vec3 uHorizon;
+uniform vec3 uUnderwater; // deep-water navy painted below the horizon = the solid sea body behind everything
 uniform float uStorm;   // 0..1
 uniform float uFlash;   // 0..1 lightning flash
 varying vec3 vDir;
@@ -104,9 +115,19 @@ void main() {
   vec3 col = mix(uHorizon, uZenith, pow(up, 0.42));
   // a faint extra glow right on the horizon line, fading out by ~10 degrees up.
   col += uHorizon * 0.08 * (1.0 - smoothstep(0.0, 0.18, up));
-  // BELOW the horizon: hold the horizon haze (never black). The ocean fog fades the far
-  // sea to this exact colour, so sea and sky meet in one seamless band — no void, no skirt.
-  if (d.y < 0.0) col = uHorizon;
+  // BELOW the horizon: this dome is the absolute backdrop behind the WHOLE scene, so its
+  // below-horizon band is exactly what shows through any gap in the thin sea surface (a hull cut,
+  // a shot hole, a hull clipping the waterline, the cutaway, the camera dipping under). Paint it the
+  // SOLID DEEP-WATER navy so every such gap reads as "more water underneath", never the pale void the
+  // old flat horizon-haze gave. BUT keep a hair of HORIZON_COLOR right at the horizon LINE so the far
+  // sea still melts into the sky seamlessly there: that razor-thin band (d.y ∈ ~[-0.02, 0]) sits behind
+  // the opaque, horizon-fogged far ocean for any realistic camera height, so it is never actually seen —
+  // it only guards the seam. A few degrees down (where any real sightline through a foreground gap
+  // falls) it is full navy. The ocean's own distance fog still fades the visible far sea to HORIZON_COLOR.
+  if (d.y < 0.0) {
+    float toDeep = smoothstep(0.02, 0.10, -d.y);
+    col = mix(uHorizon, uUnderwater, toDeep);
+  }
 
   // sun: a warm disc with a soft halo. The disc is HDR (core ~12) so it still blooms and can
   // seed the god-rays; the pre-bloom clamp (TUN.gfx.bloom.clamp) caps it from white-washing.
@@ -146,6 +167,7 @@ export function createSky(): SkySetup {
       uSunColor: { value: sunColor.clone() },
       uZenith: { value: ZENITH_COLOR.clone() },
       uHorizon: { value: HORIZON_COLOR.clone() },
+      uUnderwater: { value: UNDERWATER_COLOR.clone() },
       uStorm: { value: 0 },
       uFlash: { value: 0 },
     },
