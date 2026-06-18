@@ -983,7 +983,11 @@ async function main() {
   // the interior timber + flood water without touching the bright ocean/exterior) keeps the
   // inside readable at all times — under the deck, through shot holes, and in the cutaway.
   // No shadow casting (it's a fill, and the inside has no sun-shadow to honour).
-  const interiorFill = new THREE.PointLight(0xfff0d8, 2.4, 26, 1.6);
+  // Intensity is deliberately LOW (was 2.4): parked at the hull COM only a few cells above the bilge, a
+  // bright point light blew the nearest below-deck cap faces past 1.0 → tonemapped to a pale WHITE wash that
+  // read as "the ballast is white and bleeds into the bulkheads" in the cutaway. 0.9 keeps the interior
+  // readable (the cutaway `shadeFloor` ambient does the lifting) while the iron reads as dark charcoal.
+  const interiorFill = new THREE.PointLight(0xfff0d8, 0.9, 26, 1.6);
   interiorFill.castShadow = false;
   scene.add(interiorFill);
   const holeQ = new THREE.Quaternion();
