@@ -35,11 +35,26 @@ export interface FounderingShip {
  *  swell mean) is plenty — no need to sample the live wave height here. */
 const SEA_Y = 0;
 
-/** How many consecutive fixed steps the "underwater" test must hold before an enemy is culled.
- *  By the time the test trips, the hull's TOP is already a full ship-length below the sea, so this is
- *  just a debounce against a freak deep swell trough; ~30 steps ≈ 0.5 s at 60 Hz. The "watch her sink
- *  all the way" time comes from the THRESHOLD (whole hull a ship-length under), not this hold. */
+/** How many consecutive fixed steps the "underwater" test must hold before an enemy is DECLARED a
+ *  wreck. By the time the test trips, the hull's TOP is already a full ship-length below the sea, so
+ *  this is just a debounce against a freak deep swell trough; ~30 steps ≈ 0.5 s at 60 Hz. The "watch
+ *  her sink all the way" time comes from the THRESHOLD (whole hull a ship-length under), not this hold. */
 export const ENEMY_SINK_HOLD_STEPS = 30;
+
+/**
+ * After a wreck is DECLARED ({@link makeEnemyWreck} trips), the FleetManager keeps her in the world
+ * this many more fixed steps — STILL STEPPING (buoyancy keeps pulling her under) — before disposing
+ * the geometry, so she slides the rest of the way down on screen and her TALL spar masts (which the
+ * hull-AABB cull predicate deliberately ignores, so they're typically still grazing the surface when
+ * the wreck is declared) dip beneath the waves LAST instead of the whole ship blinking out in one
+ * frame. ~180 steps ≈ 3 s at 60 Hz — long enough for the mast tips to cross under for every tier, yet
+ * she's far enough down that the disposal is off-screen-ish. The replacement enemy spawn is kicked off
+ * the instant she's declared (she leaves the live `units` count immediately), so foes don't appear any
+ * later than before — only her carcass lingers a few seconds while it founders out of sight.
+ *
+ * Step-counted (no wall clock) so it stays deterministic, consistent with the rest of this module.
+ */
+export const SINK_OUT_GRACE_STEPS = 180;
 
 /**
  * A STRICTER "she's gone" test for ENEMY ships only: keep a sinking hull visible until the WHOLE

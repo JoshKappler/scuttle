@@ -31,10 +31,34 @@ function vertexAo(side1: boolean, side2: boolean, corner: boolean): number {
   return 3 - ((side1 ? 1 : 0) + (side2 ? 1 : 0) + (corner ? 1 : 0));
 }
 
-export function meshChunk(grid: VoxelGrid, cx: number, cy: number, cz: number): ChunkMesh | null {
+// Module-level per-slice scratch, cleared/reset each slice instead of allocating a fresh
+// `new Int32Array(256)` + `new Array(256)` every one of the ~6·17 slices per chunk (×re-mesh).
+// meshChunk is single-threaded + non-reentrant (no async between fills), so sharing is safe.
+const scratchMask = new Int32Array(CHUNK_SIZE * CHUNK_SIZE);
+const scratchAo: (number[] | undefined)[] = new Array(CHUNK_SIZE * CHUNK_SIZE);
+
+/**
+ * Greedy-mesh one chunk. `visible(x,y,z)` is an OPTIONAL cutaway predicate (ship-local cell coords):
+ * a cell is treated as present for face-emission ONLY where it is solid AND `visible` returns true.
+ * Making the cut-away half read as EMPTY makes the mesher auto-emit the newly-exposed INTERNAL faces
+ * of the surviving cells → a SOLID capped cross-section of whole voxels (ballast cap = solid iron, no
+ * holes), so no GPU clip plane is needed for the hull. Omitting the predicate is the unchanged build.
+ */
+export function meshChunk(
+  grid: VoxelGrid,
+  cx: number,
+  cy: number,
+  cz: number,
+  visible?: (x: number, y: number, z: number) => boolean,
+): ChunkMesh | null {
   const ox = cx * CHUNK_SIZE;
   const oy = cy * CHUNK_SIZE;
   const oz = cz * CHUNK_SIZE;
+
+  // a solid cell counts ONLY if it's also visible (cutaway): the cut half reads as empty, so the
+  // surviving half's now-exposed inner faces emit (a filled cross-section) and AO ignores the cut half.
+  const solidVis = (x: number, y: number, z: number): boolean =>
+    grid.isSolid(x, y, z) && (!visible || visible(x, y, z));
 
   const positions: number[] = [];
   const normals: number[] = [];
@@ -52,9 +76,11 @@ export function meshChunk(grid: VoxelGrid, cx: number, cy: number, cz: number): 
     for (let dir = -1; dir <= 1; dir += 2) {
       // For every slice boundary along axis d
       for (let slice = 0; slice <= CHUNK_SIZE; slice++) {
-        // mask over the u-v plane: 0 = no face, else a packed key
-        const mask = new Int32Array(CHUNK_SIZE * CHUNK_SIZE);
-        const aoMask: number[][] = new Array(CHUNK_SIZE * CHUNK_SIZE);
+        // mask over the u-v plane: 0 = no face, else a packed key. Reuse the module scratch
+        // (cleared per slice) instead of allocating per slice.
+        const mask = scratchMask;
+        mask.fill(0);
+        const aoMask = scratchAo;
 
         for (let i = 0; i < CHUNK_SIZE; i++) {
           for (let j = 0; j < CHUNK_SIZE; j++) {
@@ -65,15 +91,15 @@ export function meshChunk(grid: VoxelGrid, cx: number, cy: number, cz: number): 
             const wx = ox + cell[0];
             const wy = oy + cell[1];
             const wz = oz + cell[2];
-            // face exists if this cell is solid and the cell across the slice is not
-            const here = inChunkRange(cell[d]) ? grid.get(wx, wy, wz) : 0;
+            // face exists if this cell is solid+visible and the cell across the slice is not
+            const here = inChunkRange(cell[d]) && solidVis(wx, wy, wz) ? grid.get(wx, wy, wz) : 0;
             if (here === 0) continue;
             const across = [wx, wy, wz];
             across[d] += dir;
-            if (grid.isSolid(across[0], across[1], across[2])) continue;
+            if (solidVis(across[0], across[1], across[2])) continue;
 
             // per-corner AO sampled in the face plane (one step along the normal)
-            const ao = faceAo(grid, [wx, wy, wz], d, u, v, dir);
+            const ao = faceAo([wx, wy, wz], d, u, v, dir, solidVis);
             const key = (here << 8) | (ao[0] << 6) | (ao[1] << 4) | (ao[2] << 2) | ao[3];
             mask[i + j * CHUNK_SIZE] = key;
             aoMask[i + j * CHUNK_SIZE] = ao;
@@ -107,7 +133,7 @@ export function meshChunk(grid: VoxelGrid, cx: number, cy: number, cz: number): 
               woodIdx,
               ironIdx,
               key,
-              aoMask[i + j * CHUNK_SIZE],
+              aoMask[i + j * CHUNK_SIZE]!, // set whenever key !== 0 (same cell wrote both)
               d,
               u,
               v,
@@ -196,12 +222,14 @@ function inChunkRange(c: number): boolean {
 }
 
 function faceAo(
-  grid: VoxelGrid,
   cell: number[],
   d: number,
   u: number,
   v: number,
   dir: number,
+  // occupancy test = solid AND (under cutaway) visible — so a cap face exposed by the cut isn't
+  // darkened by the now-hidden near voxels it abuts (they read as empty here, same as to the mesher).
+  solidVis: (x: number, y: number, z: number) => boolean,
 ): number[] {
   // sample the 8 neighbors in the plane one step out along the face normal
   const base = [...cell];
@@ -210,7 +238,7 @@ function faceAo(
     const p = [...base];
     p[u] += du;
     p[v] += dv;
-    return grid.isSolid(p[0], p[1], p[2]);
+    return solidVis(p[0], p[1], p[2]);
   };
   const nU = solidAt(-1, 0);
   const pU = solidAt(1, 0);

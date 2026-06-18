@@ -122,6 +122,19 @@ export class VoxelContact {
   // pooled, so a sustained ram still allocates nothing.
   private ptsA: number[] = [];
   private ptsB: number[] = [];
+  // PERF — reused scratch for carveWithinBudget's energy-limited partial bite, so a sustained ram
+  // allocates NOTHING there (the old path built a fresh `{isA,c,e,d2}[]` + per-cell objects + .sort()
+  // every step → GC churn). Parallel arrays over the merged A∪B candidate set, sorted via an index
+  // permutation (candOrder) rather than reordering the data. candCell holds the same POOLED tuples
+  // already collected in brokenA/brokenB, so no new tuples are made. remA/remB collect the affordable
+  // prefix for carveCells; they hold pooled tuples too (refs into brokenA/brokenB), never fresh.
+  private candIsA: boolean[] = [];
+  private candCell: [number, number, number][] = [];
+  private candE: number[] = [];
+  private candD2: number[] = [];
+  private candOrder: number[] = [];
+  private remA: [number, number, number][] = [];
+  private remB: [number, number, number][] = [];
 
   /** Run the deformable contact for every ship↔ship and ship↔terrain pair this fixed step. */
   stepAll(ships: Ship[], terrain: ContactTarget[], dt: number): void {
@@ -304,6 +317,8 @@ export class VoxelContact {
       // Against terrain (huge mB) the inverse-mass split puts ~all the de-penetration on the ship.
       let nx = this.comB.x - this.comA.x, nz = this.comB.z - this.comA.z;
       const hlen = Math.hypot(nx, nz);
+      const invA = mB / (mA + mB), invB = mA / (mA + mB); // inverse-mass split (terrain huge mB → invA≈1, invB≈0)
+      const cap = TUN.crush.maxDepenSpeed * dt;            // per-step positional ceiling (HORIZONTAL)
       if (hlen > 1e-4) {
         nx /= hlen; nz /= hlen;
         this.velAt(this.comA, lvA, avA, cx, cy, cz, this.vA);
@@ -321,12 +336,46 @@ export class VoxelContact {
         // zeroed first, so it can't re-penetrate: the two hulls converge to "pressed together, not
         // sharing space" within a few steps instead of the ram coasting through forever. Position-only
         // (no velocity added) so a hard separation still can't "jar" / fling them.
-        const corr = Math.min(depth * TUN.crush.depen, TUN.crush.maxDepenSpeed * dt);
-        const moveA = corr * (mB / (mA + mB)), moveB = corr * (mA / (mA + mB)); // terrain's huge mB → moveA≈corr, moveB≈0
+        const corr = Math.min(depth * TUN.crush.depen, cap);
+        const moveA = corr * invA, moveB = corr * invB; // terrain's huge mB → moveA≈corr, moveB≈0
         const ta = a.translation();
         a.setTranslation({ x: ta.x - nx * moveA, y: ta.y, z: ta.z - nz * moveA });
         const tb = b.translation();
         b.setTranslation({ x: tb.x + nx * moveB, y: tb.y, z: tb.z + nz * moveB }); // no-op for terrain
+      }
+
+      // OFF-AXIS push-out (the side-scrape / parallel-rub blind spot). The COM→COM cancel + de-pen above
+      // only resolves motion projected on the COM line; a GLANCING scrape carries most of its velocity
+      // PERPENDICULAR to that line (two hulls grinding side-by-side, COMs roughly abeam), so neither the
+      // cancel nor the COM-line push-out fires meaningfully and the weak separation lets her slide
+      // straight through the side. detectContacts already hands us the contact's thin SEPARATING axis
+      // (ov.axis, signed A→B), which IS the genuine push-out for a side-on overlap. Resolve along its
+      // HORIZONTAL projection too — but ONLY when the COM line is degenerate for this contact (its
+      // horizontal share of ov.axis is small), so for a normal bow-on ram (axis ≈ COM line) this is a
+      // no-op and the engulf-flip hazard the COM-line rule guards against can't bite (we gate on |axis·n|
+      // being LOW, i.e. exactly when the two directions disagree — the scrape — not when they agree).
+      // Position-only, same maxDepenSpeed cap, closing already zeroed above → can only shrink the overlap
+      // (never re-penetrate or fling). HORIZONTAL only, so buoyancy keeps owning the vertical.
+      let axx = ov.axis[0], axz = ov.axis[2];
+      const axLen = Math.hypot(axx, axz);
+      if (axLen > 1e-4) {
+        axx /= axLen; axz /= axLen;
+        // alignment of the (horizontal) separating axis with the COM line; near 1 = bow-on (skip), near
+        // 0 = side-scrape (the COM line did ~nothing along the real push-out → resolve along the axis).
+        const align = hlen > 1e-4 ? Math.abs(axx * nx + axz * nz) : 0;
+        if (align < 0.5) {
+          // de-weight by how degenerate the COM line was (full off-axis correction at align 0, fading to
+          // none by align 0.5 where the COM-line push-out already covers it) → no double-counting.
+          const w = 1 - align / 0.5;
+          const corr = Math.min(depth * TUN.crush.depen, cap) * w;
+          if (corr > 0) {
+            const moveA = corr * invA, moveB = corr * invB;
+            const ta = a.translation();
+            a.setTranslation({ x: ta.x - axx * moveA, y: ta.y, z: ta.z - axz * moveA });
+            const tb = b.translation();
+            b.setTranslation({ x: tb.x + axx * moveB, y: tb.y, z: tb.z + axz * moveB }); // no-op for terrain
+          }
+        }
       }
     }
 
@@ -391,25 +440,47 @@ export class VoxelContact {
     }
     // energy-limited: can't break the whole flagged layer this step — order NEAREST-the-impact first
     // (squared distance to the break centroid) so the bite is a compact bore, energy as the tiebreaker.
-    const cand: { isA: boolean; c: [number, number, number]; e: number; d2: number }[] = [];
+    // PERF: fill REUSED parallel scratch arrays (candIsA/candCell/candE/candD2) over the merged A∪B
+    // candidate set instead of allocating a fresh object array + per-cell objects each step, then sort
+    // an INDEX permutation (candOrder) — the data never moves, only the indices. candCell reuses the
+    // already-pooled brokenA/brokenB tuples (no new tuples). The fill order is A-cells then B-cells,
+    // identical to the old object-array insertion order, so the stable index sort below produces the
+    // SAME order on ties as V8's stable Array.sort did on the object array.
+    const candIsA = this.candIsA, candCell = this.candCell, candE = this.candE, candD2 = this.candD2;
+    let nc = 0;
     if (canA) for (let i = 0; i < brokenA.length; i++) {
       const c = brokenA[i], o = i * 3;
       const ddx = pointsA[o] - cx, ddy = pointsA[o + 1] - cy, ddz = pointsA[o + 2] - cz;
-      cand.push({ isA: true, c, e: a.cellBreakEnergy(c[0], c[1], c[2]) * toughA, d2: ddx * ddx + ddy * ddy + ddz * ddz });
+      candIsA[nc] = true; candCell[nc] = c;
+      candE[nc] = a.cellBreakEnergy(c[0], c[1], c[2]) * toughA;
+      candD2[nc] = ddx * ddx + ddy * ddy + ddz * ddz; nc++;
     }
     if (canB) for (let i = 0; i < brokenB.length; i++) {
       const c = brokenB[i], o = i * 3;
       const ddx = pointsB[o] - cx, ddy = pointsB[o + 1] - cy, ddz = pointsB[o + 2] - cz;
-      cand.push({ isA: false, c, e: b.cellBreakEnergy(c[0], c[1], c[2]) * toughB, d2: ddx * ddx + ddy * ddy + ddz * ddz });
+      candIsA[nc] = false; candCell[nc] = c;
+      candE[nc] = b.cellBreakEnergy(c[0], c[1], c[2]) * toughB;
+      candD2[nc] = ddx * ddx + ddy * ddy + ddz * ddz; nc++;
     }
-    cand.sort((x, y) => x.d2 - y.d2 || x.e - y.e); // nearest the impact first; cheaper breaks the tie
+    // index permutation, sorted nearest-the-impact first (cheaper breaks the d2 tie, original index
+    // breaks an exact d2+e tie → stable, matching the old object-array Array.sort under V8 TimSort).
+    const order = this.candOrder;
+    for (let i = 0; i < nc; i++) order[i] = i;
+    order.length = nc;
+    order.sort((x, y) => candD2[x] - candD2[y] || candE[x] - candE[y] || x - y);
     let bud = budget, spent = 0;
-    const remA: [number, number, number][] = [], remB: [number, number, number][] = [];
+    const remA = this.remA, remB = this.remB;
+    remA.length = 0; remB.length = 0;
     // STOP at the first cell the budget can't afford (in nearest-first order): the bite LODGES at that
     // depth — a compact bore that reaches exactly as far from the impact as the energy can pay for, and
     // a tough belt it can't reach survives (emergent penetration, THE LAW #4). Because the order is by
     // distance, stopping leaves a connected cavity, never a scatter.
-    for (const k of cand) { if (k.e > bud) break; bud -= k.e; spent += k.e; (k.isA ? remA : remB).push(k.c); }
+    for (let i = 0; i < nc; i++) {
+      const k = order[i], e = candE[k];
+      if (e > bud) break;
+      bud -= e; spent += e;
+      (candIsA[k] ? remA : remB).push(candCell[k]);
+    }
     this.lastRemovedA = remA.length ? a.carveCells(remA) : 0;
     this.lastRemovedB = remB.length ? b.carveCells(remB) : 0;
     return spent;

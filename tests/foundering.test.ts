@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { isFoundered, makeEnemyWreck, ENEMY_SINK_HOLD_STEPS, type FounderingShip } from "../src/game/foundering";
+import {
+  isFoundered,
+  makeEnemyWreck,
+  ENEMY_SINK_HOLD_STEPS,
+  SINK_OUT_GRACE_STEPS,
+  type FounderingShip,
+} from "../src/game/foundering";
 
 // A minimal stand-in for the bits of a Ship the player predicate reads.
 const ship = (y: number, waterlog: number) => ({
@@ -135,5 +141,20 @@ describe("makeEnemyWreck — strict enemy cull: linger until the WHOLE hull is a
     const isWreck = makeEnemyWreck();
     expect(typeof isWreck).toBe("function");
     expect(isWreck(enemyShip({ hullTopY: 5 }))).toBe(false); // afloat, no throw
+  });
+});
+
+describe("SINK_OUT_GRACE_STEPS — the continued-descent window before a declared wreck is disposed", () => {
+  it("is a positive step budget (FleetManager keeps the carcass descending this long, then disposes)", () => {
+    // a declared wreck must linger SOME steps so she slides fully under + the masts dip last instead of
+    // blinking out; step-counted (no wall clock) so it stays deterministic with the rest of the module.
+    expect(Number.isInteger(SINK_OUT_GRACE_STEPS)).toBe(true);
+    expect(SINK_OUT_GRACE_STEPS).toBeGreaterThan(0);
+  });
+
+  it("is well clear of the cull HOLD (the descent grace is the showy part, far longer than the debounce)", () => {
+    // the hold is just a freak-trough debounce on the cull; the visible "watch her go all the way under"
+    // time is the descent grace — so it should comfortably exceed the hold.
+    expect(SINK_OUT_GRACE_STEPS).toBeGreaterThan(ENEMY_SINK_HOLD_STEPS);
   });
 });

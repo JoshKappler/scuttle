@@ -217,16 +217,19 @@ export const TUN = {
     buffer: 0.4,
     /** REST de-penetration relaxation (0..1): fraction of the interpenetration depth the hulls move
      *  apart per step when too slow to break. Re-solved from the fresh overlap each step (never
-     *  accumulates) and rate-capped by maxDepenSpeed. Raised 0.3→0.5 so a lodged ram is EXPELLED in a
-     *  few steps rather than coasting through — the closing is zeroed first, so the overlap only ever
-     *  shrinks (this can't re-penetrate or fling). */
-    depen: 0.5,
+     *  accumulates) and rate-capped by maxDepenSpeed. Raised 0.5→0.8 (was 0.3) so a lodged ram is
+     *  EXPELLED in a few steps rather than coasting through ("phasing"): at 0.5 the rammer kept driving
+     *  in faster than the push-out could clear → she slid through. The closing is zeroed first, so the
+     *  overlap only ever shrinks (this can't re-penetrate or fling). */
+    depen: 0.8,
     /** hard cap (m/s) on the REST positional separation (HORIZONTAL only) — the per-step ceiling on
-     *  how fast a deep overlap clears. Raised 1.0→6.0: at 1.0 (≈1.7 cm/step) a deeply lodged hull
-     *  could never be pushed out before it clipped through; 6.0 expels a metre-deep lodge in a handful
-     *  of steps. It is position-only with the closing pre-zeroed, so even at 6 it eases (never flings)
-     *  — for shallow everyday contacts depth·depen is far below this cap, so they still barely move. */
-    maxDepenSpeed: 6.0,
+     *  how fast a deep overlap clears. Raised 6.0→30.0 (was 1.0): at 6.0 the per-step cap is only
+     *  0.10 m (≈0.05 m/hull after the inverse-mass split) so a real multi-metre ram lodge took ~20-40
+     *  steps to clear while the rammer kept driving in → pure pass-through ("phasing"). 30.0 makes the
+     *  per-step cap 0.5 m (0.25 m/hull) → a 2 m lodge clears in ~4-8 steps. It stays position-only with
+     *  the closing pre-zeroed, so even at 30 it only ever shrinks the overlap (never re-penetrates or
+     *  flings); shallow everyday contacts use depth·depen, far below this cap, so they still barely move. */
+    maxDepenSpeed: 30.0,
     /** per-step cap (m/s) on the closing speed the BREAK bite may remove in one step. ALSO the main
      *  "how SLOW/drawn-out is the crash" knob: lower spreads the deceleration over more frames, so a
      *  hard ram grinds to a stop over ~½ s instead of slamming in one or two steps (playtest: "crashes

@@ -5,7 +5,7 @@ import type { AICaptain } from "./ai";
 import type { Ship } from "./ship";
 import { TUN } from "../core/tunables";
 import { MAXVIS } from "../core/constants";
-import { isFoundered } from "./foundering";
+import { isFoundered, SINK_OUT_GRACE_STEPS } from "./foundering";
 
 /** One hostile unit: a ship and the AI captain that sails + fires her. */
 export interface EnemyUnit {
@@ -29,6 +29,9 @@ export interface FleetOptions {
   /** true once a ship has foundered below the sea and should be culled. */
   isWreck?: (ship: Ship) => boolean;
   maxVis?: number;
+  /** fixed steps a declared wreck keeps descending (in-world) before its geometry is disposed.
+   *  Defaults to {@link SINK_OUT_GRACE_STEPS}; exposed mainly so tests can shorten it. */
+  sinkOutGrace?: number;
 }
 
 /**
@@ -47,6 +50,15 @@ export class FleetManager {
   private readonly spawn: () => EnemyUnit;
   private readonly isWreck: (ship: Ship) => boolean;
   private readonly maxVis: number;
+  /** Declared wrecks living out their continued-descent grace (see {@link SINK_OUT_GRACE_STEPS}): each
+   *  has LEFT `units` (so a replacement already spawned + it's off the AI/LOD/despawn lists) but is
+   *  STILL in the world, so world.step keeps flooding + sinking it. `ticks` counts DOWN each reconcile;
+   *  at 0 the geometry is finally disposed. Kept off `units`/`enemies` so a foundering carcass is never
+   *  treated as a live foe. */
+  private readonly sinkingOut: { unit: EnemyUnit; ticks: number }[] = [];
+  /** How many steps a freshly-declared wreck lingers + keeps descending before disposal. Injectable so
+   *  the unit test can pin it; defaults to the tuned {@link SINK_OUT_GRACE_STEPS}. */
+  private readonly sinkOutGrace: number;
 
   constructor(opts: FleetOptions) {
     this.world = opts.world;
@@ -59,6 +71,7 @@ export class FleetManager {
     // so it's a true sinking signal. (De-pen is now horizontal too, removing the shove path.)
     this.isWreck = opts.isWreck ?? isFoundered;
     this.maxVis = opts.maxVis ?? MAXVIS;
+    this.sinkOutGrace = opts.sinkOutGrace ?? SINK_OUT_GRACE_STEPS;
   }
 
   /** Re-point the fleet at a freshly-built player ship (after a hull swap). */
@@ -71,22 +84,52 @@ export class FleetManager {
     return this.units.map((u) => u.ship);
   }
 
-  private remove(unit: EnemyUnit): void {
+  /** Drop a unit from the LIVE roster (units list + premium-LOD slot) WITHOUT touching the world —
+   *  so it stops being a foe/AI/LOD/despawn candidate, but its body + visual stay alive for now. */
+  private dropFromUnits(unit: EnemyUnit): void {
     const i = this.units.indexOf(unit);
     if (i >= 0) this.units.splice(i, 1);
     if (this.premiumEnemy === unit.ship) this.premiumEnemy = null;
+  }
+
+  /** Final teardown: pull the unit from the live roster (if still there) and dispose its body +
+   *  visual via the world. Used for an immediate cull (off-screen despawn) — the sinking-out grace
+   *  path disposes a sunk wreck the same way once its descent timer expires. */
+  private remove(unit: EnemyUnit): void {
+    this.dropFromUnits(unit);
     this.world.removeShip(unit.ship);
   }
 
-  /** One step of population control: cull foundered wrecks, then move the live
-   *  count ONE toward the target (so a big slider drag never hitches). */
+  /** One step of population control: declare foundered wrecks (handing them to the continued-descent
+   *  grace instead of disposing on the spot), advance + retire those sinking-out carcasses, then move
+   *  the live count ONE toward the target (so a big slider drag never hitches). */
   reconcile(): void {
-    // 1. cull every foundered wreck (the auto-replace foundation).
+    // 1. DECLARE every freshly-foundered wreck. Don't dispose it on the spot — that's the "pops out of
+    //    existence" blink (the tall masts, the last thing showing, vanish the same frame). Instead drop
+    //    it from the LIVE roster (so a replacement spawns this same reconcile + it leaves the AI/LOD
+    //    lists) but keep its body in the world and hand it to `sinkingOut`, where world.step keeps
+    //    flooding + sinking it for a few seconds so she slides fully under and the masts dip last.
     for (let i = this.units.length - 1; i >= 0; i--) {
-      if (this.isWreck(this.units[i].ship)) this.remove(this.units[i]);
+      const unit = this.units[i];
+      if (this.isWreck(unit.ship)) {
+        this.dropFromUnits(unit);
+        this.sinkingOut.push({ unit, ticks: this.sinkOutGrace });
+      }
     }
 
-    // 2. step the live count one toward the (clamped) target.
+    // 2. age the sinking-out carcasses; dispose each once it has descended out its grace window. (The
+    //    ship keeps stepping/sinking in world.step the whole time — nothing freezes it here.)
+    for (let i = this.sinkingOut.length - 1; i >= 0; i--) {
+      if (--this.sinkingOut[i].ticks <= 0) {
+        const { unit } = this.sinkingOut[i];
+        this.sinkingOut.splice(i, 1);
+        this.world.removeShip(unit.ship);
+      }
+    }
+
+    // 3. step the live count one toward the (clamped) target. A wreck declared in step 1 has already
+    //    left `units`, so its replacement is spawned here on the SAME reconcile — foes appear no later
+    //    than before; only the sunk carcass lingers (out of the live count) while it founders away.
     const want = Math.max(0, Math.min(this.maxVis, Math.round(TUN.fleet.enemyCount)));
     if (this.units.length < want) {
       const unit = this.spawn();

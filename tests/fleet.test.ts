@@ -38,7 +38,10 @@ function makeFleet(spawnAt: () => Ship) {
     return { ship: spawnAt(), captain: noopCaptain };
   };
   const isWreck = (s: Ship) => (s as any)._y < -12;
-  const fleet = new FleetManager({ world, target, spawn, isWreck, maxVis: 6 });
+  // sinkOutGrace:0 → a declared wreck is disposed on the same reconcile (no continued-descent
+  // grace) so these unit tests keep asserting immediate removal. The grace path is exercised
+  // separately; in-game the default grace lets a wreck sink fully under before despawn.
+  const fleet = new FleetManager({ world, target, spawn, isWreck, maxVis: 6, sinkOutGrace: 0 });
   return { fleet, world, target, spawnCount: () => n };
 }
 

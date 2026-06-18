@@ -184,32 +184,33 @@ void main() {
 }
 `;
 
-interface CF {
-  curve: FillCurve;
-  floorLocalY: number; // local-Y of the compartment floor (m)
-  mesh: THREE.Mesh; // ONE merged SOLID body following the true cell footprint
-  mat: THREE.ShaderMaterial;
-  uBodyOpacity: { value: number };
-  uShimmer: { value: number };
-  uFillLocalY: { value: number };
-  uFloorLocalY: { value: number };
-}
-
 export class CompartmentFluid {
   readonly group = new THREE.Group();
-  private comps = new Map<number, CF>();
+  /** ONE merged water body spanning EVERY compartment, filled to a SINGLE global level. (Was one box
+   *  PER watertight compartment, each at its own level — ~10 segmented dark cuboids stair-stepped at
+   *  the bulkheads. The whole ship's water is one connected pool to the eye, so it's one slab now.) */
+  private body: {
+    curve: FillCurve;          // ship-wide cumulative volume↔height curve (union of all cells)
+    floorLocalY: number;       // local-Y of the LOWEST compartment floor (m)
+    mesh: THREE.Mesh;
+    mat: THREE.ShaderMaterial;
+    uBodyOpacity: { value: number };
+    uShimmer: { value: number };
+    uFillLocalY: { value: number };
+    uFloorLocalY: { value: number };
+  } | null = null;
   private nx: number;
   private ny: number;
   private look: OceanLook | null = null;
-  /** The active cutaway clip plane (null = off), stored so compartments ADDED later inherit it and
-   *  so a (re)created fluid (hull swap) can be re-seeded. This is the SAME shared Plane reference
-   *  main.ts mutates in place each frame — store the reference, never a copy. */
+  /** The active cutaway clip plane (null = off), stored so a (re)created fluid (hull swap) can be
+   *  re-seeded. This is the SAME shared Plane reference main.ts mutates in place each frame — store
+   *  the reference, never a copy. */
   private clipPlane: THREE.Plane | null = null;
 
   constructor(compartments: Compartment[], dims: [number, number, number]) {
     this.nx = dims[0];
     this.ny = dims[1];
-    for (const c of compartments) this.add(c);
+    this.build(compartments);
   }
 
   /** Build (or rebuild) the shared ShaderMaterial uniforms from the live ocean look (lazy: the ocean
@@ -245,32 +246,35 @@ export class CompartmentFluid {
   }
 
   /**
-   * Build ONE merged BufferGeometry for the water body straight from the compartment's cell set, in
-   * ship-LOCAL meters, as a SOLID FILLED VOLUME (not a hollow boundary skin — that was the root bug).
+   * Build ONE merged BufferGeometry for the WHOLE-SHIP water body from the UNION of every
+   * compartment's cell set, in ship-LOCAL meters, as a SOLID FILLED VOLUME (not a hollow boundary
+   * skin — that was the root bug; not one box per compartment — that was the segmentation bug).
    *
-   * For each occupied (x,z) COLUMN we emit ONE full CLOSED box spanning that column's floor→ceiling
-   * (the lowest occupied cell's bottom to the highest occupied cell's top). The union of columns
-   * follows the real (tapered/curved/L-shaped) compartment footprint EXACTLY and is gap-free — no
-   * geometry exists outside an occupied column, so nothing can poke out of the hull, and there is no
-   * hollow interior to reveal under the cutaway: the box's far inner wall shows as a dark-water
-   * cross-section. Interior shared faces between columns are fine — they're occluded (opaque, depthWrite).
+   * For each occupied (x,z) COLUMN across ALL compartments we emit ONE full CLOSED box spanning that
+   * column's floor→ceiling (the lowest occupied cell's bottom to the highest occupied cell's top).
+   * The union of columns follows the real (tapered/curved/L-shaped) interior footprint EXACTLY and is
+   * gap-free — no geometry exists outside an occupied column, so nothing pokes out of the hull, and
+   * there is no hollow interior to reveal under the cutaway: the box's far inner wall shows as a
+   * dark-water cross-section. Interior shared faces are fine — occluded (opaque, depthWrite). Because
+   * it's ONE column map for the whole ship, the bulkhead seams between adjacent compartments merge
+   * into one continuous slab (no inter-box steps).
    *
    * A per-vertex `aTop` attribute is 1.0 on each box's TOP-cap vertices and 0.0 elsewhere, so the
    * vertex shader can clamp+identify the surface lid and the fragment shader can give ONLY the lid a
    * surface/sky term. Built ONCE — cells never change after build; the live water LEVEL is applied as a
    * vertex-stage clamp (y = min(y, uFillLocalY)), not by reshaping this geometry.
    */
-  private buildBodyGeometry(c: Compartment): THREE.BufferGeometry {
+  private buildBodyGeometry(cells: Iterable<number>): THREE.BufferGeometry {
     const nx = this.nx;
     const ny = this.ny;
     const s = VOXEL_SIZE;
 
-    // Collapse the cell set to per-(x,z) column extents: [yMin, yMax] inclusive of occupied cells.
-    // A column may be non-contiguous (a notch); a single solid box floor→top is the right read for a
-    // body of water (the gap would be submerged interior anyway), and keeps the volume gap-free.
+    // Collapse the UNION cell set to per-(x,z) column extents: [yMin, yMax] inclusive of occupied
+    // cells. A column may be non-contiguous (a notch); a single solid box floor→top is the right read
+    // for a body of water (the gap would be submerged interior anyway), and keeps the volume gap-free.
     const colMin = new Map<number, number>(); // key = x + nx*z  → min occupied y
     const colMax = new Map<number, number>(); // key = x + nx*z  → max occupied y
-    for (const p of c.cells) {
+    for (const p of cells) {
       const x = p % nx;
       const y = Math.floor(p / nx) % ny;
       const z = Math.floor(p / (nx * ny));
@@ -330,9 +334,22 @@ export class CompartmentFluid {
     return g;
   }
 
-  private add(c: Compartment): void {
-    const curve = buildFillCurve(c, this.nx, this.ny);
-    const floorLocalY = c.bboxMin[1] * VOXEL_SIZE; // bottom of the lowest cell layer
+  /** Build the ONE merged whole-ship water body from the union of every compartment's cells. */
+  private build(compartments: Compartment[]): void {
+    if (compartments.length === 0) return;
+    // UNION of every compartment's interior cells → one footprint, one fill curve, one body.
+    const union = new Set<number>();
+    let floorLocalY = Infinity; // lowest compartment floor (m)
+    for (const c of compartments) {
+      for (const p of c.cells) union.add(p);
+      floorLocalY = Math.min(floorLocalY, c.bboxMin[1] * VOXEL_SIZE);
+    }
+    if (union.size === 0) return;
+    if (!Number.isFinite(floorLocalY)) floorLocalY = 0;
+    // ship-wide cumulative volume↔height curve from the union (buildFillCurve only reads `.cells`, so a
+    // synthetic compartment carrying just the union set is exactly what it needs — pure + footprint-
+    // agnostic). The single global fill height = fillHeightLocal(this curve, totalWaterAboard).
+    const curve = buildFillCurve({ cells: union } as Compartment, this.nx, this.ny);
 
     const oc = this.oceanUniforms();
     const uBodyOpacity = { value: TUN.flood.render.skirtOpacity };
@@ -368,84 +385,91 @@ export class CompartmentFluid {
       },
     });
 
-    // inherit the active cutaway clip so a compartment created AFTER setClipPlane() (or after a hull
-    // swap that re-seeds it in the constructor) is sliced flush with the hull cut from birth.
+    // inherit the active cutaway clip so a body (re)created after a hull swap that re-seeds it in the
+    // constructor is sliced flush with the hull cut from birth.
     if (this.clipPlane) {
       mat.clippingPlanes = [this.clipPlane];
       mat.needsUpdate = true;
     }
 
-    // ONE merged SOLID body following the TRUE cell footprint, in ship-local meters. Parented under the
-    // ship group, so it heels/pitches/heaves WITH the hull (the room is part of the hull). No per-frame
-    // scaling/repositioning — only the fill-level uniform changes.
-    const geo = this.buildBodyGeometry(c);
+    // ONE merged SOLID body following the TRUE whole-ship interior footprint, in ship-local meters.
+    // Parented under the ship group, so it heels/pitches/heaves WITH the hull (the room is part of the
+    // hull). No per-frame scaling/repositioning — only the single fill-level uniform changes.
+    const geo = this.buildBodyGeometry(union);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.frustumCulled = false;
     mesh.renderOrder = 4;
+    mesh.visible = false; // shown only when there's real water aboard (set in update)
     this.group.add(mesh);
 
-    this.comps.set(c.id, {
+    this.body = {
       curve, floorLocalY, mesh, mat,
       uBodyOpacity, uShimmer, uFillLocalY, uFloorLocalY,
-    });
+    };
   }
 
-  /** Reflect current flooding. Called once per frame AFTER the ship group transform is synced. */
+  /** Reflect current flooding. Called once per frame AFTER the ship group transform is synced. The
+   *  ONE merged body fills to a SINGLE global level driven by the TOTAL water aboard (Σ waterVolume) —
+   *  so the whole ship's water reads as one connected pool, not per-compartment stair-steps. */
   update(compartments: Compartment[], cameraPos: THREE.Vector3 | undefined, dt: number): void {
     void dt;
+    const body = this.body;
+    if (!body) return;
     // (re)bind the ocean look the first time it becomes available after this ship was built
     if (!this.look) this.look = getOceanLook();
 
     // The body geometry is ship-local and parented under the ship group, so its modelMatrix already
     // carries the live hull pose — nothing to transform per frame except the fill-level uniform. The
-    // shader's view math runs in WORLD space (vWorldPos), so uCameraPos is the WORLD camera, passed
-    // straight through below.
+    // shader's view math runs in WORLD space (vWorldPos), so uCameraPos is the WORLD camera.
     this.group.updateWorldMatrix(true, false);
 
+    // keep the shared shimmer/opacity uniforms live with the dev panel
+    body.uShimmer.value = TUN.flood.render.shimmer;
+    body.uBodyOpacity.value = TUN.flood.render.skirtOpacity;
+    if (cameraPos) (body.mat.uniforms.uCameraPos.value as THREE.Vector3).copy(cameraPos);
+
+    // total water + total capacity across ALL compartments → one global fill fraction + one level.
+    let totalWater = 0;
+    let totalVol = 0;
     for (const c of compartments) {
-      const cf = this.comps.get(c.id);
-      if (!cf) continue;
-
-      // keep the shared shimmer/opacity uniforms live with the dev panel
-      cf.uShimmer.value = TUN.flood.render.shimmer;
-      cf.uBodyOpacity.value = TUN.flood.render.skirtOpacity;
-      if (cameraPos) (cf.mat.uniforms.uCameraPos.value as THREE.Vector3).copy(cameraPos);
-
-      const fill = c.volume > 0 ? c.waterVolume / c.volume : 0;
-      if (fill < 0.005) {
-        cf.mesh.visible = false;
-        continue;
-      }
-      // Per-frame work is just the fill-level uniform — the geometry is static and already the right
-      // shape. The vertex shader clamps every vertex to this level, so the solid body fills the room
-      // up to the live waterline and the lid sits exactly on it.
-      cf.mesh.visible = true;
-      cf.uFillLocalY.value = fillHeightLocal(cf.curve, c.waterVolume);
-      cf.uFloorLocalY.value = cf.floorLocalY;
+      totalWater += c.waterVolume;
+      totalVol += c.volume;
     }
+    const fill = totalVol > 0 ? totalWater / totalVol : 0;
+    if (fill < 0.005) {
+      body.mesh.visible = false;
+      return;
+    }
+    // Per-frame work is just the single fill-level uniform — the geometry is static and already the
+    // right shape. The vertex shader clamps every vertex to this level, so the solid body fills the
+    // whole interior up to the live waterline and the lid sits exactly on it.
+    body.mesh.visible = true;
+    body.uFillLocalY.value = fillHeightLocal(body.curve, totalWater);
+    body.uFloorLocalY.value = body.floorLocalY;
   }
 
   /** Cutaway: clip the flood body against the same world-space plane as the hull (null disables), so
    *  the interior water is sliced flush with the centerline half-cut instead of the whole cut-away
    *  half's water floating in the opened hull. Pass the SHARED plane reference main.ts mutates in
-   *  place each frame (stored, not copied), so every frame's live pose is honoured. Applies to every
-   *  existing compartment material AND is remembered so compartments added later inherit it. The
-   *  shader only honours this because the material is built with clipping:true + the clipping
-   *  includes — a bare clippingPlanes assignment on a custom ShaderMaterial is a silent no-op. */
+   *  place each frame (stored, not copied), so every frame's live pose is honoured. Remembered so a
+   *  body (re)built after a hull swap inherits it. The shader only honours this because the material
+   *  is built with clipping:true + the clipping includes — a bare clippingPlanes assignment on a
+   *  custom ShaderMaterial is a silent no-op. */
   setClipPlane(plane: THREE.Plane | null): void {
     this.clipPlane = plane;
     const planes = plane ? [plane] : null;
-    for (const cf of this.comps.values()) {
-      cf.mat.clippingPlanes = planes;
-      cf.mat.needsUpdate = true;
+    if (this.body) {
+      this.body.mat.clippingPlanes = planes;
+      this.body.mat.needsUpdate = true;
     }
   }
 
   dispose(): void {
-    for (const cf of this.comps.values()) {
-      cf.mesh.geometry.dispose();
-      cf.mat.dispose();
+    if (this.body) {
+      this.body.mesh.geometry.dispose();
+      this.body.mat.dispose();
+      this.group.remove(this.body.mesh);
+      this.body = null;
     }
-    this.comps.clear();
   }
 }

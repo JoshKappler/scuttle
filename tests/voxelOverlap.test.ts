@@ -150,4 +150,35 @@ describe("detectContacts", () => {
     expect(r).not.toBeNull();
     expect(r!.count).toBe(5); // capped, no out-of-bounds write
   });
+
+  it("corner-clip scrape: ov.axis is the thin FACE normal, distinct from the diagonal COM→COM line", () => {
+    // The glancing corner-clip that game/voxelContact's off-axis de-pen targets. A small hull noses into
+    // the CORNER region of a big one: a 2^3 block A overlaps the +x/+z corner of a 6^3 block B by one
+    // X-layer but several Z-layers. The genuine push-out (ov.axis) is the THIN axis = +X (a 1-cell-deep
+    // overlap there), which is PERPENDICULAR to that face. The COM→COM line, by contrast, runs DIAGONALLY
+    // (B's centre is offset from A's in BOTH x and z), so resolving only along the COM line would shove A
+    // partly ALONG B's side instead of cleanly out of it — exactly the disagreement (|axis·n̂_COM| < 1)
+    // that voxelContact's off-axis branch gates on (align < 0.5) and corrects by also pushing along
+    // ov.axis. This locks the geometric fact the fix relies on: ov.axis = the perpendicular face normal.
+    const vs = 1;
+    const a = block(2, [5, 0, 1], ID);  // A: x[5,7) z[1,3), COM ≈ (6,1,2)
+    const b = block(6, [0, 0, 0], ID);  // B: x[0,6) z[0,6), COM ≈ (3,3,3)
+    const s = scratch(64);
+    const r = detectContacts(a, b, vs, 0, s);
+    expect(r).not.toBeNull();
+    // overlap is 1 layer thick on X (A's x=5 vs B's x=5 face) → thin axis = X. Signed A→B points -x
+    // (B's centre is to A's −x), so the push-out is −x. Either sign is fine; assert it's the X axis and
+    // carries NO Z component, despite the diagonal centre offset.
+    expect(Math.abs(r!.axis[0])).toBe(1);
+    expect(r!.axis[1]).toBe(0);
+    expect(r!.axis[2]).toBe(0);            // push-out is the perpendicular X face normal, not the diagonal
+    expect(r!.depth).toBeCloseTo(1, 5);
+    // and the COM→COM horizontal line genuinely DISAGREES with that axis (it has a real Z share), which is
+    // what makes this the off-axis scrape case rather than a clean head-on.
+    const nx = 3 - 6, nz = 3 - 2;          // B.COM − A.COM, horizontal
+    const nlen = Math.hypot(nx, nz);
+    const align = Math.abs((r!.axis[0] * nx + r!.axis[2] * nz) / nlen);
+    expect(align).toBeLessThan(1);         // not perfectly aligned → COM-line push-out alone is imperfect
+    expect(nz / nlen).toBeGreaterThan(0);  // a real perpendicular (Z) component the X push-out must add
+  });
 });

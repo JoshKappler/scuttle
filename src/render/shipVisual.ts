@@ -69,6 +69,20 @@ export class ShipVisual {
   /** The active cutaway clip plane (null = off), stored so cannon meshes built (or rebuilt on a
    *  hull swap) AFTER setCutaway() still pick up the current clip state. */
   private cutawayPlane: THREE.Plane | null = null;
+  /** Ship-LOCAL cull predicate while cut away (null = off): the hull mesher treats a cell as empty
+   *  where this returns false, so the surviving far half's now-exposed inner faces emit a SOLID
+   *  capped cross-section (no hollow shell / sliced-mid-voxel holes a clip plane gave). The cut is the
+   *  ship's longitudinal centerline; the culled half is whichever side faces the camera (re-derived
+   *  from the clip-plane normal each frame; we re-mesh only when that side FLIPS). */
+  private cutawayPredicate: ((x: number, y: number, z: number) => boolean) | null = null;
+  /** Ship-local beam-axis (Z) coordinate (cells) of the centerline cut, and the current cull sign
+   *  (which half is hidden). Recomputed in setCutaway from the hull footprint; the sign is flipped
+   *  per-frame by updateCutawayCull when the camera crosses the centerline. */
+  private cutZCenterLocal = 0;
+  private cutCullSign = 1;
+  // scratch for the per-frame local-normal derivation (no per-frame allocation).
+  private static tmpQuatInv = new THREE.Quaternion();
+  private static tmpNormalLocal = new THREE.Vector3();
   /** Materials owned by the cannon meshes (barrel/trunnion/axle iron, carriage wood, gunport
    *  recess). They are clipped in lock-step with the hull so a gun on the cut-away half is sliced
    *  off too, instead of floating in the opened interior. All are per-ShipVisual-instance — the
@@ -294,17 +308,24 @@ export class ShipVisual {
 
   private static tmpDir = new THREE.Vector3();
 
-  /** Cutaway: clip the hull AND the cannon meshes against a world-space plane (null disables).
-   *  The guns use their own materials (not hullMaterial), so without this the gun on the cut-away
-   *  half stayed fully visible floating in the opened interior — they must be sliced off too. */
+  /** Cutaway: a SOLID centerline half-cut of the hull (null disables). Instead of a GPU clip plane
+   *  (which slices hollow boundary shells mid-voxel → hollow ballast + holes in the keel), we re-mesh
+   *  the hull with a ship-LOCAL cull PREDICATE: the camera-near half of the longitudinal centerline
+   *  reads as EMPTY, so the surviving far half's now-exposed inner faces emit a SOLID, capped cross-
+   *  section of whole voxels (ballast = a solid iron block). The clip plane is STILL forwarded to the
+   *  cannon meshes (smooth non-voxel geometry — clip them normally) and to the flood WATER (its custom
+   *  shader honours the same plane), so guns + water on the cut-away half are sliced flush with the
+   *  hull cross-section. The cull half follows the camera; see updateCutawayCull (re-meshes on flip). */
   setCutaway(plane: THREE.Plane | null): void {
     this.cutawayPlane = plane;
     const planes = plane ? [plane] : null;
-    this.hullMaterial.clippingPlanes = planes;
+    // NOTE: the hull + ballast iron are NO LONGER clip-plane clipped — the predicate cuts them as a
+    // solid cross-section (a clip plane would double-cut and re-open the hollow-shell / holes bug).
+    this.hullMaterial.clippingPlanes = null;
     this.hullMaterial.needsUpdate = true;
-    // clip the solid ballast iron in lock-step so a cut-away half's iron is sliced off too.
-    this.ironMaterial.clippingPlanes = planes;
+    this.ironMaterial.clippingPlanes = null;
     this.ironMaterial.needsUpdate = true;
+    // cannons are smooth meshes (not voxels) → clip them with the plane as before.
     for (const m of this.cannonMaterials) {
       m.clippingPlanes = planes;
       m.needsUpdate = true;
@@ -315,6 +336,43 @@ export class ShipVisual {
     // so the plane actually bites instead of silently no-opping.
     this.fluid.setClipPlane(plane);
     this.cutawayOn = !!plane; // animate() lifts the shade floor while cut away
+
+    if (plane) {
+      // the centerline in CELL coords is the grid's z-midpoint (footprint.zC === nz/2 · VOXEL_SIZE).
+      this.cutZCenterLocal = this.build.grid.dims[2] / 2;
+      // derive the initial cull side from the current (already camera-flipped) world plane normal.
+      this.cutCullSign = this.cullSignFromPlane(plane);
+      const zc = this.cutZCenterLocal;
+      // a cell is VISIBLE (kept) when its beam-axis center sits on the kept side: with cullSign +1
+      // we keep the −Z half, with −1 the +Z half. (z + 0.5) is the cell-center in cell units.
+      this.cutawayPredicate = (_x: number, _y: number, z: number) =>
+        (z + 0.5 - zc) * this.cutCullSign <= 0;
+    } else {
+      this.cutawayPredicate = null;
+    }
+    this.remeshAll(); // one-time re-mesh of every chunk with (or without) the cut applied
+  }
+
+  /** Which half to CULL, from the live (camera-flipped) world clip-plane normal mapped into ship-local
+   *  space. main.ts points the normal at the half FACING AWAY from the camera (THREE keeps that side),
+   *  so the kept half is the one the local normal's beam-axis (Z) component points toward; we cull the
+   *  other. Returns +1 (cull +Z half, keep −Z) or −1 (cull −Z, keep +Z). */
+  private cullSignFromPlane(plane: THREE.Plane): number {
+    const qInv = ShipVisual.tmpQuatInv.copy(this.group.quaternion).invert();
+    const nLocal = ShipVisual.tmpNormalLocal.copy(plane.normal).applyQuaternion(qInv);
+    // local +Z normal → keep +Z → cull +Z must be FALSE → cullSign −1; local −Z → cullSign +1.
+    return nLocal.z >= 0 ? -1 : 1;
+  }
+
+  /** Per-frame (called from refresh()): if the camera has crossed the ship's centerline the kept half
+   *  must swap so the open interior keeps facing the viewer. Cheap — a normal map + a sign compare —
+   *  and only RE-MESHES on an actual flip (single-digit ms, like the initial mesh), never every frame. */
+  private updateCutawayCull(): void {
+    if (!this.cutawayPlane || !this.cutawayPredicate) return;
+    const sign = this.cullSignFromPlane(this.cutawayPlane);
+    if (sign === this.cutCullSign) return; // same side → nothing to do
+    this.cutCullSign = sign;
+    this.remeshAll(); // re-mesh the whole hull with the cut now on the other half
   }
 
   /** Reflect current flooding levels. Call once per frame, AFTER syncVisual()
@@ -653,8 +711,12 @@ export class ShipVisual {
     if (this.rudderBlade) this.rudderBlade.scale.y = 0.3 + 0.7 * hpFrac;
   }
 
-  /** Rebuild every chunk that the grid has marked dirty. */
+  /** Rebuild every chunk that the grid has marked dirty. Also (while cut away) swaps the cull half if
+   *  the camera has crossed the centerline — so the open cross-section keeps facing the viewer, and a
+   *  chunk carved by a cannon DURING cutaway re-meshes with the cut still applied (remeshChunk reads
+   *  this.cutawayPredicate live), making cutaway + live damage compose for free. */
   refresh(): void {
+    this.updateCutawayCull(); // may remeshAll on a camera-side flip
     const dirty = this.build.grid.dirtyChunks;
     if (dirty.size === 0) return;
     for (const key of dirty) this.remeshChunk(key);
@@ -681,7 +743,9 @@ export class ShipVisual {
       old.geometry.dispose();
       this.chunkMeshes.delete(key);
     }
-    const data = meshChunk(this.build.grid, cx, cy, cz);
+    // read the cutaway predicate LIVE each call (incl. the damage-driven refresh() path) so a chunk
+    // carved during cutaway re-meshes with the cut still applied — cutaway + live damage for free.
+    const data = meshChunk(this.build.grid, cx, cy, cz, this.cutawayPredicate ?? undefined);
     if (!data) return;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
