@@ -35,6 +35,14 @@ interface DebrisPiece {
   mast?: boolean;
   /** Mast-only: buoyancy lift multiplier, decays from afloat toward fallSinkFloor as it waterlogs. */
   liftMul?: number;
+  /** Mast-only: the cloned YARD+SAIL group (shipVisual.cloneMastRig) re-parented under `mesh` in the
+   *  body's local frame, so the canvas (with its shot-holes) tumbles WITH the falling spar instead of
+   *  vanishing. Tracked so despawn can dispose its cloned materials. */
+  rig?: THREE.Group;
+  /** Mast-only: seconds remaining before this falling section can deal landing damage — a brief arm
+   *  delay so it never craters its OWN deck on the spawn frame (it spawns AT the mast foot, overlapping
+   *  the hull). Counts down in update(); damage probing starts once it reaches 0. */
+  impactArm?: number;
 }
 
 // Defensive clamp for ONE inherited velocity component: spawned debris copies the source ship's
@@ -97,15 +105,18 @@ export class DebrisManager {
     private effects?: Effects,
   ) {}
 
-  /** Spawn one debris body from a severed island, in the source ship's frame. */
-  spawn(island: Island, ship: Ship): void {
+  /** Spawn one debris body from a severed island, in the source ship's frame. `mastRig` (optional) is
+   *  a pre-cloned YARD+SAIL group from shipVisual.cloneMastRig: when the severed island is a felled
+   *  MAST it's attached to the floating spar body so the canvas falls WITH it (the fix for "the sails
+   *  just disappear"); ignored for non-mast routes. Optional so existing 2-arg callers still compile. */
+  spawn(island: Island, ship: Ship, mastRig?: THREE.Group | null): void {
     if (island.cells.length === 0) return;
     // Route by content, not raw count: a hull torn clean in half (≥ BIG_SEVER) → free-floating
     // WRECK; a felled MAST (any SPAR-bearing island, typ. a few hundred cells) → a persistent
     // floating walkable body; everything else → DUST (loose voxels, never a "floating beam").
     const route = routeIsland(island);
     if (route === "dust") { this.dust(island, ship); return; }
-    if (route === "mast") { this.spawnMast(island, ship); return; }
+    if (route === "mast") { this.spawnMast(island, ship, mastRig ?? undefined); return; }
     const { world, RAPIER: R } = this.physics;
 
     // island bounds
@@ -225,7 +236,7 @@ export class DebrisManager {
    * dropped these voxels and re-derived its inertia (ship.recomputeMassProperties), so this never
    * double-counts the mast's weight on the ship.
    */
-  private spawnMast(island: Island, ship: Ship): void {
+  private spawnMast(island: Island, ship: Ship, mastRig?: THREE.Group): void {
     const { world, RAPIER: R } = this.physics;
 
     // island bounds + true mass from its own cells (SPAR is light — density 120).
@@ -319,6 +330,26 @@ export class DebrisManager {
       [hx, hy, hz * 1.6],
     ];
 
+    // CARRY THE SAILS DOWN: re-parent the pre-cloned yard/sail group (at WORLD transforms) under the
+    // spar body's visual group, converting each clone world→body-local so it tumbles rigidly with the
+    // spar. The body starts at origin/rot, and `group` tracks the body each step (update() sets
+    // group.position/quaternion = body), so local = (body world)⁻¹ · (clone world).
+    if (mastRig && mastRig.children.length > 0) {
+      const bodyMat = new THREE.Matrix4().compose(
+        origin, this.tmpQ.set(rot.x, rot.y, rot.z, rot.w), this.tmpP.set(1, 1, 1),
+      );
+      const bodyInv = bodyMat.clone().invert();
+      const childMat = new THREE.Matrix4();
+      // snapshot children first — reparenting mutates mastRig.children mid-iteration.
+      for (const child of [...mastRig.children]) {
+        child.updateMatrix(); // its pos/quat/scale are baked world transforms
+        childMat.multiplyMatrices(bodyInv, child.matrix);
+        childMat.decompose(child.position, child.quaternion, child.scale);
+        child.matrixAutoUpdate = true;
+        group.add(child); // now expressed in the body's local frame
+      }
+    }
+
     this.pieces.push({
       body,
       mesh: group,
@@ -334,6 +365,8 @@ export class DebrisManager {
       wreck: false,
       mast: true,
       liftMul: TUN.rig.fallFloatBuoy,
+      rig: mastRig && mastRig.children.length > 0 ? mastRig : undefined,
+      impactArm: 0.25, // brief delay so it can't crater its own deck on the spawn frame
     });
   }
 
@@ -427,9 +460,80 @@ export class DebrisManager {
 
   private tmpQ = new THREE.Quaternion();
   private tmpP = new THREE.Vector3();
+  // landing-damage scratch (kept off tmpQ/tmpP, which the buoyancy loop uses).
+  private ldQ = new THREE.Quaternion();
+  private ldWp = new THREE.Vector3();
+  private ldWl = new THREE.Vector3();
+  private ldCells: [number, number, number][] = [];
 
-  /** Buoyancy + lifetime for every piece. Call each fixed step. */
-  update(dt: number, simTime: number, waves: Wave[]): void {
+  /** Free the cloned yard/sail materials a felled mast carried down (geometries are SHARED with the
+   *  live ship and must NOT be disposed; only the per-clone debris materials, tagged debrisRig). */
+  private disposeRig(p: DebrisPiece): void {
+    if (!p.rig) return;
+    p.mesh.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if ((m as THREE.Object3D).userData?.debrisRig && m.material) {
+        (m.material as THREE.Material).dispose();
+      }
+    });
+  }
+
+  /**
+   * A falling MAST section staves in whatever it lands on (its own deck once toppled, OR another
+   * ship), via the ONE destruction rule: probe the spar body's volume against each ship grid and, at a
+   * real closing speed, crush the cells beneath the contact on the ½·fallMass·v² energy budget (no
+   * preset damage — THE LAW #4). Mirrors the rig.ts deck-penetration probe; uses the body's per-point
+   * velocity (linvel + ω×r) so a tumbling spar's fast end hits harder than its pivot.
+   */
+  private mastLandingDamage(p: DebrisPiece, targets: Ship[]): void {
+    const col = p.body.collider(0);
+    if (!col) return;
+    const he = (col as { halfExtents?: () => { x: number; y: number; z: number } }).halfExtents?.();
+    if (!he) return;
+    const inv = 1 / VOXEL_SIZE;
+    const rot = p.body.rotation();
+    this.ldQ.set(rot.x, rot.y, rot.z, rot.w);
+    const tr = p.body.translation();
+    const lin = p.body.linvel();
+    const ang = p.body.angvel();
+    const com = p.body.worldCom(); // world centre of mass (the cuboid centre we set)
+    // sample a 3×3×3 lattice across the cuboid (centre at local (hx,hy,hz) = he); the body's local
+    // origin is one corner, so the lattice spans [0,2he] = the whole spar.
+    for (let ix = 0; ix <= 2; ix++) for (let iy = 0; iy <= 2; iy++) for (let iz = 0; iz <= 2; iz++) {
+      const lx = he.x * ix, ly = he.y * iy, lz = he.z * iz; // body-local sample point
+      this.ldWp.set(lx, ly, lz).applyQuaternion(this.ldQ);
+      const wx = this.ldWp.x + tr.x, wy = this.ldWp.y + tr.y, wz = this.ldWp.z + tr.z;
+      // velocity of this material point: v = linvel + ω × (p − com)
+      const rx = wx - com.x, ry = wy - com.y, rz = wz - com.z;
+      const vx = lin.x + (ang.y * rz - ang.z * ry);
+      const vy = lin.y + (ang.z * rx - ang.x * rz);
+      const vz = lin.z + (ang.x * ry - ang.y * rx);
+      const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      if (speed < TUN.crush.vBreak) continue; // a slow rest must not keep eating the deck
+      for (const S of targets) {
+        const g = S.build.grid; const [bx, by, bz] = g.dims;
+        S.worldToLocal(this.ldWl.set(wx, wy, wz), this.ldWl);
+        const cvx = Math.floor(this.ldWl.x * inv), cvy = Math.floor(this.ldWl.y * inv), cvz = Math.floor(this.ldWl.z * inv);
+        if (cvx < 0 || cvy < 0 || cvz < 0 || cvx >= bx || cvy >= by || cvz >= bz) continue;
+        if (!g.isSolid(cvx, cvy, cvz)) continue;
+        const cells = this.ldCells; cells.length = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+          const yy = cvy + dy, zz = cvz + dz;
+          if (yy < 0 || zz < 0 || yy >= by || zz >= bz) continue;
+          if (g.isSolid(cvx, yy, zz)) cells.push([cvx, yy, zz]);
+        }
+        const { removed } = S.crush(cells, 0.5 * TUN.rig.fallMass * speed * speed);
+        if (removed > 0) this.effects?.crunch(this.ldWp.set(wx, wy, wz), removed);
+        break; // one hull per sample point per step
+      }
+    }
+  }
+
+  /** Buoyancy + lifetime for every piece. Call each fixed step. `targets` (optional) are the live
+   *  ship hulls a FALLING MAST can stave in as it lands (deck / another ship) — voxel-crush via
+   *  ship.crush on the ½·fallMass·v² budget (THE LAW #4: energy-budgeted breaking, no preset damage).
+   *  Omitted (or empty) ⇒ masts just float, no landing damage (back-compat for any 3-arg caller). */
+  update(dt: number, simTime: number, waves: Wave[], targets: Ship[] = []): void {
     for (let i = this.pieces.length - 1; i >= 0; i--) {
       const p = this.pieces[i];
       p.age += dt;
@@ -438,9 +542,17 @@ export class DebrisManager {
       const sinkFloorY = p.mast ? -30 : p.wreck ? -40 : -60;
       if (p.age > lifetime || tr.y < sinkFloorY) {
         this.scene.remove(p.mesh);
+        this.disposeRig(p); // free the cloned yard/sail materials a felled mast carried down
         this.physics.world.removeRigidBody(p.body);
         this.pieces.splice(i, 1);
         continue;
+      }
+
+      // LANDING DAMAGE: a heavy felled mast section staves in whatever it falls onto. Probe its body
+      // points against the supplied ship grids; on a real-speed contact, crush the cells under it.
+      if (p.mast && targets.length > 0) {
+        if (p.impactArm && p.impactArm > 0) p.impactArm -= dt;
+        else this.mastLandingDamage(p, targets);
       }
 
       p.body.resetForces(true);

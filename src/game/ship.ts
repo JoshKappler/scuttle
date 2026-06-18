@@ -389,6 +389,40 @@ export class Ship implements ContactTarget {
     }
   }
 
+  /**
+   * Map a SEVERED island back to the mast it came from + the ship-local world-Y (m) at which it broke
+   * away — so the render layer can clone exactly THAT mast's still-standing sails/yards above the cut
+   * onto the falling debris body (the fix for "the sails just disappear when the mast is hit"). A
+   * SPAR-bearing felled section is matched by testing its cells against each mast's ORIGINAL spar-voxel
+   * coords (`mastCells`, the static stamp); the best-overlap mast wins (a section can only belong to
+   * one mast). `cutLocalY` = the foot of the felled chunk = its LOWEST spar cell's bottom face in
+   * ship-local meters, the same frame ShipVisual.detachMast/cloneMastRig measure their cut in (parts
+   * whose foot sits above it fall, the rest stay on the stub). Returns null for a non-mast island.
+   *
+   * Called from main.ts's onSevered wiring — NOT inside flushDamage — so it must not depend on
+   * updateMastState having run yet (it reads the static stamp + the island, not the live mastTopY).
+   */
+  mastIndexForIsland(island: Island): { mi: number; cutLocalY: number } | null {
+    let bestMi = -1;
+    let bestHits = 0;
+    let minSparY = Infinity;
+    for (let mi = 0; mi < this.mastCells.length; mi++) {
+      const keys = new Set<number>();
+      const nz = this.build.grid.dims[2];
+      const ny = this.build.grid.dims[1];
+      for (const c of this.mastCells[mi]) keys.add((c.x * ny + c.y) * nz + c.z);
+      let hits = 0;
+      let localMinY = Infinity;
+      for (const c of island.cells) {
+        if (c.mat !== SPAR) continue;
+        if (keys.has((c.x * ny + c.y) * nz + c.z)) { hits++; if (c.y < localMinY) localMinY = c.y; }
+      }
+      if (hits > bestHits) { bestHits = hits; bestMi = mi; minSparY = localMinY; }
+    }
+    if (bestMi < 0) return null;
+    return { mi: bestMi, cutLocalY: minSparY * VOXEL_SIZE };
+  }
+
   /** A cannon's hull mount has been carved away: the gun is dead. It no longer fires or
    *  counts toward a broadside (cannons.ts / main.ts read cannonAlive), and the receiver
    *  (onCannonLost → game/rig.ts) tips the static gun mesh off the side as a falling body. */

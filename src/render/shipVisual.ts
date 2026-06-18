@@ -512,6 +512,64 @@ export class ShipVisual {
   }
 
   /**
+   * VOXEL-MAST debris dressing (the fix for "the sails just disappear when the mast is hit"): clone the
+   * still-visible YARDS + SAILS of mast `mi` into a DETACHED group and HIDE the statics, so a felled
+   * voxel section carries its real canvas (WITH its shot-holes) down as it falls instead of the cloth
+   * blinking out. Unlike detachMast this clones NO pole — the trunk is real voxels (the felled SPAR
+   * island is already re-meshed by debris.spawnMast), so cloning a cylinder here would double it.
+   *
+   * Each clone is positioned at its CURRENT WORLD transform (pos/quat/scale baked in); the caller
+   * (game/debris.spawnMast) re-parents them under the falling body and converts world→body-local, so
+   * they tumble rigidly WITH the spar. `cutLocalY` is the ship-local world-Y (m) of the break: a part
+   * whose foot sits ABOVE it falls (clone + hide), the rest stay laced to the standing stub. Pass −∞
+   * (or below the foot) to take the WHOLE rig. Returns null if there's nothing to carry (no parts above
+   * the cut, headless, or an out-of-range mast) so the caller can skip the empty attach.
+   *
+   * Note: updateRig() also hides yards/sails above the surviving mastTopY each step; hiding them HERE
+   * too makes the clone↔static handoff flash-free (no frame where both the live sail and its clone draw).
+   */
+  cloneMastRig(mi: number, cutLocalY = -Infinity): THREE.Group | null {
+    const rig = this.mastRigs[mi];
+    if (!rig) return null;
+    const deckTopWorldLocalY = rig.group.position.y; // mast group sits at (mx, deckTop, mz)
+    const cutAboveFoot = cutLocalY - deckTopWorldLocalY; // cut height measured from the mast foot
+    const wholeMast = !Number.isFinite(cutLocalY) || cutAboveFoot <= 0.5; // foot/low hit → take the lot
+
+    const holder = new THREE.Group();
+    const tmpP = new THREE.Vector3();
+    const tmpQ = new THREE.Quaternion();
+    const tmpS = new THREE.Vector3();
+    let cloned = 0;
+    const cloneInto = (mesh: THREE.Mesh) => {
+      if (!mesh.visible) return; // an already-dropped part (updateRig hid it) contributes nothing
+      // a debris clone: plain opaque material (the billow shader doesn't survive Material.clone() and a
+      // felled sail doesn't billow). KEEP the sail's alphaMap + alphaTest so its shot holes still read.
+      mesh.getWorldPosition(tmpP);
+      mesh.getWorldQuaternion(tmpQ);
+      mesh.getWorldScale(tmpS);
+      const src = mesh.material as THREE.MeshStandardMaterial;
+      const mat = new THREE.MeshStandardMaterial({
+        color: src.color.clone(), map: src.map ?? null, roughness: src.roughness,
+        side: THREE.DoubleSide,
+      });
+      if (src.alphaMap) { mat.alphaMap = src.alphaMap; mat.alphaTest = src.alphaTest; }
+      const c = new THREE.Mesh(mesh.geometry, mat);
+      c.position.copy(tmpP); c.quaternion.copy(tmpQ); c.scale.copy(tmpS);
+      c.castShadow = true;
+      c.userData.debrisRig = true; // so debris despawn can dispose the cloned materials
+      holder.add(c);
+      mesh.visible = false;
+      cloned++;
+    };
+
+    for (const part of rig.parts) {
+      const aboveCut = wholeMast || part.yLocal > cutAboveFoot;
+      if (aboveCut) cloneInto(part.mesh);
+    }
+    return cloned > 0 ? holder : null;
+  }
+
+  /**
    * Sync the yards + sails to the LIVE voxel trunk. Masts are real voxels now (carved/severed by the
    * hull), so the trunk itself is handled by the hull remesh; here we just DROP the separate spar/sail
    * meshes whose foot now hangs above the surviving trunk. `mastTopY[mi]` is the ship-local Y (m) of
