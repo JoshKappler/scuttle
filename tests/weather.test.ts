@@ -2,14 +2,14 @@ import { describe, it, expect } from "vitest";
 import { WeatherController, type WeatherSinks } from "../src/render/weather";
 
 function fakeSinks() {
-  const calls = { storm: [] as number[], flash: [] as number[], rain: [] as number[], swell: [] as number[], bolts: 0, thunder: [] as number[] };
+  const calls = { storm: [] as number[], flash: [] as number[], rain: [] as number[], rainAudio: [] as number[], swell: [] as number[], bolts: 0, thunder: [] as number[] };
   const sinks: WeatherSinks = {
     sky: { setStorm: (s) => calls.storm.push(s), setFlash: (f) => calls.flash.push(f) },
     clouds: { setStorm: () => {} },
     ocean: { setStorm: () => {}, setFlash: () => {} },
     rain: { setIntensity: (i) => calls.rain.push(i), update: () => {} },
     lightning: { spawnBolt: () => { calls.bolts++; }, update: () => {}, flash: () => 0, flashDir: () => [0, 1] },
-    audio: { ambient: () => {}, setWind: () => {}, thunder: (v) => calls.thunder.push(v) },
+    audio: { ambient: () => {}, rain: (i) => calls.rainAudio.push(i), setWind: () => {}, thunder: (v) => calls.thunder.push(v) },
     applySwell: (s) => calls.swell.push(s),
     baseWind: () => 0,
   };
@@ -35,6 +35,16 @@ describe("WeatherController", () => {
       expect(s).toBeGreaterThanOrEqual(0.6);
       expect(s).toBeLessThanOrEqual(2.6);
     }
+  });
+  it("drives the rain audio bed up with storminess, and silences it when inactive", () => {
+    const { sinks, calls } = fakeSinks();
+    const w = new WeatherController(sinks, () => 0.99);
+    w.setMode("fixed", 1);
+    for (let i = 0; i < 600; i++) w.update(0.1, i * 0.1, cam, true);
+    expect(calls.rainAudio.at(-1)).toBeGreaterThan(0.9); // full storm → heavy rain intensity
+    // inactive (menu/pause): the bed must be fed 0 so it can't bleed outside at-sea play
+    w.update(0.1, 60, cam, false);
+    expect(calls.rainAudio.at(-1)).toBe(0);
   });
   it("fires bolts + schedules thunder at full storm, none when inactive", () => {
     const { sinks, calls } = fakeSinks();

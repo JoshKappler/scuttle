@@ -50,6 +50,8 @@ ids decodes once (the loader dedupes).
 | ship_ready    | `sfx/ship_ready.wav`                      | 2D (UI) — *placeholder* |
 | ocean_loop    | `ambient/ocean_loop.ogg`                  | looping bed  |
 | wind_loop     | `ambient/wind_loop.ogg`                   | looping bed (wind + creaking) |
+| rain_loop     | `ambient/rain_light.ogg`                  | looping bed — light-patter layer (low-passed, swells w/ storm) |
+| rain_heavy    | `ambient/rain_heavy.ogg`                  | looping bed — heavy-downpour layer (fades in past ½ intensity) |
 | menu_theme    | `music/menu_theme.ogg`                    | music — menu + pause |
 | sea_ambient   | `music/sea_ambient.wav`                   | *placeholder*, **unused** (see below) |
 | harbor        | `music/harbor.ogg`                        | music — at port |

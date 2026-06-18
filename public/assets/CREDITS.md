@@ -33,6 +33,12 @@ Real downloaded audio now backs most of the soundscape. The originals were trimm
 split/converted to OGG (music+ambience) / mono OGG (positional SFX) via ffmpeg; the
 processed files live under `audio/sfx|ambient|music/` (see `audio/README.md`).
 
+- **Rain bed** (dynamic two-layer storm rain) — `audio/ambient/rain_light.ogg` (light patter,
+  88 s) + `audio/ambient/rain_heavy.ogg` (heavy downpour, a 40 s trim of the source).
+  - Source: **OpenGameArt** — "AMB Rain Loop 1" and "AMB Rain Loop 2" by **Kresiek The Furry**
+    (https://opengameart.org/content/amb-rain-loop-1 + `/amb-rain-loop-2`)
+  - License: **CC0 1.0** (public domain) — no attribution required; credited anyway.
+  - Replaced the synthetic `rain_loop.wav` (procedural noise that read as "sandpaper").
 - **Wood-crack damage pool** — `audio/sfx/wood_crack_1..4.ogg`
   - Source: Freesound IDs **183450, 183451, 183452, 183453** by user **utsuru**
     ("wood crack" series) — https://freesound.org/people/utsuru/

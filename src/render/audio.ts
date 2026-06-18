@@ -53,7 +53,12 @@ const MANIFEST: Record<string, string | string[]> = {
   reload_bell: "sfx/reload_bell.wav", // struck ship's bell — rung when the guns finish reloading
   ocean_loop: "ambient/ocean_loop.ogg",
   wind_loop: "ambient/wind_loop.ogg",
-  rain_loop: "ambient/rain_loop.wav",
+  // Real CC0 rain recordings (OpenGameArt, "AMB Rain Loop 1 & 2" by Kresiek The Furry, CC0/public
+  // domain) — replaces the synthetic noise that read as "sandpaper". Two layers: a light patter bed
+  // (rain_loop) low-passed + swelling with the storm, and a heavy downpour (rain_heavy) that fades in
+  // over the top past ~half intensity. Driven by AudioManager.rain(intensity) — see render/weather.ts.
+  rain_loop: "ambient/rain_light.ogg",
+  rain_heavy: "ambient/rain_heavy.ogg",
   thunder: ["sfx/thunder_1.wav", "sfx/thunder_2.wav", "sfx/thunder_3.wav"],
   menu_theme: "music/menu_theme.ogg",
   sea_ambient: "music/sea_ambient.wav", // unused — at sea is ambience-only (no music track)
@@ -83,7 +88,9 @@ export class AudioManager {
   private uiBusy: number[] = [];
   private ocean: THREE.Audio;
   private wind: THREE.Audio;
-  private rain: THREE.Audio;
+  private rainLight: THREE.Audio; // light-patter bed (low-passed, swells with intensity)
+  private rainHeavy: THREE.Audio; // heavy downpour layer (fades in over the top past ~half intensity)
+  private rainFilter: BiquadFilterNode; // low-pass on the rain bed: muffled trickle → bright downpour
   private musicVoices: THREE.Audio[];
   private activeMusic = 0;
   private currentTrack = "";
@@ -123,7 +130,11 @@ export class AudioManager {
     }
     this.ocean = new THREE.Audio(listener);
     this.wind = new THREE.Audio(listener);
-    this.rain = new THREE.Audio(listener);
+    this.rainLight = new THREE.Audio(listener);
+    this.rainHeavy = new THREE.Audio(listener);
+    this.rainFilter = this.ctx.createBiquadFilter();
+    this.rainFilter.type = "lowpass";
+    this.rainFilter.frequency.value = 1200;
     this.musicVoices = [new THREE.Audio(listener), new THREE.Audio(listener)];
 
     this.ready = this.loadAll();
@@ -224,9 +235,18 @@ export class AudioManager {
 
   /** Start/stop a looping bed. `on=false` just mutes it (keeps it warm for re-fade). */
   ambient(which: "ocean" | "wind" | "rain", on: boolean, gain?: number): void {
-    const v = which === "ocean" ? this.ocean : which === "wind" ? this.wind : this.rain;
-    const id = which === "ocean" ? "ocean_loop" : which === "wind" ? "wind_loop" : "rain_loop";
-    const dflt = which === "ocean" ? OCEAN_GAIN : which === "wind" ? WIND_BASE : 0.5;
+    if (which === "rain") {
+      // The storm bed drives rain via the layered rain() method (render/weather.ts). This path only
+      // exists so main.ts can force-mute BOTH rain voices in menu/pause; it never starts them.
+      if (!on) {
+        this.rainLight.setVolume(0);
+        this.rainHeavy.setVolume(0);
+      }
+      return;
+    }
+    const v = which === "ocean" ? this.ocean : this.wind;
+    const id = which === "ocean" ? "ocean_loop" : "wind_loop";
+    const dflt = which === "ocean" ? OCEAN_GAIN : WIND_BASE;
     const buf = this.buffers.get(id)?.[0];
     if (!buf) return;
     if (on) {
@@ -238,6 +258,44 @@ export class AudioManager {
       if (!v.isPlaying) v.play();
     } else if (v.isPlaying) {
       v.setVolume(0);
+    }
+  }
+
+  /**
+   * The dynamic rain bed: real two-layer rain driven by storm `intensity` [0,1] (render/weather.ts
+   * passes rainIntensity(storminess), so it scales smoothly across the sea-state levels). A light
+   * patter loop carries the base — low-passed when it is barely raining so it reads as a soft distant
+   * trickle, opening up to a bright close splatter as it intensifies — and a heavy downpour loop fades
+   * in over the top past ~half intensity for the body/roar of a real storm. `master` = TUN.weather.rain.
+   * Voices loop forever once started and are muted (volume 0) when it is clear, like the other beds.
+   */
+  rain(intensity: number, master = 1): void {
+    const i = intensity < 0 ? 0 : intensity > 1 ? 1 : intensity;
+    const m = master < 0 ? 0 : master;
+
+    const light = this.buffers.get("rain_loop")?.[0];
+    if (light) {
+      if (!this.rainLight.buffer) {
+        this.rainLight.setBuffer(light);
+        this.rainLight.setLoop(true);
+        this.rainLight.setFilter(this.rainFilter); // low-pass only on the rain, not the whole mix
+      }
+      const vol = i > 0.01 ? (0.16 + 0.42 * i) * m : 0;
+      this.rainLight.setVolume(vol);
+      if (vol > 0 && !this.rainLight.isPlaying) this.rainLight.play();
+      this.rainFilter.frequency.value = 550 + 10500 * i * i; // muffled trickle → bright downpour
+    }
+
+    const heavy = this.buffers.get("rain_heavy")?.[0];
+    if (heavy) {
+      if (!this.rainHeavy.buffer) {
+        this.rainHeavy.setBuffer(heavy);
+        this.rainHeavy.setLoop(true);
+      }
+      const t = i <= 0.45 ? 0 : i >= 1 ? 1 : (i - 0.45) / 0.55; // smoothstep(0.45, 1, i)
+      const hv = t * t * (3 - 2 * t) * 0.5 * m;
+      this.rainHeavy.setVolume(hv);
+      if (hv > 0 && !this.rainHeavy.isPlaying) this.rainHeavy.play();
     }
   }
 

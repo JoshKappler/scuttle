@@ -5,7 +5,6 @@ import {
   seaScaleFromStorm,
   weatherFront,
   rainIntensity,
-  rainGain,
   lightningRatePerSec,
   thunderDelaySec,
   thunderVolume,
@@ -36,6 +35,8 @@ export interface WeatherSinks {
   };
   audio: {
     ambient(which: "ocean" | "wind" | "rain", on: boolean, gain?: number): void;
+    /** Dynamic two-layer rain bed driven by storm intensity [0,1] (master = TUN.weather.rain). */
+    rain(intensity: number, master?: number): void;
     setWind(i: number): void;
     thunder(volume: number): void;
   };
@@ -101,8 +102,9 @@ export class WeatherController {
     const fd = this.s.lightning.flashDir();
     this.s.ocean.setFlash(f, fd[0], fd[1]);
 
-    // audio beds
-    this.s.audio.ambient("rain", active && rainIntensity(s) > 0.02, rainGain(s) * TUN.weather.rain);
+    // audio beds — the rain is a dynamic two-layer bed scaled by storm intensity (audio.rain owns the
+    // light-patter ↔ heavy-downpour crossfade + low-pass swell); muted when not at sea.
+    this.s.audio.rain(active ? rainIntensity(s) : 0, TUN.weather.rain);
     this.s.audio.setWind(this.s.baseWind() + (active ? windStormBoost(s) * TUN.weather.windBoost : 0));
 
     if (active) {

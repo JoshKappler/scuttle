@@ -19,6 +19,7 @@ import {
   type Compartment,
 } from "../sim/compartments";
 import { findSevered, type Island } from "../sim/connectivity";
+import { mastFootingCells, MAST_SUPPORT_MIN_FRAC } from "../sim/mastSupport";
 import { mountSolidCount, mountLost } from "../sim/cannonMount";
 import { MATERIALS, breakEnergy, SPAR } from "../sim/materials";
 import { segmentBoxHit, segmentSailHit } from "../sim/rigDamage";
@@ -185,6 +186,10 @@ export class Ship implements ContactTarget {
    *  each step from the live grid. Static list of coords — a coord whose grid cell is no longer
    *  SPAR has been shot/severed away. */
   private mastCells: { x: number; y: number; z: number }[][];
+  /** Per mast: the intact count of hull cells carrying its step (sim/mastSupport.mastFootingCells),
+   *  sampled at build. The denominator for the footing-survival fraction — once the hull beneath a
+   *  mast falls below MAST_SUPPORT_MIN_FRAC of this, the step is undermined and the trunk is felled. */
+  private mastFootInit: number[] = [];
 
   // ---- cannon-mount state (Task 8) ----
   /** Per cannon port: is the gun still mounted (and therefore firable)? A port whose hull
@@ -382,6 +387,8 @@ export class Ship implements ContactTarget {
     // collision) — a dedicated cylinder would just be a GHOST you couldn't walk through after the
     // voxels were shot away.
     this.mastCells = (build.mastVoxels ?? build.masts.map(() => [])).map((cells) => cells.slice());
+    // sample the intact hull carrying each mast's step (the denominator for the footing-survival check)
+    this.mastFootInit = build.masts.map((m) => mastFootingCells(build.grid, m.x, build.deckYAt(m.x)));
     this.mastAlive = build.masts.map(() => true);
     this.mastTopY = build.masts.map(() => -Infinity);
     this.sailIntegrity = build.masts.map(() => 1);
@@ -1476,6 +1483,33 @@ export class Ship implements ContactTarget {
       // anything no longer connected to the anchor breaks off as debris; its removed
       // cells are fresh holes too — register them so the stump floods from the cut.
       const islands = findSevered(grid, this.keelAnchor);
+      // A mast is ALSO lost when the hull carrying its STEP is destroyed. The mast trunk sits on the
+      // deck plank, which runs the whole hull length, so findSevered keeps a mast 18-connected to the
+      // keel even after the bow under it is blown apart (the player's "mast floats with the front
+      // gone"). Fell any still-standing mast whose footing hull has dropped below MAST_SUPPORT_MIN_FRAC
+      // by handing its surviving SPAR voxels to the SAME debris pipeline a shot-out base uses — deduped
+      // against anything findSevered already shed this pass so a cell is never processed twice.
+      if (this.mastCells.length > 0) {
+        const nyd = grid.dims[1], nzd = grid.dims[2];
+        const keyOf = (x: number, y: number, z: number) => (x * nyd + y) * nzd + z;
+        const already = new Set<number>();
+        for (const isl of islands) for (const c of isl.cells) already.add(keyOf(c.x, c.y, c.z));
+        for (let mi = 0; mi < this.mastCells.length; mi++) {
+          if (!this.mastAlive[mi] || this.mastFootInit[mi] <= 0) continue;
+          const mx = this.build.masts[mi].x;
+          const frac = mastFootingCells(grid, mx, this.build.deckYAt(mx)) / this.mastFootInit[mi];
+          if (frac >= MAST_SUPPORT_MIN_FRAC) continue; // step still carried → mast stands
+          const cells: { x: number; y: number; z: number; mat: number }[] = [];
+          for (const c of this.mastCells[mi]) {
+            const k = keyOf(c.x, c.y, c.z);
+            if (grid.get(c.x, c.y, c.z) === SPAR && !already.has(k)) {
+              cells.push({ x: c.x, y: c.y, z: c.z, mat: SPAR });
+              already.add(k);
+            }
+          }
+          if (cells.length > 0) islands.push({ cells });
+        }
+      }
       if (islands.length > 0) {
         const nz = grid.dims[2];
         const islandCells: [number, number, number][] = [];
