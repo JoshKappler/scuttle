@@ -47,6 +47,10 @@ export function planCrush<C>(
 // deep overlap that broke a huge slab in one step).
 export function breakImpulse(reducedMass: number, vc: number, energy: number, dvCap: number): number {
   if (vc <= 0 || reducedMass <= 0) return 0;
+  // Defensive clamp (deterministic, constant): real closing speeds are <~10 m/s; 50 is a generous
+  // ceiling that only catches a teleport-deep degenerate overlap whose vc² would otherwise blow the
+  // impulse up. Cannot affect a healthy frame. Mirrors the same clamp in game/voxelContact.ts.
+  vc = Math.min(vc, 50);
   const after = Math.sqrt(Math.max(vc * vc - (2 * Math.max(energy, 0)) / reducedMass, 0));
   const dv = Math.min(vc - after, dvCap);
   return reducedMass * dv;

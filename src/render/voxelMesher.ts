@@ -1,5 +1,5 @@
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
-import { MATERIALS } from "../sim/materials";
+import { IRON, MATERIALS } from "../sim/materials";
 import type { VoxelGrid } from "../sim/voxelGrid";
 
 /**
@@ -15,6 +15,12 @@ export interface ChunkMesh {
   normals: Float32Array;
   colors: Float32Array;
   indices: Uint32Array;
+  /** Index COUNT belonging to the IRON/ballast material, packed at the TAIL of `indices`
+   *  (wood faces fill [0, indices.length - ironIndexCount), iron faces the remainder). Lets the
+   *  renderer give ballast its own OPAQUE iron material via two geometry groups, so distributed
+   *  bilge iron reads as a solid block in the X cutaway instead of a translucent shell sharing
+   *  the DoubleSide wood material. 0 when the chunk holds no iron. */
+  ironIndexCount: number;
 }
 
 const AO_FACTOR = [0.5, 0.68, 0.84, 1.0];
@@ -33,7 +39,10 @@ export function meshChunk(grid: VoxelGrid, cx: number, cy: number, cz: number): 
   const positions: number[] = [];
   const normals: number[] = [];
   const colors: number[] = [];
-  const indices: number[] = [];
+  // wood (and every non-iron material) vs IRON/ballast faces, kept in separate index lists so the
+  // renderer can split them into two opaque/translucent geometry groups (cutaway ballast = solid).
+  const woodIdx: number[] = [];
+  const ironIdx: number[] = [];
 
   // Sweep each axis d, both directions. u, v are the in-plane axes.
   for (let d = 0; d < 3; d++) {
@@ -95,7 +104,8 @@ export function meshChunk(grid: VoxelGrid, cx: number, cy: number, cz: number): 
               positions,
               normals,
               colors,
-              indices,
+              woodIdx,
+              ironIdx,
               key,
               aoMask[i + j * CHUNK_SIZE],
               d,
@@ -123,11 +133,16 @@ export function meshChunk(grid: VoxelGrid, cx: number, cy: number, cz: number): 
   }
 
   if (positions.length === 0) return null;
+  // wood faces first, iron faces at the tail → the iron run is the last `ironIdx.length` indices.
+  const indices = new Uint32Array(woodIdx.length + ironIdx.length);
+  indices.set(woodIdx, 0);
+  indices.set(ironIdx, woodIdx.length);
   return {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
     colors: new Float32Array(colors),
-    indices: new Uint32Array(indices),
+    indices,
+    ironIndexCount: ironIdx.length,
   };
 }
 
@@ -142,7 +157,10 @@ export function meshGrid(grid: VoxelGrid): ChunkMesh {
   const positions: number[] = [];
   const normals: number[] = [];
   const colors: number[] = [];
-  const indices: number[] = [];
+  // keep wood and iron indices separate across chunks so the merged buffer also has all iron at the
+  // tail (one clean group). Terrain grids carry no iron → ironOut stays empty.
+  const woodOut: number[] = [];
+  const ironOut: number[] = [];
   for (let cx = 0; cx <= Math.floor((nx - 1) / CHUNK_SIZE); cx++) {
     for (let cy = 0; cy <= Math.floor((ny - 1) / CHUNK_SIZE); cy++) {
       for (let cz = 0; cz <= Math.floor((nz - 1) / CHUNK_SIZE); cz++) {
@@ -154,15 +172,22 @@ export function meshGrid(grid: VoxelGrid): ChunkMesh {
           normals.push(m.normals[i]);
           colors.push(m.colors[i]);
         }
-        for (let i = 0; i < m.indices.length; i++) indices.push(m.indices[i] + base);
+        // m.indices = [wood... , iron...]; the trailing m.ironIndexCount are the iron run.
+        const woodEnd = m.indices.length - m.ironIndexCount;
+        for (let i = 0; i < woodEnd; i++) woodOut.push(m.indices[i] + base);
+        for (let i = woodEnd; i < m.indices.length; i++) ironOut.push(m.indices[i] + base);
       }
     }
   }
+  const indices = new Uint32Array(woodOut.length + ironOut.length);
+  indices.set(woodOut, 0);
+  indices.set(ironOut, woodOut.length);
   return {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
     colors: new Float32Array(colors),
-    indices: new Uint32Array(indices),
+    indices,
+    ironIndexCount: ironOut.length,
   };
 }
 
@@ -204,7 +229,8 @@ function emitQuad(
   positions: number[],
   normals: number[],
   colors: number[],
-  indices: number[],
+  woodIdx: number[],
+  ironIdx: number[],
   key: number,
   ao: number[],
   d: number,
@@ -254,5 +280,6 @@ function emitQuad(
   } else {
     quad = dir > 0 ? [vi + 1, vi + 2, vi + 3, vi + 1, vi + 3, vi] : [vi + 1, vi + 3, vi + 2, vi + 1, vi, vi + 3];
   }
-  indices.push(...quad);
+  // route this face's indices to the IRON list (own opaque ballast material) or the wood list.
+  (mat === IRON ? ironIdx : woodIdx).push(...quad);
 }

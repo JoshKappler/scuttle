@@ -37,6 +37,17 @@ interface DebrisPiece {
   liftMul?: number;
 }
 
+// Defensive clamp for ONE inherited velocity component: spawned debris copies the source ship's
+// linvel/angvel, so if the ship was momentarily corrupt (the "launches into the air" bug) the debris
+// would inherit it. Non-finite → 0; |v| beyond the sane cap → clamped. A no-op on every healthy frame
+// (real ship speeds are tiny vs these caps). Caps mirror world.ts's post-step sanitizer.
+const DEBRIS_SANE_LIN = 120; // m/s
+const DEBRIS_SANE_ANG = 30;  // rad/s
+function clampComp(v: number, cap: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return v < -cap ? -cap : v > cap ? cap : v;
+}
+
 const LIFETIME = 35; // s — small flotsam
 const WRECK_LIFETIME = 150; // s — or until it founders below 40 m
 /** A severed island at least this many voxels is a wreck, not flotsam. */
@@ -141,19 +152,24 @@ export class DebrisManager {
       new THREE.Vector3(),
     );
     const rot = ship.body.rotation();
-    const vel = ship.body.linvel();
+    const vel = ship.body.linvel(); // clamped per-component below before it's inherited
     const hx = (gnx * VOXEL_SIZE) / 2;
     const hy = (gny * VOXEL_SIZE) / 2;
     const hz = (gnz * VOXEL_SIZE) / 2;
 
     const wreck = island.cells.length >= WRECK_CELLS;
+    const wav = ship.body.angvel();
     const desc = R.RigidBodyDesc.dynamic()
       .setTranslation(origin.x, origin.y, origin.z)
       .setRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w })
-      .setLinvel(vel.x + (Math.random() - 0.5), vel.y + (wreck ? 0 : 0.5), vel.z + (Math.random() - 0.5))
+      .setLinvel(
+        clampComp(vel.x, DEBRIS_SANE_LIN) + (Math.random() - 0.5),
+        clampComp(vel.y, DEBRIS_SANE_LIN) + (wreck ? 0 : 0.5),
+        clampComp(vel.z, DEBRIS_SANE_LIN) + (Math.random() - 0.5),
+      )
       .setAngvel(
         wreck
-          ? ship.body.angvel()
+          ? { x: clampComp(wav.x, DEBRIS_SANE_ANG), y: clampComp(wav.y, DEBRIS_SANE_ANG), z: clampComp(wav.z, DEBRIS_SANE_ANG) }
           : { x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5), z: (Math.random() - 0.5) * 2 },
       )
       .setLinearDamping(wreck ? 0.55 : 0.3)
@@ -271,7 +287,8 @@ export class DebrisManager {
     const desc = R.RigidBodyDesc.dynamic()
       .setTranslation(origin.x, origin.y, origin.z)
       .setRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w })
-      .setLinvel(vel.x + side.x * kick, vel.y, vel.z + side.z * kick)
+      // clamp the inherited ship velocity per-component before the topple kick is added.
+      .setLinvel(clampComp(vel.x, DEBRIS_SANE_LIN) + side.x * kick, clampComp(vel.y, DEBRIS_SANE_LIN), clampComp(vel.z, DEBRIS_SANE_LIN) + side.z * kick)
       .setAngvel({ x: side.z * 1.2, y: (Math.random() - 0.5) * 0.6, z: -side.x * 1.2 })
       .setLinearDamping(0.4)
       .setAngularDamping(1.2);
@@ -363,7 +380,8 @@ export class DebrisManager {
     const desc = R.RigidBodyDesc.dynamic()
       .setTranslation(pose.pos.x, pose.pos.y, pose.pos.z)
       .setRotation({ x: pose.quat.x, y: pose.quat.y, z: pose.quat.z, w: pose.quat.w })
-      .setLinvel(sv.x + out.x * kick, sv.y + 0.4, sv.z + out.z * kick)
+      // clamp the inherited ship velocity per-component before the outboard kick is added.
+      .setLinvel(clampComp(sv.x, DEBRIS_SANE_LIN) + out.x * kick, clampComp(sv.y, DEBRIS_SANE_LIN) + 0.4, clampComp(sv.z, DEBRIS_SANE_LIN) + out.z * kick)
       .setAngvel({ x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2, z: (Math.random() - 0.5) * 2 })
       .setLinearDamping(0.4)
       .setAngularDamping(0.9);

@@ -15,6 +15,7 @@ import {
   type GunFacing,
 } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
+import { IRON, MATERIALS } from "../sim/materials";
 import { CompartmentFluid } from "./compartmentFluid";
 import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
@@ -42,12 +43,22 @@ export interface SailRecord {
    *  integrity derived from it stays deterministic (THE LAW #1). Capped at `area`. The visual
    *  hole shape is cosmetic and independent of this number. */
   holedArea: number;
+  /** Centers (normalized u,v on the canvas) of the DISTINCT holes already torn in this sail. A new
+   *  puncture landing within ~one hole-radius of any of these is treated as already-holed there:
+   *  no fresh polygon, no fresh area. Stops a clustered broadside (N balls, each ≈the same spot)
+   *  from overlap-blobbing into one smooth oval AND from N-counting the same physical rip. */
+  holes: { u: number; v: number }[];
 }
 
 export class ShipVisual {
   readonly group = new THREE.Group();
   private chunkMeshes = new Map<string, THREE.Mesh>();
   private hullMaterial: THREE.MeshStandardMaterial;
+  /** OPAQUE iron used for the IRON/ballast face group (voxelMesher tags those faces). Distributed
+   *  bilge iron shared the DoubleSide wood `hullMaterial` and read as a hollow translucent liner in
+   *  the X cutaway; its own solid, dark, metallic material (with a self-lit floor so the cut-open
+   *  interior doesn't crush it to black) reads as an unambiguous block of iron. */
+  private ironMaterial: THREE.MeshStandardMaterial;
   /** Captured hull shader uniforms (set in onBeforeCompile) so animate() can drive the
    *  live shade-floor knob (TUN.gfx.hull.shadeFloor) without recompiling the material. */
   private hullUniforms: { [k: string]: THREE.IUniform } | null = null;
@@ -179,6 +190,26 @@ export class ShipVisual {
           totalEmissiveRadiance += diffuseColor.rgb * uShadeFloor;`,
         );
     };
+    // ballast iron: a SOLID, opaque, dark-metal material for the IRON face group. vertexColors
+    // carries the baked iron tint × AO (white base × that = the iron colour); higher metalness /
+    // lower roughness reads as iron, not timber. transparent:false + depthWrite so it's never
+    // translucent. DoubleSide (like the hull) so the centerline clip's cross-section through the
+    // iron block stays FILLED (back faces render) instead of seeing through a hollow shell — the
+    // distributed bilge iron used to read as a see-through liner because it SHARED the dark wood
+    // material, not because of any transparency. A constant emissive keyed to the iron colour keeps
+    // the revealed ballast from crushing to black in the cut-open interior (lifted while cut away).
+    const ironCol = MATERIALS[IRON].color;
+    this.ironMaterial = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      color: 0xffffff,
+      roughness: 0.34,
+      metalness: 0.85,
+      transparent: false,
+      depthWrite: true,
+      side: THREE.DoubleSide,
+      emissive: new THREE.Color(ironCol[0], ironCol[1], ironCol[2]),
+      emissiveIntensity: 1.6,
+    });
     this.remeshAll();
     this.addRig();
     // per-voxel flood fluid: water fills the compartment's interior cells (lowest world-Y
@@ -221,6 +252,9 @@ export class ShipVisual {
         ? Math.max(TUN.gfx.hull.shadeFloor, 2.2)
         : TUN.gfx.hull.shadeFloor;
     }
+    // lift the solid ballast's self-lit floor while cut away so the revealed iron reads as a bright
+    // solid block, not a dark void on the faces turned away from the sun (matches the hull lift).
+    this.ironMaterial.emissiveIntensity = this.cutawayOn ? 2.6 : 1.6;
     // rudder convention: sailing.rudder + = port turn → trailing edge swings
     // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
     // puts the trailing edge at −z for +r. Wheel turns the same sense as a
@@ -268,6 +302,9 @@ export class ShipVisual {
     const planes = plane ? [plane] : null;
     this.hullMaterial.clippingPlanes = planes;
     this.hullMaterial.needsUpdate = true;
+    // clip the solid ballast iron in lock-step so a cut-away half's iron is sliced off too.
+    this.ironMaterial.clippingPlanes = planes;
+    this.ironMaterial.needsUpdate = true;
     for (const m of this.cannonMaterials) {
       m.clippingPlanes = planes;
       m.needsUpdate = true;
@@ -311,18 +348,41 @@ export class ShipVisual {
     const ctx = rec.canvas.getContext("2d")!;
     const u = (rec.zMax - zLocal) / (rec.zMax - rec.zMin); // geometry is Y-rotated: +z maps to u=0
     const v = (yLocal - rec.yMin) / (rec.yMax - rec.yMin);
+    // NEARBY-HOLE MERGE: one ball ≙ at most one fresh hole. A broadside puts several balls through
+    // nearly the same spot; if a new strike lands within ~one hole-radius of an existing hole on
+    // this sail, treat it as already-holed there — DON'T add a polygon or area, so the cluster
+    // reads as one ragged rip, not an overlap-blobbed oval, and the deterministic area isn't
+    // double-counted. The radius is HOLE_R_M in meters, converted to each (u,v) axis's own scale.
+    const ru = ShipVisual.HOLE_R_M / (rec.zMax - rec.zMin); // hole radius in u units
+    const rv = ShipVisual.HOLE_R_M / (rec.yMax - rec.yMin); // hole radius in v units
+    for (const hpt of rec.holes) {
+      const du = (u - hpt.u) / ru;
+      const dv = (v - hpt.v) / rv;
+      if (du * du + dv * dv <= 1) {
+        // already holed here: return the CURRENT (unchanged) mast destroyed fraction.
+        let holed0 = 0;
+        let total0 = 0;
+        for (const s of this.sails) {
+          if (s.mastIdx !== rec.mastIdx) continue;
+          holed0 += s.holedArea;
+          total0 += s.area;
+        }
+        return total0 > 0 ? holed0 / total0 : 0;
+      }
+    }
     const px = u * rec.canvas.width;
     const py = (1 - v) * rec.canvas.height;
     // px radius for the visual, from the nominal hole radius mapped through the sail's cloth width.
     const rPx = (ShipVisual.HOLE_R_M / (rec.zMax - rec.zMin)) * rec.canvas.width;
     // ONE irregular jagged polygon (a torn rip), NOT a soft stack of jittered circles (the old
-    // "oval blob"). ~10 vertices around the strike, each radius jittered so the rim is ragged.
+    // "oval blob"). ~10 vertices around the strike, each radius WIDELY jittered (0.42..1.2× the
+    // nominal) so the rim is sharply ragged — at 256² that reads as torn canvas, not a soft oval.
     ctx.fillStyle = "#000";
     const N = 10;
     ctx.beginPath();
     for (let i = 0; i < N; i++) {
       const ang = (i / N) * Math.PI * 2;
-      const r = Math.max(rPx * (0.5 + Math.random() * 0.6), 1.5);
+      const r = Math.max(rPx * (0.42 + Math.random() * 0.78), 2);
       const x = px + Math.cos(ang) * r;
       const y = py + Math.sin(ang) * r;
       if (i === 0) ctx.moveTo(x, y);
@@ -332,6 +392,8 @@ export class ShipVisual {
     ctx.fill();
     rec.tex.needsUpdate = true;
 
+    // a NEW distinct hole: remember its center so future nearby strikes merge into it.
+    rec.holes.push({ u, v });
     // DETERMINISTIC area accounting (independent of the random shape above): add a fixed nominal
     // hole area, capped at the sail's total cloth, then sum this mast's destroyed fraction.
     rec.holedArea = Math.min(rec.holedArea + ShipVisual.HOLE_AREA_M2, rec.area);
@@ -354,6 +416,7 @@ export class ShipVisual {
       if (mastIdx !== undefined && s.mastIdx !== mastIdx) continue;
       if (s.holedArea === 0) continue;
       s.holedArea = 0;
+      s.holes.length = 0; // wipe the merge-anchors so a repaired sail can tear fresh holes again
       const ctx = s.canvas.getContext("2d")!;
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, s.canvas.width, s.canvas.height);
@@ -567,7 +630,20 @@ export class ShipVisual {
     geo.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
     geo.setAttribute("color", new THREE.BufferAttribute(data.colors, 3));
     geo.setIndex(new THREE.BufferAttribute(data.indices, 1));
-    const mesh = new THREE.Mesh(geo, this.hullMaterial);
+    // split into a WOOD group (hull material) + an IRON group (solid ballast material). The mesher
+    // packs iron indices at the tail, so wood = [0, woodCount), iron = [woodCount, total). Only when
+    // the chunk actually holds iron do we use the two-material array (else a plain single material).
+    let mesh: THREE.Mesh;
+    const total = data.indices.length;
+    const ironCount = data.ironIndexCount;
+    if (ironCount > 0) {
+      const woodCount = total - ironCount;
+      if (woodCount > 0) geo.addGroup(0, woodCount, 0);
+      geo.addGroup(woodCount, ironCount, 1);
+      mesh = new THREE.Mesh(geo, [this.hullMaterial, this.ironMaterial]);
+    } else {
+      mesh = new THREE.Mesh(geo, this.hullMaterial);
+    }
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     this.group.add(mesh);
@@ -801,10 +877,13 @@ export class ShipVisual {
         // shot holes) wired as an alphaMap from birth so the shader program
         // never changes — balls tear it instead of passing through (round 7)
         const canvas = document.createElement("canvas");
-        canvas.width = canvas.height = 128;
+        // 256² (was 128²): a ~0.55 m shot hole was only a few px on a 128 canvas and the alphaTest
+        // edge blurred it into a round blob. At 256 the jagged 10-gon rim reads as torn cloth. rPx
+        // in puncture() scales off canvas.width, so it stays consistent with the bump.
+        canvas.width = canvas.height = 256;
         const cctx = canvas.getContext("2d")!;
         cctx.fillStyle = "#fff";
-        cctx.fillRect(0, 0, 128, 128);
+        cctx.fillRect(0, 0, canvas.width, canvas.height);
         const tex = new THREE.CanvasTexture(canvas);
         const mat = newSailMaterial();
         mat.alphaMap = tex;
@@ -828,6 +907,7 @@ export class ShipVisual {
           tex,
           area: (head.y - foot.y) * foot.w, // rect cloth area (m²) — the integrity denominator
           holedArea: 0,
+          holes: [],
         });
       }
     });

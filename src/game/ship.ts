@@ -406,12 +406,13 @@ export class Ship implements ContactTarget {
   /** A ball through the canvas: that mast pulls less, PROPORTIONAL to the share of its cloth shot
    *  away. `destroyedFrac` (0..1) is the mast's holed-area / total-cloth-area, computed
    *  deterministically by visual.puncture (fixed nominal area per hole — never the random visual
-   *  shape). Integrity = 1 − 2·frac so the mast loses ALL drive once HALF its canvas is gone, and a
-   *  few holes barely scratch it (the old flat −0.07/hit with a 0.15 floor over-nerfed: a handful of
-   *  hits — amplified by the phantom-hole bug — collapsed a ship to a crawl). sailing.ts scales each
-   *  mast's thrust linearly by this value. No floor: a truly shredded mast pulls nothing. */
+   *  shape). Integrity = 1 − 3·frac² — a CONVEX curve so a couple of holes are nearly free (frac 0.1
+   *  → ~0.97) but a peppered sail still collapses fast (frac 0.5 → ~0.25, frac→1 → 0). The old linear
+   *  1 − 2·frac killed ALL drive at half cloth, which read as "a few holes ≈ no thrust"; this keeps
+   *  "half-peppered ≪ half thrust" without nerfing light damage. sailing.ts scales each mast's thrust
+   *  linearly by this value. No floor: a truly shredded mast pulls nothing. */
   hitSail(mi: number, destroyedFrac: number): void {
-    this.sailIntegrity[mi] = Math.min(Math.max(1 - 2 * destroyedFrac, 0), 1);
+    this.sailIntegrity[mi] = Math.min(Math.max(1 - destroyedFrac * destroyedFrac * 3, 0), 1);
   }
 
   /** Restore canvas to full: reset each (still-rigged) mast's thrust integrity AND wipe the visual
@@ -464,10 +465,11 @@ export class Ship implements ContactTarget {
       // EXCEPTION: a grid-capped mast (man-o-war) always has a short voxel trunk; its sails ride
       // the cosmetic topmast and stay hittable while the mast stands (matching updateRig).
       if (!this.mastCapped[rec.mastIdx] && rec.yMin > this.mastTopY[rec.mastIdx]) continue;
-      // a thin (~0.5 m) fore-aft slab so a BEAM-WISE broadside ball passing through the canvas tears
+      // a thin (~0.25 m) fore-aft slab so a BEAM-WISE broadside ball passing through the canvas tears
       // it, not just a shot that pierces the zero-width plane (which a side-on duel almost never
-      // produces). Kept tight so a ball comfortably fore/aft of the cloth can't false-trigger.
-      const hit = segmentSailHit(p0, p1, rec, 0.5);
+      // produces). Kept tight (0.25, not 0.5) so ONE ball can't punch through BOTH of a mast's two
+      // stacked sails, and a ball comfortably fore/aft of the cloth can't false-trigger.
+      const hit = segmentSailHit(p0, p1, rec, 0.25);
       if (hit) sails.push({ rec, y: hit.y, z: hit.z });
     }
 
@@ -1146,6 +1148,42 @@ export class Ship implements ContactTarget {
     return out;
   }
 
+  /** Maximum WORLD-SPACE Y over the HULL voxels ONLY — EXCLUDING the tall SPAR mast tower (id 13).
+   *  `aabbWorld().max.y` includes the masts (the grid `ny` is the SPAR-tower height, ~3× the hull),
+   *  so a half-sunk enemy's box top stays well above the sea even as the deck goes under — useless
+   *  for a "is she essentially submerged?" respawn/wreck test. This bounds only the hull envelope:
+   *  it finds the local top face of the highest non-SPAR voxel (mirroring hullHeightMeters), then
+   *  transforms the 8 corners of the hull sub-box (local Y 0..hullTop, full X/Z) by the body pose and
+   *  returns the greatest world Y — a safe (slightly loose) upper bound as cells carve away.
+   *  Allocation-light: reuses the same tmpQ/tmpV scratch as aabbWorld. */
+  hullAabbTopWorldY(): number {
+    const grid = this.build.grid;
+    const [nx, ny, nz] = grid.dims;
+    // local top face of the tallest HULL (non-SPAR) voxel — descending scan, short-circuits per column
+    let hullTopY = 0;
+    scan: for (let y = ny - 1; y >= 0; y--) {
+      for (let x = 0; x < nx; x++) {
+        for (let z = 0; z < nz; z++) {
+          if (grid.isSolid(x, y, z) && grid.get(x, y, z) !== SPAR) {
+            hullTopY = (y + 1) * VOXEL_SIZE;
+            break scan;
+          }
+        }
+      }
+    }
+    const ex = nx * VOXEL_SIZE, ez = nz * VOXEL_SIZE;
+    const tr = this.body.translation();
+    const rot = this.body.rotation();
+    this.tmpQ.set(rot.x, rot.y, rot.z, rot.w);
+    let maxY = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      this.tmpV.set(i & 1 ? ex : 0, i & 2 ? hullTopY : 0, i & 4 ? ez : 0).applyQuaternion(this.tmpQ);
+      const wy = this.tmpV.y + tr.y;
+      if (wy > maxY) maxY = wy;
+    }
+    return maxY;
+  }
+
   /** Heavy post-damage recompute (shed disconnected islands, rebuild buoyancy columns
    *  + deck trimesh), THROTTLED to ~10 Hz. carve() fires every frame during a ram, and
    *  running these whole-hull rebuilds 60×/s per ship tanked the frame rate; the cheap
@@ -1258,17 +1296,29 @@ export class Ship implements ContactTarget {
   recomputeMassProperties(): void {
     const grid = this.build.grid;
     const mp = grid.massProperties();
-    const mass = Math.max(mp.mass, 1);
+    // FLOOR the mass at the hull scale. A heavily-severed sliver hull can report a tiny (or, on a
+    // degenerate grid, non-finite) mass; a near-zero mass under an off-centre buoyancy force gives a
+    // runaway linear/angular accel — the "ship launches hundreds of feet into the air" bug.
+    const mass = Number.isFinite(mp.mass) ? Math.max(mp.mass, 50) : 50;
     this.comLocal = mp.com;
     // Keep the hull's TUNED rotational feel (the box inertia + its 1.6× added-mass) but track the
     // REAL per-axis change as it's carved: scale each tuned axis by how that axis's true voxel
     // inertia has shifted from the intact hull. The old mass-only rescale left an asymmetrically
     // holed hull with a falsely-symmetric tensor → wrong righting dynamics → it turtled.
-    this.inertia = [
-      this.inertiaBox[0] * (mp.inertia[0] / this.inertia0Real[0]),
-      this.inertiaBox[1] * (mp.inertia[1] / this.inertia0Real[1]),
-      this.inertiaBox[2] * (mp.inertia[2] / this.inertia0Real[2]),
-    ];
+    //
+    // CRITICAL FLOOR: mp.inertia is clamped ≥1 in voxelGrid.massProperties(), but inertia0Real is
+    // large, so a shattered hull's ratio mp.inertia[k]/inertia0Real[k] collapses toward ~0 on an
+    // axis. With NO floor on the value handed to Rapier, that near-zero inertia under an ordinary
+    // off-centre buoyancy torque → enormous angular accel → the hull cartwheels and rockets straight
+    // up. Clamp each axis to ≥1% of its TUNED intact box value: a sliver can never spin to infinity,
+    // while a healthy hull (ratio ≈ 1) is never touched. Finite-guard so a NaN never reaches Rapier.
+    const INERTIA_FLOOR = 1e-2;
+    const inertiaAxis = (k: number): number => {
+      const scaled = this.inertiaBox[k] * (mp.inertia[k] / this.inertia0Real[k]);
+      const val = Number.isFinite(scaled) ? scaled : this.inertiaBox[k] * INERTIA_FLOOR;
+      return Math.max(val, this.inertiaBox[k] * INERTIA_FLOOR);
+    };
+    this.inertia = [inertiaAxis(0), inertiaAxis(1), inertiaAxis(2)];
     this.body.setAdditionalMassProperties(
       mass,
       { x: mp.com[0], y: mp.com[1], z: mp.com[2] },

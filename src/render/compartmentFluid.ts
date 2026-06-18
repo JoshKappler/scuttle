@@ -5,47 +5,64 @@ import { buildFillCurve, fillHeightLocal, type Compartment, type FillCurve } fro
 import { getOceanLook, type OceanLook } from "./ocean";
 
 /**
- * Flooded-compartment water — a SOLID body of water that fills the TRUE interior room shape of the
+ * Flooded-compartment water — a SOLID body of dark water filling the TRUE interior room shape of the
  * hull (tapered bow, curved sides, L-shaped holds), from the compartment floor up to the live flood
- * level.
+ * level. It reads as a filled slab floor→waterline, never a thin top "sheet of silk".
  *
- * 5th-attempt rework — the REAL root-cause fix.
+ * ──────────────────────────────────────────────────────────────────────────────────────────────────
+ * WHY ~10 PRIOR ATTEMPTS FAILED, AND HOW THIS REWRITE KILLS EACH SYMPTOM
+ * ──────────────────────────────────────────────────────────────────────────────────────────────────
+ * Every prior version built ONE merged HOLLOW boundary-SKIN mesh per compartment (only the faces on
+ * the compartment boundary), rendered TRANSLUCENT (`transparent:true`) + DoubleSide + depthWrite,
+ * and faked a "top surface vs body" from that single skin via an `isTop` fragment branch, applying
+ * the water LEVEL as a per-fragment `discard` above the fill height. That exact combination produced
+ * every reported symptom:
+ *   (1) flickering TV-static  ← translucent + depthWrite on a self-overlapping double-sided skin:
+ *       blended faces fight for the same depth, order-dependent → static.
+ *   (2) dark-top / light-bottom z-fight ("meshing and messing")  ← the isTop branch shading coincident
+ *       geometry right at the waterline gave two coplanar translucent surfaces fighting.
+ *   (3) blocks randomly not rendering  ← a hollow translucent shell racing the depth buffer drops
+ *       faces depending on draw order.
+ *   (4) "thin sheet of blue silk", not a filled volume  ← a hollow skin has no interior; you see the
+ *       lid and nothing behind it.
+ *   (5) under the X cutaway the water is NOT cut / shows transparent nothing  ← a hollow skin opened by
+ *       the clip plane reveals the empty inside; there is no cross-section to show.
  *
- *   WHY THE PRIOR FOUR ATTEMPTS FAILED (the "messy rectangles" the user kept reporting):
- *   every previous version (commits f944aae, ed33c86, f8a912e, e6ded56) built the water as ONE
- *   axis-aligned RECTANGULAR box, scaled to the compartment's BOUNDING-BOX footprint
- *   (maxX−minX × maxZ−minZ), then RELIED on the opaque hull mesh's depth buffer to clip that
- *   rectangle down to the real hull shape. A compartment is NOT a rectangle — the bow narrows, the
- *   sides curve — so the box corners stick OUT past the hull. The hull is a thin, double-sided shell,
- *   so its depth-occlusion clip is unreliable (z-fighting / grazing sightlines / the cutaway opening),
- *   and the box's overhang shows through as ugly rectangles poking outside the hull. Every prior "fix"
- *   only re-skinned the SHADER (colours, skirt, walls, reflections) — none changed the GEOMETRY away
- *   from a bounding rectangle, so the shape bug never changed.
+ * THE FIX — a SOLID OPAQUE volume, level cut in the VERTEX shader:
+ *   • GEOMETRY (buildBodyGeometry): for each occupied (x,z) COLUMN of the compartment, emit ONE full
+ *     CLOSED box from the column's floor to its ceiling. The union of columns follows the real
+ *     (tapered / curved / L-shaped) footprint exactly and is gap-free; interior shared faces are fine
+ *     (they're occluded). A per-vertex `aTop` attribute marks each column's TOP-cap vertices (1.0) so
+ *     the shader can give ONLY the lid a surface/sky term. → kills (4): a real solid body.
+ *   • LEVEL CUT in the VERTEX shader: clamp every vertex `y = min(y, uFillLocalY)`. The top caps
+ *     collapse onto a single flat lid exactly at the live water line (ONE real top surface — no
+ *     coincident pair), side walls below stay solid, geometry above the line is degenerate (zero
+ *     area). → kills (2): no two coplanar surfaces at the waterline; the old fragment `discard` and
+ *     `isTop` two-path coincident shading are GONE.
+ *   • MATERIAL: OPAQUE — `transparent:false`, `depthWrite:true`, `depthTest:true`, DoubleSide. Opaque
+ *     DoubleSide does NOT z-fight (depthWrite resolves the nearest fragment unambiguously with no
+ *     blending). → kills (1) and (3): no alpha sort, no blend race, nearest wins.
+ *   • DoubleSide is the key to the cutaway: when the clip plane slices the near wall of a box away, the
+ *     box's FAR inner wall shows as dark water, so the cross-section reads as a FILLED slab — no
+ *     stencil/cap pass needed. → kills (5): the cut now shows solid dark water.
  *
- *   THE FIX (shape-accurate by construction, not by occlusion luck):
- *   we have the EXACT voxel shape in `Compartment.cells` (packed cell indices x + nx·(y + ny·z)). We
- *   build the water body's geometry FROM those cells — one small box per occupied (x,z) grid column,
- *   spanning that column's floor→top — and MERGE them into one static BufferGeometry. The mesh
- *   footprint is therefore the real (tapered/curved/L-shaped) compartment outline. NOTHING is drawn
- *   outside the occupied columns, so no rectangle can poke out of the hull regardless of how the hull
- *   shell occludes. The geometry is built ONCE (cells never change after build).
+ * The hull mesh is OPAQUE and occludes the water box, so the water is only ever visible through real
+ * shot holes + the cutaway cross-section — exactly right (no water bleeds through intact planking).
  *
- *   The live flood SURFACE is a fragment-shader cut: each frame we pass the current ship-local fill
- *   height as a uniform and DISCARD fragments above it, so the body fills the room only up to the live
- *   water level and the solid water sits below. No per-frame geometry rebuild, no per-cell sort.
+ * Clipping is wired the same as before and KEPT: the material is `clipping:true`, the shaders carry the
+ * THREE `clipping_planes_*` GLSL includes, and `clippingPlanes` is fed the SHARED world-space plane
+ * main.ts mutates in place each frame (via setClipPlane), so the cut tracks the live hull pose.
  *
  * The body is parented under the ship group, so it heels/pitches/heaves WITH the hull — correct,
- * because the room is part of the hull, and the sim models the fill as a ship-LOCAL-horizontal layer
- * fill (see buildFillCurve / fillHeightLocal), so a constant ship-local cut plane is exactly the layer
- * the sim filled to. The surface reads as the room's waterline.
+ * because the room is part of the hull and the sim fills a ship-LOCAL-horizontal layer (buildFillCurve
+ * / fillHeightLocal), so a constant ship-local clamp plane is exactly the layer the sim filled to.
  *
- * The LOOK is shared LIVE from render/ocean.ts (getOceanLook): the same body-colour gradient, the same
- * sky+cloud reflection cube (Fresnel-weighted, clamped), the same sun colour/direction and the same
- * clock — so the inside water matches the sea's colour/shimmer and follows any dev-panel ocean tuning.
+ * The LOOK (navy body colour, sun/sky colours, the shared clock) is read LIVE from render/ocean.ts
+ * (getOceanLook, READ-ONLY) so the inside water matches the sea and follows dev-panel ocean tuning.
  *
- * The fill LEVEL comes from the STATIC cumulative volume↔height curve the sim uses (buildFillCurve /
- * fillHeightLocal) — O(log layers), built once. Render-only: this does THREE work but never feeds sim/
- * (determinism — THE LAW #1).
+ * Render-only: this does THREE work but never feeds sim/ (determinism — THE LAW #1). Geometry is built
+ * ONCE per compartment (cells never change after build); `update` only writes the fill-level / camera /
+ * opacity uniforms and toggles mesh.visible — no per-frame allocations.
  */
 
 // Fallback navy tones if the ocean look isn't bound yet (it always is by the time water shows).
@@ -57,31 +74,35 @@ const FALLBACK_DEEP = new THREE.Color(0x0a1a2e);
 // promotion to TUN.flood.render if a dev-panel knob is wanted.
 const WALL_FLOOR_DARKEN = 0.4;
 
-// A fragment within this many metres of the live surface is treated as the TOP face (the sea-look
-// surface sheet); below it the fragment is solid body wall/floor. Roughly one voxel.
-const SURFACE_BAND = VOXEL_SIZE;
-
 const VERT = /* glsl */ `
 uniform float uTime;
 uniform float uShimmer;
-uniform float uFillLocalY;   // live flood surface, ship-LOCAL Y (m); fragments above are discarded
+uniform float uFillLocalY;   // live flood surface, ship-LOCAL Y (m); vertices are CLAMPED to it
 uniform float uFloorLocalY;  // compartment floor, ship-LOCAL Y (m) — for depth darkening
+attribute float aTop;        // 1.0 on a column's top-cap vertices, 0.0 on side/floor — lid marker
 varying vec3 vWorldPos;
-varying float vLocalY;       // ship-local Y of this fragment (m)
+varying float vLocalY;        // ship-local Y of this fragment (m), AFTER the level clamp
+varying float vTop;          // interpolated lid marker (≈1 on the surface lid)
 // THREE clipping support (the cutaway "X" plane slices the flood body flush with the hull cut).
 // This is a fully custom ShaderMaterial, so the clip is NOT automatic: the material must have
 // clipping:true (injects NUM_CLIPPING_PLANES + the clippingPlanes uniform) AND these includes.
 #include <clipping_planes_pars_vertex>
 void main() {
   vec3 p = position;          // already ship-local meters (geometry built in local space)
-  vLocalY = p.y;
-  // gentle Gerstner-ish shimmer applied near the live surface only, so the pool top has life without
-  // the body below it wobbling. Applied in LOCAL space (the body rides the hull pose).
-  if (uShimmer > 0.0 && abs(p.y - uFillLocalY) < ${SURFACE_BAND.toFixed(3)}) {
+  // LEVEL CUT in the vertex stage: clamp every vertex to the live water line. The column top caps
+  // collapse onto a single flat lid exactly at uFillLocalY (ONE real top surface — no z-fight), the
+  // side walls below stay solid, and anything that was above the line becomes degenerate (zero area,
+  // nothing to draw). Replaces the old per-fragment discard-above-level (which left a hollow look).
+  p.y = min(p.y, uFillLocalY);
+  // gentle shimmer on the surface LID only, so the pool top has a little life without the solid body
+  // below it wobbling. Applied in LOCAL space (the body rides the hull pose).
+  if (uShimmer > 0.0 && aTop > 0.5) {
     float s = sin(uTime * 1.3 + p.x * 0.9 + p.z * 0.7)
             + 0.6 * sin(uTime * 0.8 - p.x * 0.5 + p.z * 1.1);
     p.y += uShimmer * s;
   }
+  vLocalY = p.y;
+  vTop = aTop;
   vec4 wp = modelMatrix * vec4(p, 1.0);
   vWorldPos = wp.xyz;
   // <clipping_planes_vertex> reads a view-space vec4 named mvPosition — provide it explicitly.
@@ -103,90 +124,71 @@ uniform float uReflClamp;
 uniform vec3 uSunDir;
 uniform vec3 uCameraPos;
 uniform float uTime;
-uniform float uTopOpacity;
-uniform float uBodyOpacity;     // body (below the surface) opacity — the solid volume
+uniform float uBodyOpacity;     // body opacity (kept for the dev knob; material is opaque so 1.0 reads)
 uniform float uWallFloorDarken; // body tone at the floor (×uDeepColor)
 uniform float uFillLocalY;      // live flood surface, ship-LOCAL Y (m)
 uniform float uFloorLocalY;     // compartment floor, ship-local Y (m)
 varying vec3 vWorldPos;
 varying float vLocalY;
+varying float vTop;
 // THREE clipping support — pairs with the vertex include (see VERT). Needs clipping:true on the mat.
 #include <clipping_planes_pars_fragment>
 
 void main() {
   // Honour the cutaway clip FIRST: discard fragments on the cut-away side so the flood body is sliced
-  // flush with the hull cut instead of the whole half's water floating in the opened interior.
+  // flush with the hull cut (the kept-half's far inner walls then read as the dark-water cross-section).
   #include <clipping_planes_fragment>
-  // CUT TO THE LIVE WATER LEVEL: the body geometry spans floor→column-top, but the pool only fills up
-  // to the current flood height. Discard everything above the surface so the water surface sits at the
-  // live level and the room above it reads as empty (timber / void) — the real waterline in the room.
-  if (vLocalY > uFillLocalY + ${SURFACE_BAND.toFixed(3)}) discard;
 
-  // depth fraction: 0 at the surface → 1 at the floor (darken the body downward)
+  // DEPTH below the waterline: 0 at the surface → 1 at the floor. The body darkens downward so it
+  // reads as a real solid volume of water, not a glass panel.
   float span = max(uFillLocalY - uFloorLocalY, 1e-3);
   float depthF = clamp((uFillLocalY - vLocalY) / span, 0.0, 1.0);
-  // is this fragment AT the surface (the thin top band)? → render the sea-look surface sheet.
-  bool isTop = vLocalY > uFillLocalY - ${SURFACE_BAND.toFixed(3)};
+
+  // Is this the surface LID? vTop comes from the per-vertex aTop marker; on the clamped top caps it is
+  // ~1 and only there. (No screen-depth-coincident branch — that was the old z-fight.)
+  bool isLid = vTop > 0.5;
 
   vec3 V = normalize(uCameraPos - vWorldPos);
-  vec3 N;
-  if (isTop) {
-    // calm pool surface: a mostly-up normal with a slow ripple so the sky reflection + body gradient
-    // read like the open sea's, distorted just a little.
-    float nx = 0.12 * sin(uTime * 1.1 + vWorldPos.x * 0.8 + vWorldPos.z * 0.6);
-    float nz = 0.12 * sin(uTime * 0.9 - vWorldPos.x * 0.5 + vWorldPos.z * 0.9);
-    N = normalize(vec3(nx, 1.0, nz));
-  } else {
-    // body: face outward toward the viewer (a horizontal-ish normal) so it picks up the deep body
-    // colour, not the sky — that's what reads as the dim solid body of water filling the room.
-    vec3 horiz = vec3(V.x, 0.0, V.z);
-    N = normalize(vec3(0.0, 0.2, 0.0) + (length(horiz) > 1e-3 ? normalize(horiz) : vec3(0.0, 0.0, 1.0)));
-  }
 
-  float facing = max(dot(N, V), 0.0);
-  vec3 water = mix(uShallowColor, uDeepColor, facing);
+  // base body water tone: dark navy, darkening with depth toward the floor.
+  vec3 bodyTop = uDeepColor;
+  vec3 bodyBot = uDeepColor * uWallFloorDarken;
+  vec3 col = mix(bodyTop, bodyBot, depthF);
 
-  vec3 col;
-  float alpha;
-  if (isTop) {
-    // TOP surface: the SAME sea body colour + a clone of the sea's Fresnel sky-env reflection, held
-    // well down (a flat enclosed pool in a shadowed hold would otherwise read as a bright mirror).
+  if (isLid) {
+    // SURFACE LID: a subtle sky/Fresnel surface term on top of the body tone, so the waterline reads as
+    // a calm pool top catching a little sky — held well down (an enclosed shadowed hold is not a mirror).
+    float nx = 0.10 * sin(uTime * 1.1 + vWorldPos.x * 0.8 + vWorldPos.z * 0.6);
+    float nz = 0.10 * sin(uTime * 0.9 - vWorldPos.x * 0.5 + vWorldPos.z * 0.9);
+    vec3 N = normalize(vec3(nx, 1.0, nz));
+    float facing = max(dot(N, V), 0.0);
     float fresnel = pow(1.0 - facing, 5.0);
     vec3 Rr = reflect(-V, N);
     Rr.y = max(Rr.y, 0.02);
     vec3 skyRefl = (uHasEnv > 0.5) ? textureCube(uSkyEnv, Rr).rgb : uSkyColor;
     skyRefl = min(skyRefl, vec3(uReflClamp));
-    float reflF = clamp((min(fresnel, 0.35) * 0.6 + 0.04) * uReflStrength * 0.6, 0.0, 0.22);
-    col = mix(water * 0.82, skyRefl, reflF);
+    float reflF = clamp((min(fresnel, 0.35) * 0.6 + 0.05) * uReflStrength * 0.6, 0.0, 0.22);
+    // shallow-tinted top water, then a touch of sky reflection, then a faint sun glint.
+    vec3 lidWater = mix(uDeepColor, uShallowColor, 0.35);
+    col = mix(lidWater, skyRefl, reflF);
     vec3 H = normalize(normalize(uSunDir) + V);
-    float ndh = max(dot(N, H), 0.0);
-    col += uSunColor * pow(ndh, 60.0) * 0.05;
-    // a faint foam line right at the waterline
+    col += uSunColor * pow(max(dot(N, H), 0.0), 60.0) * 0.05;
+    // a faint foam shimmer right at the waterline
     float foam = 0.4 + 0.4 * sin(uTime * 2.2 + vWorldPos.x * 1.4 + vWorldPos.z * 1.1);
-    col = mix(col, vec3(0.7, 0.8, 0.84), clamp(foam, 0.0, 1.0) * 0.18);
-    alpha = uTopOpacity;
-  } else {
-    // BODY: the dim solid interior of the volume, darkening from just-under-the-surface down to the
-    // floor. Reads as filled water, not a glass panel.
-    vec3 bodyTop = uDeepColor;
-    vec3 bodyBot = uDeepColor * uWallFloorDarken;
-    col = mix(bodyTop, bodyBot, depthF);
-    float sheen = (1.0 - depthF) * 0.08 * uReflStrength;
-    col = mix(col, min(uSkyColor, vec3(uReflClamp)), sheen);
-    alpha = uBodyOpacity;
+    col = mix(col, vec3(0.7, 0.8, 0.84), clamp(foam, 0.0, 1.0) * 0.12);
   }
 
-  if (alpha < 0.01) discard;
-  gl_FragColor = vec4(col, alpha);
+  // opaque body — uBodyOpacity is kept live for the dev knob, but the material does not blend, so this
+  // is effectively 1.0 (a translucent body is what z-fought before). Clamp away any sub-1 surprise.
+  gl_FragColor = vec4(col, max(uBodyOpacity, 1.0));
 }
 `;
 
 interface CF {
   curve: FillCurve;
   floorLocalY: number; // local-Y of the compartment floor (m)
-  mesh: THREE.Mesh; // ONE merged body following the true cell footprint
+  mesh: THREE.Mesh; // ONE merged SOLID body following the true cell footprint
   mat: THREE.ShaderMaterial;
-  uTopOpacity: { value: number };
   uBodyOpacity: { value: number };
   uShimmer: { value: number };
   uFillLocalY: { value: number };
@@ -244,49 +246,86 @@ export class CompartmentFluid {
 
   /**
    * Build ONE merged BufferGeometry for the water body straight from the compartment's cell set, in
-   * ship-LOCAL meters. We emit only the OUTWARD-facing skin: for each interior-air cell, a face is
-   * emitted on a side only where the neighbouring voxel is NOT part of this compartment. The result is
-   * a clean closed shell whose silhouette EXACTLY follows the true (tapered/curved/L-shaped) cell shape
-   * — no geometry exists outside a real cell, so nothing can poke out of the hull (the prior bounding-
-   * rectangle bug). Built once — cells never change after build. The fill level is applied later as a
-   * fragment-shader cut, not by reshaping this geometry.
+   * ship-LOCAL meters, as a SOLID FILLED VOLUME (not a hollow boundary skin — that was the root bug).
+   *
+   * For each occupied (x,z) COLUMN we emit ONE full CLOSED box spanning that column's floor→ceiling
+   * (the lowest occupied cell's bottom to the highest occupied cell's top). The union of columns
+   * follows the real (tapered/curved/L-shaped) compartment footprint EXACTLY and is gap-free — no
+   * geometry exists outside an occupied column, so nothing can poke out of the hull, and there is no
+   * hollow interior to reveal under the cutaway: the box's far inner wall shows as a dark-water
+   * cross-section. Interior shared faces between columns are fine — they're occluded (opaque, depthWrite).
+   *
+   * A per-vertex `aTop` attribute is 1.0 on each box's TOP-cap vertices and 0.0 elsewhere, so the
+   * vertex shader can clamp+identify the surface lid and the fragment shader can give ONLY the lid a
+   * surface/sky term. Built ONCE — cells never change after build; the live water LEVEL is applied as a
+   * vertex-stage clamp (y = min(y, uFillLocalY)), not by reshaping this geometry.
    */
   private buildBodyGeometry(c: Compartment): THREE.BufferGeometry {
     const nx = this.nx;
     const ny = this.ny;
-    const has = (x: number, y: number, z: number): boolean =>
-      x >= 0 && z >= 0 && y >= 0 && x < nx && c.cells.has(x + nx * (y + ny * z));
     const s = VOXEL_SIZE;
+
+    // Collapse the cell set to per-(x,z) column extents: [yMin, yMax] inclusive of occupied cells.
+    // A column may be non-contiguous (a notch); a single solid box floor→top is the right read for a
+    // body of water (the gap would be submerged interior anyway), and keeps the volume gap-free.
+    const colMin = new Map<number, number>(); // key = x + nx*z  → min occupied y
+    const colMax = new Map<number, number>(); // key = x + nx*z  → max occupied y
+    for (const p of c.cells) {
+      const x = p % nx;
+      const y = Math.floor(p / nx) % ny;
+      const z = Math.floor(p / (nx * ny));
+      const key = x + nx * z;
+      const lo = colMin.get(key);
+      if (lo === undefined || y < lo) colMin.set(key, y);
+      const hi = colMax.get(key);
+      if (hi === undefined || y > hi) colMax.set(key, y);
+    }
+
     const pos: number[] = [];
+    const top: number[] = []; // aTop per vertex (1 on the top cap, 0 elsewhere)
     const idx: number[] = [];
     let base = 0;
+    // push one quad (a,b,c,d CCW) with a uniform aTop flag for its 4 verts
     const quad = (
+      isTop: number,
       ax: number, ay: number, az: number,
       bx: number, by: number, bz: number,
       cx: number, cy: number, cz: number,
       dx: number, dy: number, dz: number,
     ) => {
       pos.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
+      top.push(isTop, isTop, isTop, isTop);
       idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
       base += 4;
     };
-    for (const p of c.cells) {
-      const x = p % nx;
-      const y = Math.floor(p / nx) % ny;
-      const z = Math.floor(p / (nx * ny));
+
+    for (const [key, yLo] of colMin) {
+      const yHi = colMax.get(key)!;
+      const x = key % nx;
+      const z = Math.floor(key / nx);
       const x0 = x * s, x1 = (x + 1) * s;
-      const y0 = y * s, y1 = (y + 1) * s;
       const z0 = z * s, z1 = (z + 1) * s;
-      // Emit a face only where the neighbour is OUTSIDE the compartment → the outer skin only.
-      if (!has(x - 1, y, z)) quad(x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0); // -x
-      if (!has(x + 1, y, z)) quad(x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1); // +x
-      if (!has(x, y - 1, z)) quad(x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1); // -y (floor)
-      if (!has(x, y + 1, z)) quad(x0, y1, z0, x0, y1, z1, x1, y1, z1, x1, y1, z0); // +y (ceiling)
-      if (!has(x, y, z - 1)) quad(x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0); // -z
-      if (!has(x, y, z + 1)) quad(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1); // +z
+      const y0 = yLo * s;          // column floor
+      const y1 = (yHi + 1) * s;    // column ceiling (top of the highest cell)
+      // FULL CLOSED BOX (all 6 faces). Only the +y face carries aTop=1 (the surface lid). Winding is
+      // outward-facing, but the material is DoubleSide so the far walls show through the cut regardless.
+      // −x
+      quad(0, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0);
+      // +x
+      quad(0, x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1);
+      // −y (floor)
+      quad(0, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1);
+      // +y (ceiling) — the SURFACE LID after the vertex clamp
+      quad(1, x0, y1, z0, x0, y1, z1, x1, y1, z1, x1, y1, z0);
+      // −z
+      quad(0, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0);
+      // +z
+      quad(0, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1);
     }
+
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+    g.setAttribute("aTop", new THREE.BufferAttribute(new Float32Array(top), 1));
     g.setIndex(idx);
     return g;
   }
@@ -296,7 +335,6 @@ export class CompartmentFluid {
     const floorLocalY = c.bboxMin[1] * VOXEL_SIZE; // bottom of the lowest cell layer
 
     const oc = this.oceanUniforms();
-    const uTopOpacity = { value: TUN.flood.render.topOpacity };
     const uBodyOpacity = { value: TUN.flood.render.skirtOpacity };
     const uShimmer = { value: TUN.flood.render.shimmer };
     const uFillLocalY = { value: floorLocalY };
@@ -304,17 +342,16 @@ export class CompartmentFluid {
     const mat = new THREE.ShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
-      transparent: true,
-      // SOLID BODY (BUG-2): WRITE DEPTH. The body USED to lean on the opaque hull's depth buffer to
-      // hide its own overlapping faces (depthWrite:false); but where the cutaway clips the near hull
-      // away, that occlusion is gone exactly where you look in, so the double-sided front/back faces
-      // + the top "surface" band z-fought (coincident depth, order-dependent alpha blend) → flicker +
-      // a thin "no body" sheet. With depthWrite the NEAREST face wins and occludes the ones behind it,
-      // so the body reads as a SOLID filled volume in the open cut — independent of uCameraPos (which
-      // the world seam never feeds, so a FrontSide-only cull would risk holes: the cells emit an
-      // OUTWARD skin, so the kept-half walls present their BACK faces to a camera looking into the
-      // cut; DoubleSide keeps those visible while depthWrite removes the flicker).
+      // OPAQUE SOLID BODY — the heart of the fix. The prior versions were `transparent:true` on a
+      // self-overlapping DoubleSide skin: blended faces fought for the same depth, order-dependent →
+      // TV-static + a two-tone waterline z-fight + dropped faces + a hollow "silk sheet" look. An
+      // opaque body with depthWrite makes the NEAREST fragment win unambiguously (no alpha sort, no
+      // blend race), so the volume reads SOLID and stable. DoubleSide so the cutaway's far inner wall
+      // shows as a dark-water cross-section (no stencil/cap pass needed); opaque DoubleSide does NOT
+      // z-fight because depthWrite resolves nearest with no blending.
+      transparent: false,
       depthWrite: true,
+      depthTest: true,
       side: THREE.DoubleSide,
       // make the fully-custom shader HONOUR the cutaway clip plane: injects NUM_CLIPPING_PLANES +
       // the clippingPlanes uniform array that the clipping_planes_* includes consume. Without this,
@@ -323,7 +360,6 @@ export class CompartmentFluid {
       uniforms: {
         ...oc,
         uCameraPos: { value: new THREE.Vector3() },
-        uTopOpacity,
         uBodyOpacity,
         uShimmer,
         uWallFloorDarken: { value: WALL_FLOOR_DARKEN },
@@ -339,8 +375,8 @@ export class CompartmentFluid {
       mat.needsUpdate = true;
     }
 
-    // ONE merged body following the TRUE cell footprint, in ship-local meters. Parented under the ship
-    // group, so it heels/pitches/heaves WITH the hull (the room is part of the hull). No per-frame
+    // ONE merged SOLID body following the TRUE cell footprint, in ship-local meters. Parented under the
+    // ship group, so it heels/pitches/heaves WITH the hull (the room is part of the hull). No per-frame
     // scaling/repositioning — only the fill-level uniform changes.
     const geo = this.buildBodyGeometry(c);
     const mesh = new THREE.Mesh(geo, mat);
@@ -350,7 +386,7 @@ export class CompartmentFluid {
 
     this.comps.set(c.id, {
       curve, floorLocalY, mesh, mat,
-      uTopOpacity, uBodyOpacity, uShimmer, uFillLocalY, uFloorLocalY,
+      uBodyOpacity, uShimmer, uFillLocalY, uFloorLocalY,
     });
   }
 
@@ -372,7 +408,6 @@ export class CompartmentFluid {
 
       // keep the shared shimmer/opacity uniforms live with the dev panel
       cf.uShimmer.value = TUN.flood.render.shimmer;
-      cf.uTopOpacity.value = TUN.flood.render.topOpacity;
       cf.uBodyOpacity.value = TUN.flood.render.skirtOpacity;
       if (cameraPos) (cf.mat.uniforms.uCameraPos.value as THREE.Vector3).copy(cameraPos);
 
@@ -382,8 +417,8 @@ export class CompartmentFluid {
         continue;
       }
       // Per-frame work is just the fill-level uniform — the geometry is static and already the right
-      // shape. The shader discards everything above this level, so the body fills the room only up to
-      // the live waterline.
+      // shape. The vertex shader clamps every vertex to this level, so the solid body fills the room
+      // up to the live waterline and the lid sits exactly on it.
       cf.mesh.visible = true;
       cf.uFillLocalY.value = fillHeightLocal(cf.curve, c.waterVolume);
       cf.uFloorLocalY.value = cf.floorLocalY;

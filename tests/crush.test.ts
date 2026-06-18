@@ -87,6 +87,17 @@ describe("breakImpulse", () => {
     const dvHeavy = breakImpulse(8000, vc, energy, CAP) / 8000;
     expect(dvHeavy).toBeLessThan(dvLight); // a heavy hull barely slows -> plows through
   });
+
+  it("clamps a pathologically huge closing speed (defensive net, determinism preserved)", () => {
+    // A teleport-deep degenerate overlap could feed an enormous vc; the constant 50 m/s clamp caps
+    // the impulse so a corrupt step can't launch a hull. With the closing-KE fully absorbed the
+    // result equals μ·min(vc,50) — a HUGE vc therefore yields the SAME bounded impulse as vc=50.
+    const mu = 2000;
+    const huge = breakImpulse(mu, 1e6, 1e30, CAP);
+    expect(Number.isFinite(huge)).toBe(true);
+    expect(huge).toBeCloseTo(mu * 50, 6);          // clamped to 50 m/s, not 1e6
+    expect(huge).toBe(breakImpulse(mu, 50, 1e30, CAP)); // deterministic: vc≥50 collapses to the clamp
+  });
 });
 
 describe("distributeClosingDrag", () => {

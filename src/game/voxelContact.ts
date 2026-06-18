@@ -255,7 +255,10 @@ export class VoxelContact {
       this.velAt(this.comB, lvB, avB, bcx, bcy, bcz, this.vB);
       const sA = this.vA.x * dhx + this.vA.z * dhz; // A's speed along the closing axis d̂
       const sB = this.vB.x * dhx + this.vB.z * dhz; // B's speed along d̂ (0 for static terrain)
-      vClose = sA - sB;
+      // DEFENSIVE clamp: real closing speeds are <~10 m/s; 50 is a generous ceiling that only catches
+      // a teleport-deep degenerate overlap (whose vClose² would otherwise blow up the energy budget
+      // and the bite impulse). Cannot change a healthy frame. Mirrored in sim/crush.breakImpulse.
+      vClose = Math.min(sA - sB, 50);
       const budget = Math.min(0.5 * mu * vClose * vClose, TUN.crush.maxStepEnergy);
       energy = this.carveWithinBudget(a, b, brokenA, brokenB, this.ptsA, this.ptsB, bcx, bcy, bcz, tough, budget);
       removedA = this.lastRemovedA; removedB = this.lastRemovedB;
@@ -269,7 +272,11 @@ export class VoxelContact {
       // split into the aggressor-drag + (tunable) momentum-transfer mix (see crush.splitClosingImpulse):
       // transferFrac 0 = a stationary victim isn't shoved at all; higher = it picks up more of the hit.
       // For static terrain (sB=0, huge mB) jA ≈ mShip·dvClose and jB lands on the immovable rock (no-op).
-      const { jA, jB } = splitClosingImpulse(mA, mB, mu, sA, sB, dvClose, TUN.crush.transferFrac);
+      let { jA, jB } = splitClosingImpulse(mA, mB, mu, sA, sB, dvClose, TUN.crush.transferFrac);
+      // DEFENSIVE finite guard: a NaN/Inf impulse (e.g. from a degenerate mass/velocity) must never
+      // reach applyImpulseAtPoint and launch a hull. Real impulses are finite; this only catches corruption.
+      if (!Number.isFinite(jA)) jA = 0;
+      if (!Number.isFinite(jB)) jB = 0;
       this.pushAtComHeight(a, bcx, bcz, this.comA.y, -dhx, -dhz, jA); // slow A's approach (+d̂)
       this.pushAtComHeight(b, bcx, bcz, this.comB.y, dhx, dhz, jB);   // drag/transfer onto B (−d̂; no-op for terrain)
       force = (jA + jB) / dt;

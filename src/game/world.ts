@@ -6,6 +6,14 @@ import { Ship } from "./ship";
 import { VoxelContact, type ContactTarget } from "./voxelContact";
 import { RigManager } from "./rig";
 
+// Defensive post-step sanitizer thresholds (the "ship launches into the air" safety net). These are
+// belt-and-suspenders over the root-cause inertia floor (done in ship.ts): far above any real value
+// (real closing <10 m/s, real angular tiny, the world is metres across), so a healthy frame is never
+// touched — they only fire when a body has already gone non-finite or absurd from a corrupt step.
+const SANE_LIN = 120; // m/s — cap linear speed
+const SANE_ANG = 30;  // rad/s — cap angular speed
+const SANE_Y = 5000;  // m — cap |translation.y|
+
 /**
  * Game orchestration: owns ships, runs the fixed-step physics loop with an
  * accumulator, and keeps a deterministic simulation clock (simTime) that the
@@ -126,6 +134,10 @@ export class GameWorld {
       // The EventQueue is REQUIRED for the hooks to fire in this Rapier build (see Physics.events).
       a = performance.now();
       this.physics.world.step(this.physics.events, this.physics.hooks);
+      // SAFETY NET: clamp every dynamic ship body (player + ALL fleet/enemy ships — `this.ships` holds
+      // them all) to sane velocity/position after the solver, so a corrupt step can never launch a hull
+      // hundreds of feet into the air. Pure clamp, ~6 cheap reads/ship; thresholds far above real values.
+      for (const ship of this.ships) this.sanitizeBody(ship.body);
       tm.rapier += performance.now() - a;
     }
     const v = performance.now();
@@ -142,5 +154,41 @@ export class GameWorld {
     this.rig.refresh(); // re-pose falling-mast wreckage smoothly between fixed steps
     tm.visual = performance.now() - v;
     tm.total = performance.now() - tStart;
+  }
+
+  /** Post-step safety clamp for one dynamic ship body. If any velocity/position component has gone
+   *  non-finite, or speed/spin/altitude exceeds the sane caps, zero or scale the offender so a corrupt
+   *  step can't fling a hull. A no-op on every healthy frame (thresholds are far above real values). */
+  private sanitizeBody(body: Ship["body"]): void {
+    const lv = body.linvel();
+    const ls2 = lv.x * lv.x + lv.y * lv.y + lv.z * lv.z;
+    if (!Number.isFinite(ls2)) {
+      body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    } else if (ls2 > SANE_LIN * SANE_LIN) {
+      const s = SANE_LIN / Math.sqrt(ls2); // scale back to the cap, preserving direction
+      body.setLinvel({ x: lv.x * s, y: lv.y * s, z: lv.z * s }, true);
+    }
+
+    const av = body.angvel();
+    const as2 = av.x * av.x + av.y * av.y + av.z * av.z;
+    if (!Number.isFinite(as2)) {
+      body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    } else if (as2 > SANE_ANG * SANE_ANG) {
+      const s = SANE_ANG / Math.sqrt(as2);
+      body.setAngvel({ x: av.x * s, y: av.y * s, z: av.z * s }, true);
+    }
+
+    const tr = body.translation();
+    if (!Number.isFinite(tr.x) || !Number.isFinite(tr.y) || !Number.isFinite(tr.z) || Math.abs(tr.y) > SANE_Y) {
+      // Keep finite x/z; reset a non-finite/absurd y (and any non-finite x/z) to a sane value.
+      body.setTranslation(
+        {
+          x: Number.isFinite(tr.x) ? tr.x : 0,
+          y: Number.isFinite(tr.y) && Math.abs(tr.y) <= SANE_Y ? tr.y : 0,
+          z: Number.isFinite(tr.z) ? tr.z : 0,
+        },
+        true,
+      );
+    }
   }
 }

@@ -55,14 +55,28 @@ export function segmentSailHit(
   const half = thickness / 2;
   if (Math.abs(dx) < 1e-9) {
     // beam-wise (parallel to the cloth): tears only if it runs within the canvas depth AND some
-    // point of its sweep lands inside the rectangle.
+    // point of its sweep ACTUALLY lands inside the y/z rectangle. The old code trusted 3 coarse
+    // samples (t∈{0,0.5,1}); on a long oblique per-frame segment (~2.4 m) grazing the plane that
+    // both MISSED real crossings between samples and FALSE-POSITIVED when the true overlap fell
+    // outside [0,1] — "holes with no hit". Solve the exact y/z slab-interval overlap instead.
     if (Math.abs(p0.x - sail.planeX) > half) return null;
-    for (const t of [0, 0.5, 1]) {
-      const y = p0.y + (p1.y - p0.y) * t;
-      const z = p0.z + (p1.z - p0.z) * t;
-      if (y >= sail.yMin && y <= sail.yMax && z >= sail.zMin && z <= sail.zMax) return { y, z };
-    }
-    return null;
+    // segment-parameter interval [0,1] clipped to the y band, then the z band (1-D slab tests).
+    let tEnter = 0;
+    let tExit = 1;
+    const clip = (a: number, lo: number, hi: number, d: number): boolean => {
+      if (Math.abs(d) < 1e-12) return a >= lo && a <= hi; // axis-constant: in-band or reject whole span
+      let t1 = (lo - a) / d;
+      let t2 = (hi - a) / d;
+      if (t1 > t2) { const s = t1; t1 = t2; t2 = s; }
+      tEnter = Math.max(tEnter, t1);
+      tExit = Math.min(tExit, t2);
+      return tEnter <= tExit;
+    };
+    if (!clip(p0.y, sail.yMin, sail.yMax, p1.y - p0.y)) return null;
+    if (!clip(p0.z, sail.zMin, sail.zMax, p1.z - p0.z)) return null;
+    if (tExit < 0 || tEnter > 1) return null;
+    const t = Math.min(Math.max(tEnter, 0), 1); // first in-rectangle point on the swept segment
+    return { y: p0.y + (p1.y - p0.y) * t, z: p0.z + (p1.z - p0.z) * t };
   }
   // Real SLAB-INTERVAL overlap test for the fore-aft band [planeX-half, planeX+half] (the bare plane
   // crossing when half=0). The two plane crossings give the segment-parameter interval the ray spends

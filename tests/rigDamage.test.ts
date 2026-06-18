@@ -42,6 +42,37 @@ describe("rig damage geometry (round 7)", () => {
     expect(segmentSailHit({ x: 12, y: 11, z: 5 }, { x: 20, y: 11, z: 5 }, SAIL, 1.0)).toBeNull();
   });
 
+  it("grazing edge-case: a beam-wise segment in the slab but never inside the rectangle is NOT a hit", () => {
+    // A long oblique per-frame ball segment runs PARALLEL to the cloth plane (x≈const, inside the
+    // 1 m slab) but its y/z sweep skims ALONG the rectangle's edge and never actually enters it.
+    // The old t∈{0,0.5,1} sampling could false-positive ("holes with no hit"); the exact y/z
+    // interval test must return null.
+    // travels the full z-span at y=7.4 — below the foot (yMin 8) the whole way → no rectangle entry.
+    expect(segmentSailHit({ x: 10.1, y: 7.4, z: 0 }, { x: 10.1, y: 7.4, z: 12 }, SAIL, 1.0)).toBeNull();
+    // a diagonal sweep that crosses the y band and the z band but in DISJOINT parameter windows:
+    // z falls out the bottom of [zMin,zMax] (band t∈[0,0.167]) well before y rises into [yMin,yMax]
+    // (band t∈[0.5,1]) → the segment is never inside BOTH at once, so no rectangle entry.
+    expect(segmentSailHit({ x: 10.1, y: 7, z: 4 }, { x: 10.1, y: 9, z: -8 }, SAIL, 1.0)).toBeNull();
+  });
+
+  it("grazing edge-case: a beam-wise segment that DOES cross the rectangle still tears it", () => {
+    // a diagonal beam-wise sweep whose y AND z ranges overlap inside the rectangle at the same t.
+    const hit = segmentSailHit({ x: 10.1, y: 7, z: 1 }, { x: 10.1, y: 13, z: 8 }, SAIL, 1.0);
+    expect(hit).not.toBeNull();
+    expect(hit!.y).toBeGreaterThanOrEqual(SAIL.yMin);
+    expect(hit!.y).toBeLessThanOrEqual(SAIL.yMax);
+    expect(hit!.z).toBeGreaterThanOrEqual(SAIL.zMin);
+    expect(hit!.z).toBeLessThanOrEqual(SAIL.zMax);
+  });
+
+  it("a clean fore-aft ball still punches a hole through the cloth", () => {
+    // regression guard: the grazing fix must NOT weaken the legitimate perpendicular pierce.
+    const hit = segmentSailHit({ x: 0, y: 11, z: 5.5 }, { x: 20, y: 11, z: 5.5 }, SAIL, 0.25);
+    expect(hit).not.toBeNull();
+    expect(hit!.y).toBeCloseTo(11);
+    expect(hit!.z).toBeCloseTo(5.5);
+  });
+
   const MAST = { x: 5, z: 5, yBase: 6, yTop: 26, r: 0.3 };
 
   it("a ball through the trunk is a mast hit; a near miss is not", () => {
