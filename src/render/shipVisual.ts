@@ -711,16 +711,40 @@ export class ShipVisual {
     if (this.rudderBlade) this.rudderBlade.scale.y = 0.3 + 0.7 * hpFrac;
   }
 
-  /** Rebuild every chunk that the grid has marked dirty. Also (while cut away) swaps the cull half if
-   *  the camera has crossed the centerline — so the open cross-section keeps facing the viewer, and a
-   *  chunk carved by a cannon DURING cutaway re-meshes with the cut still applied (remeshChunk reads
-   *  this.cutawayPredicate live), making cutaway + live damage compose for free. */
+  /** Chunks marked dirty by the grid that still owe a re-mesh, accumulated across frames so a wide
+   *  hit (4–12 chunks) AMORTIZES over several frames at REMESH_BUDGET/frame instead of one 5–12 ms
+   *  stall the instant wood comes off (the "massive lag when hitting ships" spike). The grid + collider
+   *  stay synchronous (gameplay correct); only the visible mesh trails by a frame or two. A chunk re-
+   *  dirtied while still queued stays a single entry (Set), so nothing is re-meshed twice or dropped. */
+  private pendingRemesh = new Set<string>();
+  /** Max chunks re-meshed per render frame on the damage path. Each meshChunk is a full 16³ greedy
+   *  sweep (~0.3–1 ms); 3 keeps the per-frame mesh cost well under a frame while draining a typical
+   *  ram's dirty set in 2–4 frames. The EXPLICIT remeshAll() (cutaway toggle / construction) ignores
+   *  this — it is a deliberate one-time op and must finish the whole hull in the frame it runs. */
+  private static REMESH_BUDGET = 3;
+
+  /** Rebuild dirty chunks, BUDGETED to REMESH_BUDGET per frame so a wide hit doesn't fold a 12 ms
+   *  stall into one frame. Also (while cut away) swaps the cull half if the camera has crossed the
+   *  centerline — so the open cross-section keeps facing the viewer, and a chunk carved by a cannon
+   *  DURING cutaway re-meshes with the cut still applied (remeshChunk reads this.cutawayPredicate
+   *  live), making cutaway + live damage compose for free. */
   refresh(): void {
-    this.updateCutawayCull(); // may remeshAll on a camera-side flip
+    this.updateCutawayCull(); // may remeshAll on a camera-side flip (drains pendingRemesh below)
+    // Fold every newly-dirty chunk into the pending queue (dedups against any still-owed re-mesh),
+    // then clear the grid's flag set — the queue, not dirtyChunks, now owns the outstanding work.
     const dirty = this.build.grid.dirtyChunks;
-    if (dirty.size === 0) return;
-    for (const key of dirty) this.remeshChunk(key);
-    dirty.clear();
+    if (dirty.size > 0) {
+      for (const key of dirty) this.pendingRemesh.add(key);
+      dirty.clear();
+    }
+    if (this.pendingRemesh.size === 0) return;
+    // Drain up to the budget this frame; the rest carry to subsequent frames (each frame stays smooth).
+    let done = 0;
+    for (const key of this.pendingRemesh) {
+      this.remeshChunk(key);
+      this.pendingRemesh.delete(key);
+      if (++done >= ShipVisual.REMESH_BUDGET) break;
+    }
   }
 
   remeshAll(): void {
@@ -732,7 +756,11 @@ export class ShipVisual {
         }
       }
     }
+    // a deliberate whole-hull pass (construction / cutaway toggle): every chunk is now freshly meshed,
+    // so clear BOTH the grid's dirty flags AND any budgeted backlog — otherwise a queued pre-toggle
+    // chunk would later re-mesh WITHOUT honoring the (now-changed) cut and reopen the half-cut bug.
     this.build.grid.dirtyChunks.clear();
+    this.pendingRemesh.clear();
   }
 
   private remeshChunk(key: string): void {

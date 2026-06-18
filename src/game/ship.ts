@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
-import { G, MAX_CARVE_CELLS, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
+import { CHUNK_SIZE, G, MAX_CARVE_CELLS, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
 import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeVoxelColumns, updateVoxelColumns, enclosedCellSet, type VoxelColumn } from "../sim/buoyancy";
 import { planCarve } from "../sim/carve";
 import { planCrush } from "../sim/crush";
-import { computeSurface, updateSurfaceAfterRemoval, unpackCell } from "../sim/surfaceSet";
+import { computeSurface, updateSurfaceAfterRemoval, unpackCell, packCell } from "../sim/surfaceSet";
 import {
   floodStep,
   equalizeFlooding,
@@ -22,7 +22,7 @@ import { findSevered, type Island } from "../sim/connectivity";
 import { mountSolidCount, mountLost } from "../sim/cannonMount";
 import { MATERIALS, breakEnergy, SPAR } from "../sim/materials";
 import { segmentBoxHit, segmentSailHit } from "../sim/rigDamage";
-import { meshChunk } from "../render/voxelMesher";
+import { meshChunk, type ChunkMesh } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
 import type { ShipVisual, SailRecord } from "../render/shipVisual";
 import type { Physics } from "./physics";
@@ -244,6 +244,13 @@ export class Ship implements ContactTarget {
    *  hulls — boarding is gone). Enemies skip it: one fewer Rapier collider each AND no
    *  ~40 ms whole-hull deck-collider rebuild on every carve during combat. */
   private readonly walkable: boolean;
+  /** Per-chunk FULL-HULL greedy mesh cache for the walkable-deck trimesh (player only). The collider
+   *  is one Rapier trimesh so it's rebuilt whole, but the expensive greedy SWEEP (meshChunk) is the
+   *  real cost — so we re-sweep ONLY the chunks a carve touched (colliderDirtyChunks) and concat the
+   *  rest from cache. NEVER cutaway-culled (the captain walks the whole deck), so it's independent of
+   *  shipVisual's cut state. null entry = an empty chunk (cached so it isn't re-swept either). */
+  private colliderChunkCache = new Map<string, ChunkMesh | null>();
+  private colliderDirtyChunks = new Set<string>();
   /** SHIP-SHIP / debris contact shape: the real voxel hull, mutated on damage (Task 1). */
   readonly hull!: HullCollider;
 
@@ -251,8 +258,18 @@ export class Ship implements ContactTarget {
    *  incrementally as the hull is carved; the deformable contact (voxelContact) tests only
    *  these against the other hull, never the ~10^4 interior cells. */
   private surface!: Set<number>;
-  /** Lazily-materialized packed [x,y,z,...] view of `surface`, rebuilt when the set changes. */
-  private surfaceCache: Int32Array | null = null;
+  /** Packed [x,y,z, x,y,z, ...] view of `surface`, maintained INCREMENTALLY in lock-step with the Set
+   *  (seedSurfacePacked + applySurfaceDelta) instead of nulled + fully rebuilt every carve. The buffer
+   *  holds `surfacePackedLen/3` cells in its prefix; `surfaceIndex` maps each live packed key → its
+   *  cell slot so a carved cell is removed by O(1) swap-with-last. surfaceCells() returns a subarray
+   *  view of the live prefix — removing the per-step O(surface) alloc+rebuild the deformable contact
+   *  triggered twice per ship-pair during a ram. */
+  private surfacePacked: Int32Array = new Int32Array(0);
+  private surfacePackedLen = 0; // number of live cells (×3 = live Int32 entries)
+  private surfaceIndex = new Map<number, number>(); // packed key → cell slot in surfacePacked
+  /** Bumped whenever the live prefix length changes so surfaceCells() only re-slices a fresh view then. */
+  private surfaceViewLen = -1;
+  private surfaceView: Int32Array = new Int32Array(0);
 
   /** The static compartment-air cell set, cached once (compartments never change after build), so the
    *  per-carve column rebuild doesn't re-walk ~10^5 compartment cells each flush. */
@@ -272,6 +289,7 @@ export class Ship implements ContactTarget {
     this.columns = makeVoxelColumns(build.grid, build.compartments);
     this.totalCellVolume = this.sumColumnVolume();
     this.surface = computeSurface(build.grid);
+    this.seedSurfacePacked(); // build the incremental packed view + index from the initial boundary set
 
     // keel anchor: lowest solid cell on the midship centerline
     const [kx, , knz] = build.grid.dims;
@@ -542,29 +560,63 @@ export class Ship implements ContactTarget {
     }
     const grid = this.build.grid;
     const [nx, ny, nz] = grid.dims;
-    const verts: number[] = [];
-    const idxs: number[] = [];
-    const CS = 16;
-    for (let cx = 0; cx <= Math.floor((nx - 1) / CS); cx++) {
-      for (let cy = 0; cy <= Math.floor((ny - 1) / CS); cy++) {
-        for (let cz = 0; cz <= Math.floor((nz - 1) / CS); cz++) {
-          const data = meshChunk(grid, cx, cy, cz);
-          if (!data) continue;
-          const base = verts.length / 3;
-          verts.push(...data.positions);
-          for (const i of data.indices) idxs.push(base + i);
+    const cxN = Math.floor((nx - 1) / CHUNK_SIZE);
+    const cyN = Math.floor((ny - 1) / CHUNK_SIZE);
+    const czN = Math.floor((nz - 1) / CHUNK_SIZE);
+    // Re-sweep ONLY the chunks a carve touched (the greedy meshChunk sweep is the real ~40 ms cost);
+    // the rest come from cache. A first build (empty cache) sweeps everything once. NEVER cutaway —
+    // the captain walks the full deck (meshChunk called with no predicate). The single Rapier trimesh
+    // is still reassembled whole (you can't partially patch a trimesh collider) but that concat is
+    // cheap typed-array copying vs. re-greedy-meshing every chunk. Debounced to carving-pause.
+    const firstBuild = this.colliderChunkCache.size === 0;
+    for (let cx = 0; cx <= cxN; cx++)
+      for (let cy = 0; cy <= cyN; cy++)
+        for (let cz = 0; cz <= czN; cz++) {
+          const key = `${cx},${cy},${cz}`;
+          if (firstBuild || this.colliderDirtyChunks.has(key) || !this.colliderChunkCache.has(key)) {
+            this.colliderChunkCache.set(key, meshChunk(grid, cx, cy, cz));
+          }
         }
-      }
+    this.colliderDirtyChunks.clear();
+    // total size first (one alloc each), then concat — no per-chunk spread / number[] boxing.
+    let nPos = 0, nIdx = 0;
+    for (const m of this.colliderChunkCache.values()) { if (m) { nPos += m.positions.length; nIdx += m.indices.length; } }
+    if (nIdx === 0) return;
+    const verts = new Float32Array(nPos);
+    const idxs = new Uint32Array(nIdx);
+    let vo = 0, io = 0;
+    for (const m of this.colliderChunkCache.values()) {
+      if (!m) continue;
+      const base = vo / 3;
+      verts.set(m.positions, vo); vo += m.positions.length;
+      for (let i = 0; i < m.indices.length; i++) idxs[io++] = m.indices[i] + base;
     }
-    if (idxs.length === 0) return;
     this.deckCollider = world.createCollider(
-      R.ColliderDesc.trimesh(new Float32Array(verts), new Uint32Array(idxs)).setDensity(0),
+      R.ColliderDesc.trimesh(verts, idxs).setDensity(0),
       this.body,
     );
     // ship-vs-ship is deformable: flag the deck too so the contact hook fires for ANY pair of
     // ship colliders (deck-deck, deck-hull, …) and filters them out of the rigid solver —
     // otherwise two decks/superstructures rigidly hold the hulls apart and the crunch starves.
     this.deckCollider.setActiveHooks(this.phys.RAPIER.ActiveHooks.FILTER_CONTACT_PAIRS);
+  }
+
+  /** Mark the collider chunk(s) a carved cell affects DIRTY so the next debounced rebuildDeckCollider
+   *  re-sweeps just them (not the whole hull). Mirrors voxelGrid.markDirty EXACTLY — the containing
+   *  chunk PLUS, when the cell sits on a chunk face, the neighbour whose culled border faces change —
+   *  so no seam is ever left un-remeshed (the captain can't fall through a stale chunk edge). */
+  private markColliderChunkDirty(x: number, y: number, z: number): void {
+    if (!this.walkable) return; // enemies have no deck collider → nothing to track
+    const cx = Math.floor(x / CHUNK_SIZE), cy = Math.floor(y / CHUNK_SIZE), cz = Math.floor(z / CHUNK_SIZE);
+    const dc = this.colliderDirtyChunks;
+    dc.add(`${cx},${cy},${cz}`);
+    const lx = x % CHUNK_SIZE, ly = y % CHUNK_SIZE, lz = z % CHUNK_SIZE;
+    if (lx === 0 && cx > 0) dc.add(`${cx - 1},${cy},${cz}`);
+    if (ly === 0 && cy > 0) dc.add(`${cx},${cy - 1},${cz}`);
+    if (lz === 0 && cz > 0) dc.add(`${cx},${cy},${cz - 1}`);
+    if (lx === CHUNK_SIZE - 1) dc.add(`${cx + 1},${cy},${cz}`);
+    if (ly === CHUNK_SIZE - 1) dc.add(`${cx},${cy + 1},${cz}`);
+    if (lz === CHUNK_SIZE - 1) dc.add(`${cx},${cy},${cz + 1}`);
   }
 
   /** Planks left for breach repairs. */
@@ -1112,10 +1164,11 @@ export class Ship implements ContactTarget {
       this.hull.removeVoxel(x, y, z);
       gone.push([x, y, z]);
       this.dirtyColumns.add(x * nz + z); // this column changed → rebuild only it next flush
+      this.markColliderChunkDirty(x, y, z); // re-sweep only this chunk's deck mesh next rebuild
     }
     if (gone.length === 0) return 0;
-    updateSurfaceAfterRemoval(grid, this.surface, gone); // keep the boundary set fresh
-    this.surfaceCache = null;
+    updateSurfaceAfterRemoval(grid, this.surface, gone); // keep the boundary SET fresh
+    this.applySurfaceDelta(gone); // mirror the same change into the packed view incrementally (O(changes))
     this.registerBreaches(cells);
     this.damageDirty = true; // mass/column recompute is deferred + throttled (flushDamage)
     this.severDebounce.markCarved(); // a full-grid sever scan is pending, debounced to carving-pause
@@ -1148,19 +1201,98 @@ export class Ship implements ContactTarget {
   }
 
   /** Local-frame integer coords of every solid cell with an exposed face, packed
-   *  [x,y,z, x,y,z, ...]. Cached; rebuilt only when the hull is carved. Consumed by
-   *  voxelOverlap as the cheap boundary set for hull-vs-hull overlap tests. */
+   *  [x,y,z, x,y,z, ...]. Maintained INCREMENTALLY (seedSurfacePacked + applySurfaceDelta) rather than
+   *  rebuilt from the Set each carve. Consumed by voxelOverlap as the cheap boundary set for
+   *  hull-vs-hull overlap tests. Returns a subarray VIEW over the live prefix (re-sliced only when the
+   *  prefix length changes); callers read it length-bounded and never retain it across a carve. */
   surfaceCells(): Int32Array {
-    if (this.surfaceCache) return this.surfaceCache;
+    const liveLen = this.surfacePackedLen * 3;
+    if (this.surfaceViewLen !== liveLen) {
+      this.surfaceView = this.surfacePacked.subarray(0, liveLen);
+      this.surfaceViewLen = liveLen;
+    }
+    return this.surfaceView;
+  }
+
+  /** Build the packed boundary view + its key→slot index ONCE from the freshly-computed `surface` Set
+   *  (constructor only). Thereafter applySurfaceDelta keeps both in lock-step with the Set, O(changes). */
+  private seedSurfacePacked(): void {
     const [nx, ny] = this.build.grid.dims;
-    const out = new Int32Array(this.surface.size * 3);
-    let i = 0;
+    const n = this.surface.size;
+    this.surfacePacked = new Int32Array(Math.max(n * 3, 3));
+    this.surfaceIndex.clear();
+    let slot = 0;
     for (const key of this.surface) {
       const [x, y, z] = unpackCell(key, nx, ny);
-      out[i++] = x; out[i++] = y; out[i++] = z;
+      const o = slot * 3;
+      this.surfacePacked[o] = x; this.surfacePacked[o + 1] = y; this.surfacePacked[o + 2] = z;
+      this.surfaceIndex.set(key, slot);
+      slot++;
     }
-    this.surfaceCache = out;
-    return out;
+    this.surfacePackedLen = slot;
+    this.surfaceViewLen = -1; // force surfaceCells() to re-slice
+  }
+
+  /** Mirror a carve into the packed boundary view, having ALREADY updated the `surface` Set (the source
+   *  of truth) via updateSurfaceAfterRemoval. Removing solid material only ever (a) drops the removed
+   *  cells and (b) EXPOSES their solid face-neighbours (surfaceSet's invariant: an existing surface cell
+   *  stays surface), so the ONLY cells whose membership can have changed are the removed cells and their
+   *  face-neighbours. We reconcile JUST those candidates against the Set — O(changes), no full rescan:
+   *    in Set & not indexed → append (grow buffer if needed);  indexed & not in Set → O(1) swap-remove.
+   *  Result is bit-for-bit the same SET of cells a from-scratch rebuild would hold (only order differs,
+   *  which the consumer — an unordered overlap test — does not depend on). */
+  private applySurfaceDelta(removed: [number, number, number][]): void {
+    const [nx, ny, nz] = this.build.grid.dims;
+    // candidate keys: each removed cell + its 6 face-neighbours (dedup so a cluster reconciles once).
+    const cand = new Set<number>();
+    for (const [x, y, z] of removed) {
+      cand.add(packCell(x, y, z, nx, ny));
+      if (x > 0) cand.add(packCell(x - 1, y, z, nx, ny));
+      if (x + 1 < nx) cand.add(packCell(x + 1, y, z, nx, ny));
+      if (y > 0) cand.add(packCell(x, y - 1, z, nx, ny));
+      if (y + 1 < ny) cand.add(packCell(x, y + 1, z, nx, ny));
+      if (z > 0) cand.add(packCell(x, y, z - 1, nx, ny));
+      if (z + 1 < nz) cand.add(packCell(x, y, z + 1, nx, ny));
+    }
+    for (const key of cand) {
+      const inSet = this.surface.has(key);
+      const slot = this.surfaceIndex.get(key);
+      if (inSet && slot === undefined) this.surfacePushCell(key);
+      else if (!inSet && slot !== undefined) this.surfaceSwapRemove(key, slot);
+    }
+    this.surfaceViewLen = -1; // prefix changed → surfaceCells() re-slices a fresh view
+  }
+
+  /** Append one boundary cell to the packed view, growing the buffer (1.5×) if full. */
+  private surfacePushCell(key: number): void {
+    const [nx, ny] = this.build.grid.dims;
+    const [x, y, z] = unpackCell(key, nx, ny);
+    const slot = this.surfacePackedLen;
+    if ((slot + 1) * 3 > this.surfacePacked.length) {
+      const grown = new Int32Array(Math.max(this.surfacePacked.length * 1.5 | 0, (slot + 1) * 3));
+      grown.set(this.surfacePacked);
+      this.surfacePacked = grown;
+    }
+    const o = slot * 3;
+    this.surfacePacked[o] = x; this.surfacePacked[o + 1] = y; this.surfacePacked[o + 2] = z;
+    this.surfaceIndex.set(key, slot);
+    this.surfacePackedLen = slot + 1;
+  }
+
+  /** Remove one boundary cell from the packed view by moving the LAST live cell into its slot (O(1));
+   *  keeps the live prefix dense with no gaps. */
+  private surfaceSwapRemove(key: number, slot: number): void {
+    const last = this.surfacePackedLen - 1;
+    const buf = this.surfacePacked;
+    if (slot !== last) {
+      const so = slot * 3, lo = last * 3;
+      const lx = buf[lo], ly = buf[lo + 1], lz = buf[lo + 2];
+      buf[so] = lx; buf[so + 1] = ly; buf[so + 2] = lz;
+      const movedKey = packCell(lx, ly, lz, this.build.grid.dims[0], this.build.grid.dims[1]);
+      this.surfaceIndex.set(movedKey, slot); // the relocated cell now lives in `slot`
+    }
+    this.surfaceIndex.delete(key);
+    this.surfacePackedLen = last;
   }
 
   /** World-space AABB of the live hull's grid envelope, written into `out`, for broad-phase
@@ -1268,10 +1400,11 @@ export class Ship implements ContactTarget {
             this.hull.removeVoxel(c.x, c.y, c.z);
             islandCells.push([c.x, c.y, c.z]);
             this.dirtyColumns.add(c.x * nz + c.z); // shed cells change their columns too
+            this.markColliderChunkDirty(c.x, c.y, c.z); // shed cells dirty their deck-collider chunk too
           }
         }
         updateSurfaceAfterRemoval(grid, this.surface, islandCells); // shed cells leave the boundary
-        this.surfaceCache = null;
+        this.applySurfaceDelta(islandCells); // mirror into the packed view incrementally
         this.registerBreaches(islandCells);
         this.damageDirty = true;  // shed cells changed mass/columns → recompute on the next 10 Hz flush
         this.colliderDirty = true; this.framesSinceCarve = 0; // geometry changed → refresh (debounced)
