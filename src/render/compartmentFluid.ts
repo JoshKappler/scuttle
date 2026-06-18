@@ -148,34 +148,22 @@ void main() {
   // ~1 and only there. (No screen-depth-coincident branch — that was the old z-fight.)
   bool isLid = vTop > 0.5;
 
-  vec3 V = normalize(uCameraPos - vWorldPos);
-
-  // base body water tone: dark navy, darkening with depth toward the floor.
+  // base body water tone: dark navy, darkening with depth toward the floor — a solid body of water
+  // that reads the same dark from ANY angle (no view-dependent mirror).
   vec3 bodyTop = uDeepColor;
   vec3 bodyBot = uDeepColor * uWallFloorDarken;
   vec3 col = mix(bodyTop, bodyBot, depthF);
 
   if (isLid) {
-    // SURFACE LID: a subtle sky/Fresnel surface term on top of the body tone, so the waterline reads as
-    // a calm pool top catching a little sky — held well down (an enclosed shadowed hold is not a mirror).
-    float nx = 0.10 * sin(uTime * 1.1 + vWorldPos.x * 0.8 + vWorldPos.z * 0.6);
-    float nz = 0.10 * sin(uTime * 0.9 - vWorldPos.x * 0.5 + vWorldPos.z * 0.9);
-    vec3 N = normalize(vec3(nx, 1.0, nz));
-    float facing = max(dot(N, V), 0.0);
-    float fresnel = pow(1.0 - facing, 5.0);
-    vec3 Rr = reflect(-V, N);
-    Rr.y = max(Rr.y, 0.02);
-    vec3 skyRefl = (uHasEnv > 0.5) ? textureCube(uSkyEnv, Rr).rgb : uSkyColor;
-    skyRefl = min(skyRefl, vec3(uReflClamp));
-    float reflF = clamp((min(fresnel, 0.35) * 0.6 + 0.05) * uReflStrength * 0.6, 0.0, 0.22);
-    // shallow-tinted top water, then a touch of sky reflection, then a faint sun glint.
-    vec3 lidWater = mix(uDeepColor, uShallowColor, 0.35);
-    col = mix(lidWater, skyRefl, reflF);
-    vec3 H = normalize(normalize(uSunDir) + V);
-    col += uSunColor * pow(max(dot(N, H), 0.0), 60.0) * 0.05;
-    // a faint foam shimmer right at the waterline
-    float foam = 0.4 + 0.4 * sin(uTime * 2.2 + vWorldPos.x * 1.4 + vWorldPos.z * 1.1);
-    col = mix(col, vec3(0.7, 0.8, 0.84), clamp(foam, 0.0, 1.0) * 0.12);
+    // SURFACE LID — MATTE, the round-7 fix for the "sheet of blue silk" that survived ~12 attempts.
+    // The lid used to carry a Fresnel SKY REFLECTION + shallow tint + sun glint (an open-sea surface
+    // shader). At any grazing / over-the-deck angle that pale reflective lid filled the view as a flat
+    // shimmering sheet — NOT a body of water. A flooded hold seen through the cutaway is an enclosed,
+    // shadowed volume of dark water, never a mirror of the sky. So: NO sky reflection, NO fresnel, NO
+    // sun glint. Just lift the surface navy a touch so the waterline edge reads, + a faint foam fleck.
+    col = mix(col, uDeepColor * 1.5, 0.55);
+    float foam = 0.5 + 0.5 * sin(uTime * 2.0 + vWorldPos.x * 1.3 + vWorldPos.z * 1.0);
+    col = mix(col, vec3(0.55, 0.66, 0.72), clamp(foam, 0.0, 1.0) * 0.08);
   }
 
   // opaque body — uBodyOpacity is kept live for the dev knob, but the material does not blend, so this
