@@ -216,23 +216,21 @@ export class ShipVisual {
     // distributed bilge iron used to read as a see-through liner because it SHARED the dark wood
     // material, not because of any transparency. A constant emissive keyed to the iron colour keeps
     // the revealed ballast from crushing to black in the cut-open interior (lifted while cut away).
-    // ROUGH, only-mildly-metallic iron. The old shiny spec (metalness 0.85 / roughness 0.34) caught the
-    // interior fill POINT LIGHT as a blown-white hotspot — the user's "ballast is a strange pale white …
-    // should just be iron". A high roughness spreads + dims any specular and a moderate metalness keeps a
-    // dark, even, diffuse grey under the same light, so it reads as a solid iron casting, not chrome.
+    // CHARCOAL cast iron — matte, dark, NEUTRAL grey. Two earlier misses: metalness 0.85/roughness 0.34
+    // caught the interior fill light as a blown-WHITE hotspot; then metalness 0.45 still reflected the cool
+    // SKY as a "light BLUE" tint. Fix: drop metalness to near-nonmetal (no env mirror = no blue) + high
+    // roughness (no spec hotspot), and a NEUTRAL self-lit grey floor so it reads as a solid charcoal iron
+    // casting under any light. Lifted a touch while cut away (animate()) so the revealed block isn't a void.
     this.ironMaterial = new THREE.MeshStandardMaterial({
       vertexColors: true,
       color: 0xffffff,
-      roughness: 0.72,
-      metalness: 0.45,
+      roughness: 0.9,
+      metalness: 0.1,
       transparent: false,
       depthWrite: true,
       side: THREE.DoubleSide,
-      // a neutral iron-grey self-lit floor (not the near-black base tint) so the revealed block reads as
-      // dim grey iron instead of crushing to a void on faces turned from the sun — NOT bright enough to
-      // wash white. Lifted while cut away (animate()).
-      emissive: new THREE.Color(0.10, 0.105, 0.12),
-      emissiveIntensity: 0.55,
+      emissive: new THREE.Color(0.06, 0.06, 0.06),
+      emissiveIntensity: 0.9,
     });
     this.remeshAll();
     this.addRig();
@@ -276,10 +274,10 @@ export class ShipVisual {
         ? Math.max(TUN.gfx.hull.shadeFloor, 2.2)
         : TUN.gfx.hull.shadeFloor;
     }
-    // lift the solid ballast's self-lit floor while cut away so the revealed iron reads as a solid grey
-    // block, not a dark void on the faces turned away from the sun (matches the hull lift). Kept modest so
-    // it never washes back to the old pale-white — it's a floor against black, not a glow.
-    this.ironMaterial.emissiveIntensity = this.cutawayOn ? 1.4 : 0.55;
+    // lift the solid ballast's self-lit floor while cut away so the revealed iron reads as a solid charcoal
+    // block, not a dark void on the faces turned away from the sun (matches the hull lift). Kept modest +
+    // NEUTRAL so it never washes back to the old pale-white/blue — it's a grey floor against black, not a glow.
+    this.ironMaterial.emissiveIntensity = this.cutawayOn ? 1.5 : 0.9;
     // rudder convention: sailing.rudder + = port turn → trailing edge swings
     // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
     // puts the trailing edge at −z for +r. Wheel turns the same sense as a
@@ -375,10 +373,12 @@ export class ShipVisual {
     return nLocal.z >= 0 ? -1 : 1;
   }
 
-  /** Per-frame (called from refresh()): if the camera has crossed the ship's centerline the kept half
-   *  must swap so the open interior keeps facing the viewer. Cheap — a normal map + a sign compare —
-   *  and only RE-MESHES on an actual flip (single-digit ms, like the initial mesh), never every frame. */
-  private updateCutawayCull(): void {
+  /** If the camera has crossed the ship's centerline the kept half must swap so the open interior keeps
+   *  facing the viewer. Cheap — a normal map + a sign compare — and only RE-MESHES on an actual flip
+   *  (single-digit ms, like the initial mesh), never every frame. PUBLIC + called every frame from main.ts
+   *  while cut away (refresh() also calls it on the damage path): refresh() is NOT run per-frame, so without
+   *  this the hull half never re-culled as the camera orbited — only the cannons' clip plane followed. */
+  updateCutawayCull(): void {
     if (!this.cutawayPlane || !this.cutawayPredicate) return;
     const sign = this.cullSignFromPlane(this.cutawayPlane);
     if (sign === this.cutCullSign) return; // same side → nothing to do

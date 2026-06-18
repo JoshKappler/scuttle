@@ -960,13 +960,22 @@ async function main() {
   // to rebuild the world-space centerline cut plane from the live hull pose.
   const cutNormalWorld = new THREE.Vector3();
   const cutPointWorld = new THREE.Vector3();
-  // CUTAWAY SEA BACKING: when the hull is cut open, everything BELOW the waterline must read as deep-blue
-  // SOLID water — the sea you cut through — never white sky/void. This is handled ENTIRELY by the ocean's
-  // OWN underwater-backdrop bowl (render/ocean.ts): a camera-centred navy lower-hemisphere, coloured with
-  // the ocean's live deep colour, rim held just under the local surface, that backs every downward
-  // sightline through the cutaway hole. (A separate ship-centred bowl used to live here; its rim rode 0.3 m
-  // ABOVE the sea, so it poked through as a "strange circular cutout around the ship" — deleted. The white
-  // the user saw under the cut was the IRON BALLAST's blown-out specular, not the sea; fixed in shipVisual.)
+  // CUTAWAY SEA BACKING: when the hull is cut open the ocean is HOLED around the ship (ocean.setCutaway) so
+  // you can see the open interior — and everything seen DOWN through that hole must read as deep SOLID
+  // water, never the white sky/void (the user's "huge rectangle cut out under the ship"). A navy lower-
+  // hemisphere BOWL centred under the ship backs it. CRUCIAL: its rim is held BELOW the local sea (not
+  // above, as round 8 did → it poked through as a "circular cutout ring around the ship"); the opaque ocean
+  // then hides the rim everywhere EXCEPT the cutaway hole, so there is no ring, yet the bowl still backs
+  // every downward sightline through the hole with deep navy. Shown only in cutaway; positioned per-frame
+  // at the live ship + sea (see the cutaway block). fog:false so it stays deep blue, not fogged pale.
+  const abyss = new THREE.Mesh(
+    new THREE.SphereGeometry(70, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), // lower hemisphere = bowl
+    new THREE.MeshBasicMaterial({ color: 0x0a2236, side: THREE.DoubleSide, fog: false }),
+  );
+  abyss.position.y = 0;
+  abyss.visible = false;
+  abyss.renderOrder = -2; // behind hull + flood water (opaque depth still lets the nearer hull/water win)
+  scene.add(abyss);
   // INTERIOR FILL — "the inside of the ship is always well lit and visible". The sun +
   // hemisphere only graze the deck; the hold, the lower deck, and anything seen through a
   // breach / open hatch / the cutaway sit in shadow and crush near-black. A soft point
@@ -1076,6 +1085,7 @@ async function main() {
       // her). Enemy hulls stay whole; they're inspected from afar.
       sloop.visual.setCutaway(cutaway ? cutPlane : null);
       ocean.setCutaway(cutaway);
+      abyss.visible = cutaway;
     }
   });
 
@@ -2351,6 +2361,16 @@ async function main() {
       }
       cutPlane.setFromNormalAndCoplanarPoint(cutNormalWorld, cutPointWorld);
       updateHole();
+      // re-cull the HULL half every frame as the camera orbits (the cannons' clip plane already follows
+      // for free). refresh() — which also does this — is only called on damage, so without this the open
+      // hull half never swapped when you dragged to the other side; only the cannons flipped.
+      sloop.visual.updateCutawayCull();
+      // park the navy backing bowl under the ship with its rim just UNDER the live sea: the opaque ocean
+      // hides the rim (no ring) while the bowl backs the cut hole's downward view with deep navy.
+      const com = sloop.body.worldCom();
+      abyss.position.x = com.x;
+      abyss.position.z = com.z;
+      abyss.position.y = surfaceHeight(waves, com.x, com.z, world.simTime) - 0.8;
     }
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);

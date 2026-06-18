@@ -49,7 +49,7 @@ export interface Material {
 export const MATERIALS: Record<number, Material> = {
   [OAK]: { name: "oak", density: 430, color: [0.055, 0.032, 0.017], strength: 3 },
   [PINE]: { name: "pine", density: 310, color: [0.1, 0.066, 0.036], strength: 2 },
-  [IRON]: { name: "iron", density: 7800, color: [0.07, 0.07, 0.08], strength: 8 },
+  [IRON]: { name: "iron", density: 7800, color: [0.09, 0.09, 0.09], strength: 8 },
   // Reinforced bow timber — strength 4.5, only ~50% tougher than the oak hull (3). Laid over the
   // forward shell by armorBow() so a bow-first ram is modestly favoured WITHOUT being a battering
   // ram: the prow chips readily as it bites (playtest: "front of boat strength enhancements are
