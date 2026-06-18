@@ -567,10 +567,12 @@ void main() {
       float keelL = kds.x, deckL = kds.y, sealFlag = kds.z;
       if (deckL > keelL && lp.y > keelL) {
         // CUTAWAY: the player is ALWAYS ocean slot 0 and is the only ship ever cut open. Clear the sea
-        // over its ENTIRE voxel footprint — below the waterline too — so the open cross-section is fully
-        // visible, with the cut edge following the per-column hull SILHOUETTE (the voxel outline). This
-        // replaces the old blunt rectangle + 4.5x translucent wing (deleted below).
-        if (uCutOn > 0.5 && s == 0) discard;
+        // over its voxel footprint — below the waterline too — so the open cross-section is fully visible,
+        // with the cut edge following the per-column hull SILHOUETTE (the voxel outline). Only on the
+        // CAMERA side of the centerline (uCutPlane < 0), so the sea is removed where the split actually
+        // exposes the interior, NOT under the intact far half (where the hull meets the sea normally).
+        // This replaces the old blunt rectangle + 4.5x translucent wing (deleted below).
+        if (uCutOn > 0.5 && s == 0 && dot(vWorldPos, uCutPlane.xyz) + uCutPlane.w < 0.0) discard;
         // world height of this column's deck top (local→world Y = trans.y + dot(R⁻¹'s y-row, localPt)).
         float deckWY = uProfileTrans[s].y + dot(uProfileInvRot[s][1], vec3(lp.x, deckL, lp.z));
         float seaY = uProfileSeaY[s];

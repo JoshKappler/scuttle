@@ -226,6 +226,13 @@ export class ShipVisual {
       color: 0xffffff,
       roughness: 0.9,
       metalness: 0.1,
+      // THE real "pale ballast" cause: the scene uses the bright sky as an environment map
+      // (sky.ts sets mainScene.environment), which lights the DIFFUSE channel via image-based
+      // lighting — and diffuse IBL is INDEPENDENT of metalness. So every past metalness tweak
+      // (0.85->0.45->0.1) only killed the specular sky mirror; the dark iron's diffuse was still
+      // being washed to a light blue-grey by the sky. envMapIntensity 0 removes that wash entirely,
+      // so the ballast reads as the dark charcoal iron its albedo + interior fill light actually give.
+      envMapIntensity: 0,
       transparent: false,
       depthWrite: true,
       side: THREE.DoubleSide,
