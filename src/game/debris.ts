@@ -334,7 +334,10 @@ export class DebrisManager {
     // spar body's visual group, converting each clone world→body-local so it tumbles rigidly with the
     // spar. The body starts at origin/rot, and `group` tracks the body each step (update() sets
     // group.position/quaternion = body), so local = (body world)⁻¹ · (clone world).
-    if (mastRig && mastRig.children.length > 0) {
+    // Capture BEFORE the loop — re-parenting (group.add) empties mastRig.children, so a post-loop
+    // length check would always read 0 and leave p.rig undefined (→ disposeRig leaks the clones).
+    const carriedRig = !!(mastRig && mastRig.children.length > 0);
+    if (carriedRig) {
       const bodyMat = new THREE.Matrix4().compose(
         origin, this.tmpQ.set(rot.x, rot.y, rot.z, rot.w), this.tmpP.set(1, 1, 1),
       );
@@ -365,7 +368,7 @@ export class DebrisManager {
       wreck: false,
       mast: true,
       liftMul: TUN.rig.fallFloatBuoy,
-      rig: mastRig && mastRig.children.length > 0 ? mastRig : undefined,
+      rig: carriedRig ? mastRig : undefined,
       impactArm: 0.25, // brief delay so it can't crater its own deck on the spawn frame
     });
   }
