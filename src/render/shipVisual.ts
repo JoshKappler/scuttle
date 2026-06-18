@@ -15,7 +15,6 @@ import {
   type GunFacing,
 } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
-import { IRON, MATERIALS } from "../sim/materials";
 import { CompartmentFluid } from "./compartmentFluid";
 import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
@@ -217,17 +216,23 @@ export class ShipVisual {
     // distributed bilge iron used to read as a see-through liner because it SHARED the dark wood
     // material, not because of any transparency. A constant emissive keyed to the iron colour keeps
     // the revealed ballast from crushing to black in the cut-open interior (lifted while cut away).
-    const ironCol = MATERIALS[IRON].color;
+    // ROUGH, only-mildly-metallic iron. The old shiny spec (metalness 0.85 / roughness 0.34) caught the
+    // interior fill POINT LIGHT as a blown-white hotspot — the user's "ballast is a strange pale white …
+    // should just be iron". A high roughness spreads + dims any specular and a moderate metalness keeps a
+    // dark, even, diffuse grey under the same light, so it reads as a solid iron casting, not chrome.
     this.ironMaterial = new THREE.MeshStandardMaterial({
       vertexColors: true,
       color: 0xffffff,
-      roughness: 0.34,
-      metalness: 0.85,
+      roughness: 0.72,
+      metalness: 0.45,
       transparent: false,
       depthWrite: true,
       side: THREE.DoubleSide,
-      emissive: new THREE.Color(ironCol[0], ironCol[1], ironCol[2]),
-      emissiveIntensity: 1.6,
+      // a neutral iron-grey self-lit floor (not the near-black base tint) so the revealed block reads as
+      // dim grey iron instead of crushing to a void on faces turned from the sun — NOT bright enough to
+      // wash white. Lifted while cut away (animate()).
+      emissive: new THREE.Color(0.10, 0.105, 0.12),
+      emissiveIntensity: 0.55,
     });
     this.remeshAll();
     this.addRig();
@@ -271,9 +276,10 @@ export class ShipVisual {
         ? Math.max(TUN.gfx.hull.shadeFloor, 2.2)
         : TUN.gfx.hull.shadeFloor;
     }
-    // lift the solid ballast's self-lit floor while cut away so the revealed iron reads as a bright
-    // solid block, not a dark void on the faces turned away from the sun (matches the hull lift).
-    this.ironMaterial.emissiveIntensity = this.cutawayOn ? 2.6 : 1.6;
+    // lift the solid ballast's self-lit floor while cut away so the revealed iron reads as a solid grey
+    // block, not a dark void on the faces turned away from the sun (matches the hull lift). Kept modest so
+    // it never washes back to the old pale-white — it's a floor against black, not a glow.
+    this.ironMaterial.emissiveIntensity = this.cutawayOn ? 1.4 : 0.55;
     // rudder convention: sailing.rudder + = port turn → trailing edge swings
     // to PORT (−z). Blade extends aft (−x); rotation about +y of −0.55·r
     // puts the trailing edge at −z for +r. Wheel turns the same sense as a
