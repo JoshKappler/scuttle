@@ -35,6 +35,13 @@ export interface SailRecord {
   zMax: number;
   canvas: HTMLCanvasElement;
   tex: THREE.CanvasTexture;
+  /** Total cloth area of this sail (ship-local m²), the integrity denominator. Static. */
+  area: number;
+  /** DETERMINISTIC accumulated destroyed area (m²), summed as a fixed NOMINAL area per hole —
+   *  NOT the randomized jagged-polygon area and NOT a canvas pixel readback, so the thrust
+   *  integrity derived from it stays deterministic (THE LAW #1). Capped at `area`. The visual
+   *  hole shape is cosmetic and independent of this number. */
+  holedArea: number;
 }
 
 export class ShipVisual {
@@ -275,23 +282,74 @@ export class ShipVisual {
     this.fluid.update(compartments, cameraPos, dt);
   }
 
-  /** Tear a ragged shot hole in a sail at the ship-local crossing point. */
-  puncture(rec: SailRecord, yLocal: number, zLocal: number): void {
+  /** Mean ship-local radius (m) of one ball's shot hole — the DETERMINISTIC nominal used for the
+   *  thrust-integrity area accounting (the jagged visual below is cosmetic and may be larger/smaller).
+   *  Sized to a single ball through canvas; the integrity model destroys a sail at half its cloth
+   *  area (see ship.hitSail), a starting value for the feel-test pass. */
+  private static HOLE_R_M = 0.55;
+  private static HOLE_AREA_M2 = Math.PI * ShipVisual.HOLE_R_M * ShipVisual.HOLE_R_M;
+
+  /**
+   * Tear ONE ragged shot hole in a sail at the ship-local crossing point and account the damage.
+   *
+   * Returns the MAST's new destroyed-area FRACTION (this sail's holed area summed with its siblings on
+   * the same mast, over their total cloth area) — `ship.hitSail` turns that into the mast's thrust
+   * integrity. The accounted area is a fixed NOMINAL per hole (`HOLE_AREA_M2`), NOT the randomized
+   * polygon's area and NOT a canvas pixel readback, so the integrity stays DETERMINISTIC (THE LAW #1);
+   * the random shape here only affects how the hole LOOKS.
+   */
+  puncture(rec: SailRecord, yLocal: number, zLocal: number): number {
     const ctx = rec.canvas.getContext("2d")!;
     const u = (rec.zMax - zLocal) / (rec.zMax - rec.zMin); // geometry is Y-rotated: +z maps to u=0
     const v = (yLocal - rec.yMin) / (rec.yMax - rec.yMin);
     const px = u * rec.canvas.width;
     const py = (1 - v) * rec.canvas.height;
-    const rPx = ((0.4 + Math.random() * 0.35) / (rec.zMax - rec.zMin)) * rec.canvas.width;
+    // px radius for the visual, from the nominal hole radius mapped through the sail's cloth width.
+    const rPx = (ShipVisual.HOLE_R_M / (rec.zMax - rec.zMin)) * rec.canvas.width;
+    // ONE irregular jagged polygon (a torn rip), NOT a soft stack of jittered circles (the old
+    // "oval blob"). ~10 vertices around the strike, each radius jittered so the rim is ragged.
     ctx.fillStyle = "#000";
-    for (let i = 0; i < 5; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const d = Math.random() * rPx * 0.5;
-      ctx.beginPath();
-      ctx.arc(px + Math.cos(a) * d, py + Math.sin(a) * d, Math.max(rPx * (0.55 + Math.random() * 0.45), 1.5), 0, Math.PI * 2);
-      ctx.fill();
+    const N = 10;
+    ctx.beginPath();
+    for (let i = 0; i < N; i++) {
+      const ang = (i / N) * Math.PI * 2;
+      const r = Math.max(rPx * (0.5 + Math.random() * 0.6), 1.5);
+      const x = px + Math.cos(ang) * r;
+      const y = py + Math.sin(ang) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
+    ctx.closePath();
+    ctx.fill();
     rec.tex.needsUpdate = true;
+
+    // DETERMINISTIC area accounting (independent of the random shape above): add a fixed nominal
+    // hole area, capped at the sail's total cloth, then sum this mast's destroyed fraction.
+    rec.holedArea = Math.min(rec.holedArea + ShipVisual.HOLE_AREA_M2, rec.area);
+    let holed = 0;
+    let total = 0;
+    for (const s of this.sails) {
+      if (s.mastIdx !== rec.mastIdx) continue;
+      holed += s.holedArea;
+      total += s.area;
+    }
+    return total > 0 ? holed / total : 0;
+  }
+
+  /** Port repair: wipe every (still-rigged) sail's shot holes — clear the deterministic holed-area
+   *  accounting AND repaint the alphaMap canvas white — so a repaired sail is whole again, in both
+   *  thrust integrity (see ship.hitSail / puncture) and appearance. `mastIdx` limits it to one mast;
+   *  omit to repair all. A felled mast's sails (mesh hidden) are skipped — repair doesn't re-rig. */
+  repairSails(mastIdx?: number): void {
+    for (const s of this.sails) {
+      if (mastIdx !== undefined && s.mastIdx !== mastIdx) continue;
+      if (s.holedArea === 0) continue;
+      s.holedArea = 0;
+      const ctx = s.canvas.getContext("2d")!;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, s.canvas.width, s.canvas.height);
+      s.tex.needsUpdate = true;
+    }
   }
 
   /** A mast goes by the board. Build the REAL falling section as CLONES of the standing spars +
@@ -759,6 +817,8 @@ export class ShipVisual {
           zMax: mz + foot.w / 2,
           canvas,
           tex,
+          area: (head.y - foot.y) * foot.w, // rect cloth area (m²) — the integrity denominator
+          holedArea: 0,
         });
       }
     });

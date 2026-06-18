@@ -31,6 +31,17 @@ describe("rig damage geometry (round 7)", () => {
     expect(segmentSailHit({ x: 12, y: 11, z: 0 }, { x: 12, y: 11, z: 10 }, SAIL, 1.0)).toBeNull();
   });
 
+  it("BUG-5 regression: a ball passing ENTIRELY fore/aft of the slab is NOT a hit", () => {
+    // With a slab, the entry parameter must be a real interval-overlap test, not a clamped endpoint.
+    // These two segments fly in the sail's y/z window but never reach the fore-aft slab [9.5,10.5]:
+    // the OLD code clamped the entry t into [0,1] and evaluated at the clamped endpoint, reporting a
+    // phantom hit (one MISS then stamped dozens of sail holes). They must return null.
+    // entirely FORE of the slab (segment ends at x=8, slab starts at 9.5):
+    expect(segmentSailHit({ x: 0, y: 11, z: 5 }, { x: 8, y: 11, z: 5 }, SAIL, 1.0)).toBeNull();
+    // entirely AFT of the slab (segment starts at x=12, slab ends at 10.5):
+    expect(segmentSailHit({ x: 12, y: 11, z: 5 }, { x: 20, y: 11, z: 5 }, SAIL, 1.0)).toBeNull();
+  });
+
   const MAST = { x: 5, z: 5, yBase: 6, yTop: 26, r: 0.3 };
 
   it("a ball through the trunk is a mast hit; a near miss is not", () => {

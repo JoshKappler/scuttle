@@ -30,6 +30,9 @@ export interface MenuActions {
   onSettingsClosed?(): void;
   /** Optional click cue for buttons/pills. */
   onUiClick?(): void;
+  /** Persistent sandbox high score (most gold earned in one sandbox run), shown on the title
+   *  screen. Optional so the view stays usable without it; returns 0 when there's no record. */
+  getSandboxBest?(): number;
 }
 
 /** What the player chose on the sandbox config screen. Plain strings so this view
@@ -289,12 +292,28 @@ export function createMenuScreen(actions: MenuActions): MenuScreen {
       backToPrev = () => api.showStart(hasCareer);
       title.textContent = "SCUTTLE";
       subtitle.textContent = "a pirate's fortune, won broadside by broadside";
-      body.replaceChildren(
+      const kids: (HTMLElement)[] = [
         bigButton("New Career", actions.onNewCareer),
         bigButton(hasCareer ? "Continue Voyage" : "Continue (no save)", actions.onContinue, hasCareer),
         bigButton("Sandbox", actions.onSandbox),
         bigButton("Settings", showSettings),
-      );
+      ];
+      // sandbox high score (most plundered in one free-play run) — shown only once a record exists.
+      const best = Math.max(0, Math.floor(actions.getSandboxBest?.() ?? 0));
+      if (best > 0) {
+        const score = document.createElement("div");
+        score.textContent = `Sandbox best: ${best.toLocaleString()} doubloons`;
+        Object.assign(score.style, {
+          color: "#e0b537",
+          font: '700 12px Georgia, serif',
+          fontVariant: "small-caps",
+          letterSpacing: "0.06em",
+          marginTop: "14px",
+          textShadow: "0 1px 4px #000",
+        } as Partial<CSSStyleDeclaration>);
+        kids.push(score);
+      }
+      body.replaceChildren(...kids);
       setOpen(true);
     },
     showSandboxConfig(opts: SandboxConfigOpts) {

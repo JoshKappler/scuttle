@@ -64,12 +64,18 @@ export function segmentSailHit(
     }
     return null;
   }
-  // entry parameter into the slab [planeX-half, planeX+half] (the bare plane crossing when half=0).
-  const t =
-    half > 0
-      ? Math.min(Math.max(Math.min((sail.planeX - half - p0.x) / dx, (sail.planeX + half - p0.x) / dx), 0), 1)
-      : (sail.planeX - p0.x) / dx;
-  if (t < 0 || t > 1) return null;
+  // Real SLAB-INTERVAL overlap test for the fore-aft band [planeX-half, planeX+half] (the bare plane
+  // crossing when half=0). The two plane crossings give the segment-parameter interval the ray spends
+  // INSIDE the slab; if that interval doesn't overlap [0,1] the segment never reaches the slab and we
+  // reject. (The old code CLAMPED the entry t into [0,1] before the range check, which made the check
+  // dead — a ball passing entirely fore/aft of the sail reported a false hit at its clamped endpoint:
+  // BUG-5's "a miss punches ~40 holes".)
+  const ta = (sail.planeX - half - p0.x) / dx;
+  const tb = (sail.planeX + half - p0.x) / dx;
+  const tEnter = Math.min(ta, tb);
+  const tExit = Math.max(ta, tb);
+  if (tExit < 0 || tEnter > 1) return null; // the segment's slab span lies entirely off [0,1] → no hit
+  const t = Math.max(tEnter, 0); // first point of the segment actually inside the slab
   const y = p0.y + (p1.y - p0.y) * t;
   const z = p0.z + (p1.z - p0.z) * t;
   if (y < sail.yMin || y > sail.yMax || z < sail.zMin || z > sail.zMax) return null;

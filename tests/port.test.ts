@@ -49,6 +49,10 @@ function fakeShip(over: Partial<Record<string, unknown>> = {}) {
       }
       return false;
     },
+    repairSails() {
+      // mirrors Ship.repairSails (minus the render-only canvas reset, which the mock lacks)
+      for (let i = 0; i < ship.sailIntegrity.length; i++) if (ship.mastAlive[i]) ship.sailIntegrity[i] = 1;
+    },
     ...over,
   };
   return ship as unknown as Ship & { _breaches: number };

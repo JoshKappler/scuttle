@@ -80,4 +80,39 @@ describe("SaveManager", () => {
     store.setItem("scuttle.save.career.v1", "{not json");
     expect(new SaveManager(store).load("career").economy.doubloons).toBe(0);
   });
+  it("sandboxBest defaults to 0 and round-trips", () => {
+    const store = fakeStorage();
+    const sm = new SaveManager(store);
+    expect(sm.load("sandbox").sandboxBest).toBe(0);
+    const s = defaultSave("sandbox");
+    s.sandboxBest = 7321;
+    sm.save("sandbox", s);
+    expect(new SaveManager(store).load("sandbox").sandboxBest).toBe(7321);
+  });
+  it("tolerates an OLD save lacking sandboxBest (no version bump → back-compat) → 0", () => {
+    const store = fakeStorage();
+    // a pre-feature blob: valid save shape, no sandboxBest key.
+    store.setItem(
+      "scuttle.save.sandbox.v1",
+      JSON.stringify({
+        version: 1,
+        mode: "sandbox",
+        economy: { version: 1, doubloons: 400, cargo: {}, cargoCapacity: 40, upgrades: {}, notoriety: 0 },
+        shipTier: "sloop",
+        unlockedClasses: ["cutter", "sloop"],
+        settings: { masterVolume: 0.8, defaultCamera: 0 },
+      }),
+    );
+    const loaded = new SaveManager(store).load("sandbox");
+    expect(loaded.sandboxBest).toBe(0); // missing field → tolerant default
+    expect(loaded.economy.doubloons).toBe(400); // rest of the save is intact
+    expect(loaded.shipTier).toBe("sloop");
+  });
+  it("ignores a garbage sandboxBest (negative / non-number) → 0", () => {
+    const store = fakeStorage();
+    const s = defaultSave("sandbox") as any;
+    s.sandboxBest = -5;
+    store.setItem("scuttle.save.sandbox.v1", JSON.stringify(s));
+    expect(new SaveManager(store).load("sandbox").sandboxBest).toBe(0);
+  });
 });

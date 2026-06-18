@@ -390,9 +390,27 @@ export class Ship implements ContactTarget {
    *  this is never called) — kept only so the cannon module keeps compiling against the interface. */
   hitMast(_mi: number, _localY = -1): void { /* masts break voxel-by-voxel via crush() now */ }
 
-  /** A ball through the canvas: that mast pulls a little less. */
-  hitSail(mi: number): void {
-    this.sailIntegrity[mi] = Math.max(this.sailIntegrity[mi] - 0.07, 0.15);
+  /** A ball through the canvas: that mast pulls less, PROPORTIONAL to the share of its cloth shot
+   *  away. `destroyedFrac` (0..1) is the mast's holed-area / total-cloth-area, computed
+   *  deterministically by visual.puncture (fixed nominal area per hole — never the random visual
+   *  shape). Integrity = 1 − 2·frac so the mast loses ALL drive once HALF its canvas is gone, and a
+   *  few holes barely scratch it (the old flat −0.07/hit with a 0.15 floor over-nerfed: a handful of
+   *  hits — amplified by the phantom-hole bug — collapsed a ship to a crawl). sailing.ts scales each
+   *  mast's thrust linearly by this value. No floor: a truly shredded mast pulls nothing. */
+  hitSail(mi: number, destroyedFrac: number): void {
+    this.sailIntegrity[mi] = Math.min(Math.max(1 - 2 * destroyedFrac, 0), 1);
+  }
+
+  /** Restore canvas to full: reset each (still-rigged) mast's thrust integrity AND wipe the visual
+   *  shot holes + the deterministic holed-area accounting (visual.repairSails) so the area model
+   *  starts clean — otherwise a repaired sail that's shot again would re-apply its OLD holed area.
+   *  The port repair (game/port.ts applyRepair) should call THIS instead of poking sailIntegrity
+   *  directly, so the area accounting and the canvas stay consistent with the integrity. */
+  repairSails(): void {
+    for (let i = 0; i < this.sailIntegrity.length; i++) {
+      if (this.mastAlive[i]) this.sailIntegrity[i] = 1;
+    }
+    this.visual.repairSails();
   }
 
   /** A ball into the rudder: the helm answers ever more sluggishly. */
@@ -433,9 +451,10 @@ export class Ship implements ContactTarget {
       // EXCEPTION: a grid-capped mast (man-o-war) always has a short voxel trunk; its sails ride
       // the cosmetic topmast and stay hittable while the mast stands (matching updateRig).
       if (!this.mastCapped[rec.mastIdx] && rec.yMin > this.mastTopY[rec.mastIdx]) continue;
-      // ~1 m fore-aft slab so a BEAM-WISE broadside ball passing through the canvas tears it, not
-      // just a shot that pierces the zero-width plane (which a side-on duel almost never produces).
-      const hit = segmentSailHit(p0, p1, rec, 1.0);
+      // a thin (~0.5 m) fore-aft slab so a BEAM-WISE broadside ball passing through the canvas tears
+      // it, not just a shot that pierces the zero-width plane (which a side-on duel almost never
+      // produces). Kept tight so a ball comfortably fore/aft of the cloth can't false-trigger.
+      const hit = segmentSailHit(p0, p1, rec, 0.5);
       if (hit) sails.push({ rec, y: hit.y, z: hit.z });
     }
 

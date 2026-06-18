@@ -24,6 +24,10 @@ export interface SaveState {
   shipTier: ShipTierId;
   unlockedClasses: ShipTierId[];
   settings: Settings;
+  /** Sandbox-only persistent HIGH SCORE: the most gold ever EARNED in a single sandbox run
+   *  (sandbox now starts at 0 and the score is what you plunder). Always present, defaults 0,
+   *  parsed tolerantly so pre-existing saves that lack it still load. Ignored in Career. */
+  sandboxBest: number;
 }
 
 const LEGACY_ECONOMY_KEY = "scuttle.economy.v1";
@@ -41,6 +45,7 @@ export function defaultSave(mode: GameMode): SaveState {
     shipTier: "cutter",
     unlockedClasses: ["cutter"],
     settings: defaultSettings(),
+    sandboxBest: 0,
   };
 }
 
@@ -124,6 +129,8 @@ export class SaveManager {
           ? (o.unlockedClasses as ShipTierId[])
           : d.unlockedClasses,
       settings: { ...d.settings, ...(o.settings ?? {}) },
+      // tolerant: old saves predate this field. NO SAVE_VERSION bump — pure additive back-compat.
+      sandboxBest: typeof o.sandboxBest === "number" && o.sandboxBest >= 0 ? o.sandboxBest : d.sandboxBest,
     };
   }
 }

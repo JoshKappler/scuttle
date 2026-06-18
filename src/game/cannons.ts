@@ -5,6 +5,7 @@ import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
 import { muzzleWorld, velocityAtPoint, type GunFacing, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
+import type { SailRecord } from "../render/shipVisual";
 
 /**
  * Broadside batteries + pooled cannonball projectiles. Projectiles are
@@ -20,6 +21,11 @@ interface Ball {
   prev: THREE.Vector3;
   age: number;
   mesh: THREE.Mesh;
+  /** Sails this ball has already torn. rigImpacts re-runs every substep along the WHOLE 9 s
+   *  flight against every sail, so without this one ball racked up dozens of holes in a single
+   *  sail (BUG-5's multiplicity). A sail (its stable SailRecord ref) is holed at most once per
+   *  ball; the ball flies on through cloth as before. Cleared on (re)launch. */
+  hitSails: Set<SailRecord>;
 }
 
 /** Live aim for a battery: read at the MOMENT each gun fires, not when the click landed.
@@ -125,6 +131,7 @@ export class Cannons {
         prev: new THREE.Vector3(),
         age: 0,
         mesh,
+        hitSails: new Set<SailRecord>(),
       });
     }
   }
@@ -230,9 +237,15 @@ export class Cannons {
       for (const ship of targets) {
         const rig = ship.rigImpacts(b.prev, b.pos);
         for (const s of rig.sails) {
-          // paint a ragged shot hole into the sail's alphaMap (the sail keeps its shape).
-          ship.visual.puncture(s.rec, s.y, s.z);
-          ship.hitSail(s.rec.mastIdx);
+          // one ball tears a given sail AT MOST ONCE — rigImpacts re-tests the whole flight every
+          // substep, so without this de-dup a single shot punched dozens of holes in one sail.
+          if (b.hitSails.has(s.rec)) continue;
+          b.hitSails.add(s.rec);
+          // paint a ragged shot hole into the sail's alphaMap (the sail keeps its shape); puncture
+          // accrues this mast's DETERMINISTIC destroyed-area fraction (nominal per-hole area, not the
+          // random visual) and returns it, which sets the mast's thrust integrity.
+          const destroyedFrac = ship.visual.puncture(s.rec, s.y, s.z);
+          ship.hitSail(s.rec.mastIdx, destroyedFrac);
           this.effects.muzzleSmoke(b.pos, this.tmpDir.copy(b.vel).normalize());
         }
         if (rig.stop) {
@@ -288,6 +301,7 @@ export class Cannons {
     if (!b) return;
     b.alive = true;
     b.age = 0;
+    b.hitSails.clear(); // fresh shot: it hasn't torn any sail yet
     b.pos.copy(pos);
     b.prev.copy(pos);
     b.vel.copy(dir).multiplyScalar(TUN.gun.muzzleSpeed).add(baseVel);

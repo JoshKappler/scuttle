@@ -24,7 +24,7 @@ import { SailingController, type Wind } from "./game/sailing";
 import { PlayerControls } from "./game/player";
 import { AICaptain } from "./game/ai";
 import { FleetManager, type EnemyUnit } from "./game/fleet";
-import { isFoundered } from "./game/foundering";
+import { isFoundered, makeEnemyWreck } from "./game/foundering";
 import { MAXVIS } from "./core/constants";
 import { GameState } from "./game/gameState";
 import { PlayerCharacter } from "./game/playerCharacter";
@@ -106,6 +106,10 @@ async function main() {
   let unlockedClasses: ShipTierId[] = ["cutter"];
   let settings: Settings = defaultSettings();
   let forcedEnemyTier: ShipTierId | null = null;
+  // sandbox high score: gold EARNED (plundered) this run. Reset at each sandbox start; the best
+  // ever is banked into the sandbox save (on making port + on quit-to-menu) and shown on the menu.
+  let runEarned = 0;
+  let sandboxBest = 0;
 
   // ---- audio: built early so the menu can sing and Web Audio unlocks on the first gesture ----
   const audio = new AudioManager(camera, scene, settings);
@@ -175,6 +179,8 @@ async function main() {
       if (worldReady) saveCurrent(); // safe only once the game (economy/tier) exists
     },
     onUiClick: () => audio.playUi("ui_click"),
+    // persistent sandbox high score for the title screen (0 when there's no sandbox save yet).
+    getSandboxBest: () => saves.load("sandbox").sandboxBest,
   });
 
   // a clean dark screen behind the DOM menu while we wait for the player to choose
@@ -481,7 +487,10 @@ async function main() {
     return { ship, captain };
   };
 
-  const fleet = new FleetManager({ world, target: sloop, spawn: spawnEnemy });
+  // Enemies linger until essentially fully UNDER (submergedFrac≥0.97 or AABB top below the sea),
+  // not at the looser player bar — so a sinking foe doesn't vanish with freeboard still showing.
+  // Player respawn (isSunk = isFoundered, below) deliberately keeps the original predicate.
+  const fleet = new FleetManager({ world, target: sloop, spawn: spawnEnemy, isWreck: makeEnemyWreck() });
   let premiumSlot1: Ship | null = null; // which enemy holds premium ocean slot 1 (trail reset on swap)
   const salvaged = new WeakSet<Ship>(); // enemies that have paid salvage once
   let primaryEnemy: Ship | null = null; // nearest living enemy, for the HUD marker
@@ -549,6 +558,7 @@ async function main() {
     economy.state = s.economy;
     unlockedClasses = s.unlockedClasses.slice();
     settings = { ...s.settings };
+    sandboxBest = s.sandboxBest ?? 0; // carry the persisted best into this session
     if (s.shipTier !== currentTier) {
       swapPlayerShip(s.shipTier); // rebuild the saved hull (also sets currentTier + re-applies upgrades)
     } else {
@@ -556,6 +566,8 @@ async function main() {
     }
   };
   const saveCurrent = () => {
+    // in sandbox, fold this run's plunder into the persistent best before writing the slot.
+    if (gs.isSandbox()) sandboxBest = Math.max(sandboxBest, runEarned);
     saves.save(gs.mode, {
       version: SAVE_VERSION,
       mode: gs.mode,
@@ -563,6 +575,8 @@ async function main() {
       shipTier: currentTier,
       unlockedClasses,
       settings,
+      // the best is sandbox-only; a career save just carries the value forward untouched.
+      sandboxBest,
     });
   };
 
@@ -675,9 +689,11 @@ async function main() {
   // wheel or on deck. Set in the keydown handler, consumed in the fire block below.
   let fireKeyQueued = false;
 
-  // She's "sunk" only when genuinely FOUNDERED (deep + waterlogged, or fully saturated) — the same
-  // single predicate the fleet uses. The old bare `y < -12` fired on a transient deck-dip and reset a
-  // still-afloat ship; now a breached hull settles and slowly goes down, and you fight to save her.
+  // The PLAYER is "sunk" only when genuinely FOUNDERED (deep + waterlogged, or fully saturated).
+  // The old bare `y < -12` fired on a transient deck-dip and reset a still-afloat ship; now a breached
+  // hull settles and slowly goes down, and you fight to save her. (Enemies use the STRICTER
+  // makeEnemyWreck — they linger until fully under so a sinking foe doesn't pop out mid-freeboard —
+  // but the player respawn deliberately stays on this looser bar so a bad dip respawns you promptly.)
   const isSunk = isFoundered;
 
   world.onFixedStep = (t, dt) => {
@@ -843,7 +859,9 @@ async function main() {
       if (isSunk(e) && !salvaged.has(e)) {
         salvaged.add(e);
         audio.playAt("sink", e.body.translation()); // her death groan, out where she went down
+        const goldBefore = economy.state.doubloons;
         port.plunder(e); // loot → economy → mirrors gs.wallet + toast
+        runEarned += Math.max(0, economy.state.doubloons - goldBefore); // size-scaled loot → sandbox score
         audio.playUi("coins"); // plunder collected
         const tid = enemyTier.get(e);
         if (tid && !unlockedClasses.includes(tid)) {
@@ -2002,11 +2020,11 @@ async function main() {
       gs.startGame("career");
     } else {
       applySave(saves.load("sandbox"));
-      // free play: top up to a deep purse so every hull + upgrade is buyable
-      if (economy.state.doubloons < 50000) {
-        economy.state.doubloons = 50000;
-        gs.wallet.set(50000);
-      }
+      // free play is a HIGH-SCORE run now: start broke and plunder your way up — bigger ships
+      // sunk pay more (rollLoot ∝ hull size). The best run ever is banked + shown on the menu.
+      economy.state.doubloons = 0;
+      gs.wallet.set(0);
+      runEarned = 0; // fresh run — score starts at zero
       const cfg = choice.cfg;
       forcedEnemyTier = cfg.enemyTier === "mixed" ? null : (cfg.enemyTier as ShipTierId);
       TUN.fleet.enemyCount = Math.max(0, Math.min(MAXVIS, Math.round(cfg.enemyCount)));
