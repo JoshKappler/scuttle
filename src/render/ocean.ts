@@ -566,6 +566,11 @@ void main() {
       vec3 kds = texture2D(uProfileAtlas, vec2(puv.x, (puv.y + float(s)) / float(MAXVIS))).rgb; // keel, deck, sealFlag
       float keelL = kds.x, deckL = kds.y, sealFlag = kds.z;
       if (deckL > keelL && lp.y > keelL) {
+        // CUTAWAY: the player is ALWAYS ocean slot 0 and is the only ship ever cut open. Clear the sea
+        // over its ENTIRE voxel footprint — below the waterline too — so the open cross-section is fully
+        // visible, with the cut edge following the per-column hull SILHOUETTE (the voxel outline). This
+        // replaces the old blunt rectangle + 4.5x translucent wing (deleted below).
+        if (uCutOn > 0.5 && s == 0) discard;
         // world height of this column's deck top (local→world Y = trans.y + dot(R⁻¹'s y-row, localPt)).
         float deckWY = uProfileTrans[s].y + dot(uProfileInvRot[s][1], vec3(lp.x, deckL, lp.z));
         float seaY = uProfileSeaY[s];
@@ -600,23 +605,11 @@ void main() {
   // geometry the translucent water is actually in front of. The land-field still drives the VERTEX
   // shoaling (waves taper to the shore) and the surf-foam line below; only this see-through floor is gone.
 
-  // cutaway: the sea over the hull footprint is removed outright (the hold
-  // is air, not water); the bounded wedge on the camera side of the cut
-  // goes TRANSLUCENT — "make the ocean transparent … so that you can see
-  // down to where the water level is" (playtest), with no black void
+  // cutaway: the sea over the player's hull is now cleared per-column in the PROFILE-cut loop above
+  // (following the voxel silhouette), so the old blunt footprint rectangle + 4.5x translucent wing are
+  // gone — they were the "huge rectangle cut out around the ship". cutAlpha stays 1.0 so the final
+  // gl_FragColor alpha expression below is unchanged.
   float cutAlpha = 1.0;
-  if (uCutOn > 0.5) {
-    vec2 rel = vWorldPos.xz - uShipPos;
-    float along = dot(rel, uFwd);
-    float across = dot(rel, vec2(-uFwd.y, uFwd.x));
-    if (abs(along) < uHalf.x) {
-      if (abs(across) < uHalf.y) discard;
-      if (abs(across) < uHalf.y * 4.5 &&
-          dot(vWorldPos, uCutPlane.xyz) + uCutPlane.w < 0.0) {
-        cutAlpha = 0.22;
-      }
-    }
-  }
 
   vec3 N = normalize(vNormal);
   vec3 V = normalize(uCameraPos - vWorldPos);

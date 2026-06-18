@@ -122,10 +122,14 @@ void main() {
   // old flat horizon-haze gave. BUT keep a hair of HORIZON_COLOR right at the horizon LINE so the far
   // sea still melts into the sky seamlessly there: that razor-thin band (d.y ∈ ~[-0.02, 0]) sits behind
   // the opaque, horizon-fogged far ocean for any realistic camera height, so it is never actually seen —
-  // it only guards the seam. A few degrees down (where any real sightline through a foreground gap
-  // falls) it is full navy. The ocean's own distance fog still fades the visible far sea to HORIZON_COLOR.
+  // it only guards the seam. Barely below the line (~1deg, where any real sightline through a foreground
+  // gap falls) it is ALREADY full navy. The ocean's own distance fog still fades the far sea to HORIZON_COLOR.
   if (d.y < 0.0) {
-    float toDeep = smoothstep(0.02, 0.10, -d.y);
+    // Navy almost IMMEDIATELY below the horizon. This was a 0.02->0.10 (~5.7deg) fade that left a wide
+    // pale grazing band — the "sheet over a void" / the pale waterline + cutaway seen through any cut.
+    // The comment above always promised a "razor-thin" band; the code now matches it, so no pale shows
+    // through any gap, anywhere ("even if we cut through the surface in the wrong spot it should be blue").
+    float toDeep = smoothstep(0.0, 0.012, -d.y);
     col = mix(uHorizon, uUnderwater, toDeep);
   }
 
