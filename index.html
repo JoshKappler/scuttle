@@ -36,11 +36,22 @@
       .bar.flood > div { background: linear-gradient(180deg, #3f7e9e, #2c5871); }
       /* one segment per ACTUAL hull compartment (built dynamically in main.ts).
          each fills bottom-up by its flood fraction; tint shifts dry→flooding→full */
-      .flood-strip { flex: 1; display: flex; gap: 2px; height: 11px; align-items: stretch; }
-      .flood-cell { flex: 1; position: relative; min-width: 3px; background: rgba(0,0,0,0.5); border: 1px solid rgba(201,162,39,0.28); border-radius: 2px; overflow: hidden; }
+      /* central, must read at a glance — a TALL per-hold column row (was 11px, too thin to see the
+         per-compartment fill). Each cell fills bottom-up by its flood fraction. */
+      .flood-strip { flex: 1; display: flex; gap: 3px; height: 26px; align-items: stretch; }
+      .flood-cell { flex: 1; position: relative; min-width: 7px; background: rgba(0,0,0,0.5); border: 1px solid rgba(201,162,39,0.28); border-radius: 2px; overflow: hidden; }
       .flood-cell > i { position: absolute; left: 0; right: 0; bottom: 0; height: 0%; background: linear-gradient(180deg, #4f93b3, #2c5871); transition: height 0.2s, background 0.2s; }
       .flood-cell.dry > i { background: linear-gradient(180deg, #5a7c5a, #3a5538); }
       .flood-cell.full > i { background: linear-gradient(180deg, #c24a3a, #7c2a20); }
+      /* PUMP status LED + lever: a clear red(off)/green(on) indicator driven from sloop.pumpOn.
+         The dot is the lamp; #pump-text reads PUMP ON / PUMP OFF. */
+      .pump-led { display: inline-flex; align-items: center; gap: 7px; font-variant: small-caps; letter-spacing: 0.08em; }
+      .pump-led .lamp { width: 11px; height: 11px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.6); flex: 0 0 auto; }
+      .pump-led.on .lamp { background: radial-gradient(circle at 35% 30%, #b6f29a, #4fae3a 70%, #2f7a24); box-shadow: 0 0 7px rgba(116,211,98,0.85), inset 0 0 2px rgba(255,255,255,0.5); }
+      .pump-led.off .lamp { background: radial-gradient(circle at 35% 30%, #e89a8a, #b23a2a 70%, #6b1d14); box-shadow: 0 0 5px rgba(194,74,58,0.7), inset 0 0 2px rgba(0,0,0,0.4); }
+      .pump-led.on #pump-text { color: #93b56b; }
+      .pump-led.off #pump-text { color: #c2705e; }
+      #crew-line { color: #a8895c; font-style: italic; }
       .bar.hp > div { background: linear-gradient(180deg, #a8392c, #7c2a20); }
       .bar.stam > div { background: linear-gradient(180deg, #74a368, #44663a); }
       .bar.rudder { position: relative; overflow: visible; }
@@ -98,7 +109,10 @@
       <div class="row"><span class="lbl">Holds</span>
         <div class="flood-strip" id="flood-strip"></div>
       </div>
-      <div class="row"><span class="lbl">Crew</span><span id="crew-line">planks 8 · pump off</span></div>
+      <div class="row"><span class="lbl">Pump</span>
+        <span id="pump-led" class="pump-led off"><span class="lamp"></span><span id="pump-text">PUMP OFF</span></span>
+        <span id="crew-line"></span>
+      </div>
       <div class="row" id="hp-row" style="display:none"><span class="lbl">Health</span><div class="bar hp"><div id="hp-bar"></div></div></div>
       <div class="row" id="stam-row" style="display:none"><span class="lbl">Wind</span><div class="bar stam"><div id="stam-bar"></div></div></div>
     </div>
@@ -106,7 +120,7 @@
       <div class="plate">Gunnery</div>
       <div id="gun-status">READY</div>
       <div class="bar" style="margin-top:6px"><div id="gun-bar"></div></div>
-      <div id="gun-sub">elevation 4.0°</div>
+      <div id="gun-sub"></div>
     </div>
     <div id="gold-panel" class="panel">⛀ <span id="gold">0</span><div id="infamy-line">infamy <span id="infamy">0</span> · <span id="tier" class="tier">Cutter</span></div></div>
     <div id="spyglass"><div class="mask"></div><div class="lens"></div></div>

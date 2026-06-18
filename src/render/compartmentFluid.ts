@@ -68,6 +68,10 @@ uniform float uFillLocalY;   // live flood surface, ship-LOCAL Y (m); fragments 
 uniform float uFloorLocalY;  // compartment floor, ship-LOCAL Y (m) — for depth darkening
 varying vec3 vWorldPos;
 varying float vLocalY;       // ship-local Y of this fragment (m)
+// THREE clipping support (the cutaway "X" plane slices the flood body flush with the hull cut).
+// This is a fully custom ShaderMaterial, so the clip is NOT automatic: the material must have
+// clipping:true (injects NUM_CLIPPING_PLANES + the clippingPlanes uniform) AND these includes.
+#include <clipping_planes_pars_vertex>
 void main() {
   vec3 p = position;          // already ship-local meters (geometry built in local space)
   vLocalY = p.y;
@@ -80,7 +84,10 @@ void main() {
   }
   vec4 wp = modelMatrix * vec4(p, 1.0);
   vWorldPos = wp.xyz;
-  gl_Position = projectionMatrix * viewMatrix * wp;
+  // <clipping_planes_vertex> reads a view-space vec4 named mvPosition — provide it explicitly.
+  vec4 mvPosition = viewMatrix * wp;
+  gl_Position = projectionMatrix * mvPosition;
+  #include <clipping_planes_vertex>
 }
 `;
 
@@ -103,8 +110,13 @@ uniform float uFillLocalY;      // live flood surface, ship-LOCAL Y (m)
 uniform float uFloorLocalY;     // compartment floor, ship-local Y (m)
 varying vec3 vWorldPos;
 varying float vLocalY;
+// THREE clipping support — pairs with the vertex include (see VERT). Needs clipping:true on the mat.
+#include <clipping_planes_pars_fragment>
 
 void main() {
+  // Honour the cutaway clip FIRST: discard fragments on the cut-away side so the flood body is sliced
+  // flush with the hull cut instead of the whole half's water floating in the opened interior.
+  #include <clipping_planes_fragment>
   // CUT TO THE LIVE WATER LEVEL: the body geometry spans floor→column-top, but the pool only fills up
   // to the current flood height. Discard everything above the surface so the water surface sits at the
   // live level and the room above it reads as empty (timber / void) — the real waterline in the room.
@@ -187,6 +199,10 @@ export class CompartmentFluid {
   private nx: number;
   private ny: number;
   private look: OceanLook | null = null;
+  /** The active cutaway clip plane (null = off), stored so compartments ADDED later inherit it and
+   *  so a (re)created fluid (hull swap) can be re-seeded. This is the SAME shared Plane reference
+   *  main.ts mutates in place each frame — store the reference, never a copy. */
+  private clipPlane: THREE.Plane | null = null;
 
   constructor(compartments: Compartment[], dims: [number, number, number]) {
     this.nx = dims[0];
@@ -289,8 +305,21 @@ export class CompartmentFluid {
       vertexShader: VERT,
       fragmentShader: FRAG,
       transparent: true,
-      depthWrite: false, // sits inside the hull; the opaque hull occludes it via depthTest
+      // SOLID BODY (BUG-2): WRITE DEPTH. The body USED to lean on the opaque hull's depth buffer to
+      // hide its own overlapping faces (depthWrite:false); but where the cutaway clips the near hull
+      // away, that occlusion is gone exactly where you look in, so the double-sided front/back faces
+      // + the top "surface" band z-fought (coincident depth, order-dependent alpha blend) → flicker +
+      // a thin "no body" sheet. With depthWrite the NEAREST face wins and occludes the ones behind it,
+      // so the body reads as a SOLID filled volume in the open cut — independent of uCameraPos (which
+      // the world seam never feeds, so a FrontSide-only cull would risk holes: the cells emit an
+      // OUTWARD skin, so the kept-half walls present their BACK faces to a camera looking into the
+      // cut; DoubleSide keeps those visible while depthWrite removes the flicker).
+      depthWrite: true,
       side: THREE.DoubleSide,
+      // make the fully-custom shader HONOUR the cutaway clip plane: injects NUM_CLIPPING_PLANES +
+      // the clippingPlanes uniform array that the clipping_planes_* includes consume. Without this,
+      // assigning mat.clippingPlanes silently no-ops on a raw ShaderMaterial.
+      clipping: true,
       uniforms: {
         ...oc,
         uCameraPos: { value: new THREE.Vector3() },
@@ -302,6 +331,13 @@ export class CompartmentFluid {
         uFloorLocalY,
       },
     });
+
+    // inherit the active cutaway clip so a compartment created AFTER setClipPlane() (or after a hull
+    // swap that re-seeds it in the constructor) is sliced flush with the hull cut from birth.
+    if (this.clipPlane) {
+      mat.clippingPlanes = [this.clipPlane];
+      mat.needsUpdate = true;
+    }
 
     // ONE merged body following the TRUE cell footprint, in ship-local meters. Parented under the ship
     // group, so it heels/pitches/heaves WITH the hull (the room is part of the hull). No per-frame
@@ -351,6 +387,22 @@ export class CompartmentFluid {
       cf.mesh.visible = true;
       cf.uFillLocalY.value = fillHeightLocal(cf.curve, c.waterVolume);
       cf.uFloorLocalY.value = cf.floorLocalY;
+    }
+  }
+
+  /** Cutaway: clip the flood body against the same world-space plane as the hull (null disables), so
+   *  the interior water is sliced flush with the centerline half-cut instead of the whole cut-away
+   *  half's water floating in the opened hull. Pass the SHARED plane reference main.ts mutates in
+   *  place each frame (stored, not copied), so every frame's live pose is honoured. Applies to every
+   *  existing compartment material AND is remembered so compartments added later inherit it. The
+   *  shader only honours this because the material is built with clipping:true + the clipping
+   *  includes — a bare clippingPlanes assignment on a custom ShaderMaterial is a silent no-op. */
+  setClipPlane(plane: THREE.Plane | null): void {
+    this.clipPlane = plane;
+    const planes = plane ? [plane] : null;
+    for (const cf of this.comps.values()) {
+      cf.mat.clippingPlanes = planes;
+      cf.mat.needsUpdate = true;
     }
   }
 

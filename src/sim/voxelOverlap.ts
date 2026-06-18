@@ -82,6 +82,8 @@ function worldAabb(h: HullView, vs: number, min: [number, number, number], max: 
 
 const _bMin: [number, number, number] = [0, 0, 0];
 const _bMax: [number, number, number] = [0, 0, 0];
+const _aMin: [number, number, number] = [0, 0, 0];
+const _aMax: [number, number, number] = [0, 0, 0];
 const _world: [number, number, number] = [0, 0, 0];
 const _blocal: [number, number, number] = [0, 0, 0];
 const _bc: [number, number, number] = [0, 0, 0];
@@ -104,6 +106,25 @@ export function detectContacts(
   const pad = buffer * vsB;
   _bMin[0] -= pad; _bMin[1] -= pad; _bMin[2] -= pad;
   _bMax[0] += pad; _bMax[1] += pad; _bMax[2] += pad;
+
+  // ---- TIGHT broad-phase: bail BEFORE walking A's surface when the two padded envelopes can't touch.
+  // Every contact this function can record is an A SURFACE-CELL CENTRE that passes the per-cell broad
+  // reject above — i.e. it lies inside B's padded box [_bMin,_bMax]. That centre also lies inside A's
+  // own world grid envelope (the corner-transformed worldAabb is a guaranteed OUTER bound of every A
+  // cell centre). So if A's world envelope and B's padded box are DISJOINT, no A-cell centre can land
+  // inside B's box → count is provably 0 and the full surface walk would itself return null. Skipping
+  // it is therefore bit-identical (an empty contact set, never a missed real contact) — it just costs
+  // O(1) transformed corners instead of a per-surface-cell rotate + inverse-rotate + isSolid (+ the
+  // buffer neighbourhood triple-loop on near-misses). This is exactly the case the profile flagged:
+  // two ships NEAR but not interpenetrating, and a hull grounding ~a-voxel-off terrain — their loose
+  // body AABBs (the caller's stepAll cull) touch, but these padded GRID envelopes don't, so the
+  // per-substep surface walk that used to run and return 0 every step is now elided.
+  worldAabb(a, vs, _aMin, _aMax);
+  if (
+    _aMin[0] > _bMax[0] || _aMax[0] < _bMin[0] ||
+    _aMin[1] > _bMax[1] || _aMax[1] < _bMin[1] ||
+    _aMin[2] > _bMax[2] || _aMax[2] < _bMin[2]
+  ) return null;
 
   let count = 0;
   let oMinX = Infinity, oMinY = Infinity, oMinZ = Infinity;

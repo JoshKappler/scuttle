@@ -81,6 +81,23 @@ export class Cannons {
     return Math.max((this.portReloadAt.get(this.portKey(ship, portIndex)) ?? 0) - simTime, 0);
   }
 
+  /** Full reload duration of THIS battery (seconds), upgrade multiplier folded in. Read-only —
+   *  shared safely with AI batteries (each Cannons instance owns its own reloadS/reloadMul). */
+  reloadDuration(): number {
+    return this.reloadS * this.reloadMul;
+  }
+
+  /** Fractional readiness of ONE gun: 0 the instant it fires, ramping linearly to 1 when it's
+   *  loaded again. Lets the HUD reload meter fill SMOOTHLY (the old ready-count flipped 0→1 for the
+   *  whole battery at once on a synchronized broadside). Read-only — uses portReload + reloadDuration,
+   *  so it's safe to call for the player AND AI ships. noReload → always 1 (instant). */
+  portReloadFrac(ship: Ship, portIndex: number, simTime: number): number {
+    const dur = this.reloadDuration();
+    if (dur <= 0) return 1;
+    const remain = this.portReload(ship, portIndex, simTime);
+    return 1 - Math.min(1, Math.max(0, remain / dur));
+  }
+
   /** How many of a ship's live guns are loaded RIGHT NOW (across every battery). main.ts
    *  watches this for the player ship: when it jumps up, a fresh gun (or a whole broadside)
    *  just finished reloading — the cue to ring the reload bell. */

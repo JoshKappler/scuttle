@@ -177,7 +177,11 @@ describe("equalizeFlooding (slow cross-compartment seepage)", () => {
 
   it("narrows the fill gap over time (PARTIAL leveller) but never overshoots; mass conserved", () => {
     const a = comp(10, 10, 0);
-    const b = comp(8, 0, 1); // different capacity — seepage equalizes by FRACTION, not volume
+    // b is a MUCH larger drier neighbour so that even fully fraction-equalized the pair would sit
+    // below the SEEP_FILL_GATE (0.5): the fuller side (a) drops under the gate at fillA≈0.5 (water≈5)
+    // and seepage STALLS there, leaving a residual gap. (With the old 0.8 gate a smaller b sufficed;
+    // the lowered gate needs a deeper sink for the fuller side to drop under it — same physical intent.)
+    const b = comp(30, 0, 1); // capacity 30 → equalized fraction would be 10/40 = 0.25, under the gate
     const gap0 = a.waterVolume / a.volume - b.waterVolume / b.volume; // = 1.0 initially
     for (let i = 0; i < 6000; i++) equalizeFlooding([a, b], 1 / 60);
     const gap1 = a.waterVolume / a.volume - b.waterVolume / b.volume;

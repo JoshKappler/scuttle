@@ -62,6 +62,41 @@ describe("detectContacts", () => {
     expect(detectContacts(a, b, 1, 0, scratch(64))).toBeNull();
   });
 
+  it("tight broad-phase: a near-but-not-overlapping pair returns the SAME empty set (just faster)", () => {
+    // A occupies world x [0,4); B's left face sits at x = 4.6 — a >0.5-voxel gap. The hulls do NOT
+    // interpenetrate and no A-cell centre (max 3.5) lands within even a 0.5-voxel-padded B (min 4.1),
+    // so the result is identically null. This is the case the new envelope gate short-circuits BEFORE
+    // the surface walk; the contract is only that the produced set is unchanged (empty), now cheaper.
+    const a = block(4, [0, 0, 0], ID);
+    const b = block(4, [4.6, 0, 0], ID);
+    expect(detectContacts(a, b, 1, 0, scratch(64))).toBeNull();   // no buffer
+    expect(detectContacts(a, b, 1, 0.5, scratch(64))).toBeNull(); // even with the live 0.5-voxel buffer
+  });
+
+  it("tight broad-phase: a near-miss that is ROTATED still returns null (gate never drops a real contact)", () => {
+    // B rotated 45° about Y and parked just clear of A. The corner-transformed envelope grows, but the
+    // two padded grid boxes still don't meet, so the gate returns null — and that matches the full walk
+    // (no A-cell centre lands inside the rotated B). Locks that the gate is a pure broad reject.
+    const s2 = Math.SQRT1_2; // sin/cos 45°
+    const rotY: [number, number, number, number] = [0, s2, 0, s2];
+    const a = block(4, [0, 0, 0], ID);    // world x [0,4)
+    const b = block(4, [7, 0, 0], rotY);  // well clear even after the √2 corner spread (~5.66 wide)
+    expect(detectContacts(a, b, 1, 0.4, scratch(64))).toBeNull();
+  });
+
+  it("tight broad-phase: a JUST-touching pair is NOT skipped — the real overlap is still found", () => {
+    // Guard against an over-aggressive gate: A x[0,4), B x[3,7) overlap by one voxel layer. The
+    // envelopes clearly intersect, so the gate must fall through and the contact slab must be detected
+    // exactly as before (16 cells, A's x=3 layer). (Mirrors the headline overlap test, post-gate.)
+    const a = block(4, [0, 0, 0], ID);
+    const b = block(4, [3, 0, 0], ID);
+    const s = scratch(64);
+    const r = detectContacts(a, b, 1, 0, s);
+    expect(r).not.toBeNull();
+    expect(r!.count).toBe(16);
+    for (let i = 0; i < r!.count; i++) expect(aCell(s, i)[0]).toBe(3);
+  });
+
   it("is symmetric in detection: swapping A/B still finds the same slab (mirrored axis)", () => {
     const vs = 1;
     const a = block(4, [0, 0, 0], ID);

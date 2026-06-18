@@ -219,6 +219,19 @@ export class Ship implements ContactTarget {
     number,
     { curve: FillCurve; cx: number; cz: number; poolY: number; hasWater: boolean }
   >();
+  /** Cached breach/hatch orifice heads, REUSED + rebuilt at the same ~10 Hz cadence as updateFloodGeom
+   *  (not per 60 Hz substep). Resolving each breach cell's head means a localToWorld + a Gerstner
+   *  `surfaceHeight` sample per cell; a hull holed wide open has dozens-to-hundreds of cells, so that
+   *  was dozens-to-hundreds of swell evals EVERY substep for the whole (long) flood phase. The physics
+   *  swell (λ≥14 m) and the ship pose both move imperceptibly in ~100 ms — exactly like the buoyancy
+   *  LOD and the poolY recompute this file already throttles — so refreshing the heads at 10 Hz and
+   *  reusing them in between is behaviour-preserving. The BreachInput objects are pooled (rebuilt in
+   *  place) so a sustained flood allocates nothing. `breachListDirty` forces an off-cadence rebuild the
+   *  instant the breach set changes (a new hole / a plugged one / a shed chunk) so inflow starts at
+   *  once instead of waiting up to 5 substeps for the next tick. Deterministic: step-counted only. */
+  private breachInputs: BreachInput[] = []; // the LIVE list passed to floodStep (length == live count)
+  private breachPool: BreachInput[] = [];   // owns the objects permanently so rebuilds never reallocate
+  private breachListDirty = true;
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
@@ -544,6 +557,7 @@ export class Ship implements ContactTarget {
     if (bestComp < 0) return false;
     this.breachCells.get(bestComp)!.splice(bestIdx, 1);
     this.planks--;
+    this.breachListDirty = true; // the orifice set shrank → refresh the cached heads next flood step
     return true;
   }
 
@@ -583,51 +597,16 @@ export class Ship implements ContactTarget {
     // world-Y — still the dominant flood cost on a badly-holed big hull even after the native-sort fix
     // (a Man-o'-War compartment is ~60k cells). Throttle it to ~10 Hz (every 6th substep); the inflow
     // calc reuses the cached poolY between recomputes (imperceptible — the pool barely moves in 100 ms).
-    if (this.floodGeomTick++ % 6 === 0) this.updateFloodGeom();
+    // The per-cell breach/hatch HEADS (a localToWorld + a Gerstner surfaceHeight per orifice) ride the
+    // SAME cadence: rebuilt here when the geom tick comes round (or the instant the breach set changed),
+    // reused every substep in between. On a hull holed wide open that turns hundreds of swell evals/step
+    // into the same hundreds once per ~6 steps — see breachInputs. Order matters: refresh poolY FIRST,
+    // then resolve the heads against the fresh poolY.
+    const geomTick = this.floodGeomTick++ % 6 === 0;
+    if (geomTick) this.updateFloodGeom();
+    if (geomTick || this.breachListDirty) this.rebuildBreachInputs(waves, t);
 
-    const breaches: BreachInput[] = [];
-    const p = this.tmpV;
-    // Per-CELL orifice area: every breach cell pushes its own orifice below, so a compartment's total
-    // inflow scales with the NUMBER of its punctured cells (a 1-cell nick vs a 30-cell gash differ
-    // ~30×) AND with each cell's depth (the √(2g·dh) head term: a deep hole floods faster). This is
-    // the user's severity model — small/high holes the pump wins, a big low chunk outpaces it.
-    const cellArea = VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale;
-
-    for (const c of this.build.compartments) {
-      const poolY = this.floodGeom.get(c.id)?.poolY ?? -Infinity;
-
-      // each hull hole is its own orifice (a low hole floods while a high one on the same
-      // compartment drains): sea above the hole drives IN, the pool above it drives OUT.
-      const cells = this.breachCells.get(c.id);
-      if (cells && cells.length > 0) {
-        for (const [x, y, z] of cells) {
-          this.localToWorld([(x + 0.5) * VOXEL_SIZE, (y + 0.5) * VOXEL_SIZE, (z + 0.5) * VOXEL_SIZE], p);
-          const extHead = surfaceHeight(waves, p.x, p.z, t) - p.y; // sea above the hole
-          const intHead = poolY - p.y; // internal pool above the hole
-          if (extHead > 0 || intHead > 0) breaches.push({ compartmentId: c.id, area: cellArea, extHead, intHead });
-        }
-      }
-
-      // deck hatch: an orifice at the coaming lip (raised, so deck wash doesn't flood the hold).
-      // Two-way for free — the sea floods in when it tops the coaming; the pool drains out the
-      // same lip once she's rolled far enough that the hatch goes under on the low side.
-      if (c.hatchArea > 0) {
-        const COAMING = 0.55; // m
-        const hx = (c.bboxMin[0] + c.bboxMax[0]) / 2;
-        this.localToWorld(
-          [(hx + 0.5) * VOXEL_SIZE, (this.build.deckY + 0.5) * VOXEL_SIZE, (this.build.grid.dims[2] / 2) * VOXEL_SIZE],
-          p,
-        );
-        const holeY = p.y + COAMING;
-        const extHead = surfaceHeight(waves, p.x, p.z, t) - holeY;
-        const intHead = poolY - holeY;
-        if (extHead > 0 || intHead > 0) {
-          breaches.push({ compartmentId: c.id, area: c.hatchArea * TUN.flood.inflowScale, extHead, intHead });
-        }
-      }
-    }
-
-    floodStep(this.build.compartments, this.openings, breaches, dt);
+    floodStep(this.build.compartments, this.openings, this.breachInputs, dt);
     // Bulkheads aren't watertight under a head: a substantially-flooded compartment slowly seeps into
     // its neighbours so she fills EVENLY (balanced, bottom-heavy) instead of pooling in one end and
     // listing/trimming hard. Slow + mass-conserving; pairs with the low floodwater ballast below.
@@ -652,6 +631,70 @@ export class Ship implements ContactTarget {
       }
       if (worst) worst.waterVolume = Math.max(worst.waterVolume - TUN.flood.pumpRate * dt, 0);
     }
+  }
+
+  /**
+   * Resolve every breach-cell + hatch orifice into its two-reservoir head and (re)pack them into the
+   * reused `breachInputs` list. Called from updateFlooding at the ~10 Hz floodGeom cadence (or the
+   * instant the breach set changed) — NOT every 60 Hz substep — because each cell costs a localToWorld
+   * + a Gerstner `surfaceHeight` swell eval, and a wide-open hull has dozens-to-hundreds of them; the
+   * swell (λ≥14 m) and the ship pose both move imperceptibly in ~100 ms (same basis as the buoyancy LOD
+   * and the poolY throttle). BreachInput objects come from `breachPool`, grown once and reused in place,
+   * so a sustained flood allocates nothing. `breachInputs.length` is set to the live count so floodStep's
+   * `for…of` sees exactly the active orifices. Clears `breachListDirty`. */
+  private rebuildBreachInputs(waves: Wave[], t: number): void {
+    const inputs = this.breachInputs;
+    inputs.length = 0;
+    const p = this.tmpV;
+    // Per-CELL orifice area: every breach cell pushes its own orifice below, so a compartment's total
+    // inflow scales with the NUMBER of its punctured cells (a 1-cell nick vs a 30-cell gash differ
+    // ~30×) AND with each cell's depth (the √(2g·dh) head term: a deep hole floods faster). This is
+    // the user's severity model — small/high holes the pump wins, a big low chunk outpaces it.
+    const cellArea = VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale;
+
+    for (const c of this.build.compartments) {
+      const poolY = this.floodGeom.get(c.id)?.poolY ?? -Infinity;
+
+      // each hull hole is its own orifice (a low hole floods while a high one on the same
+      // compartment drains): sea above the hole drives IN, the pool above it drives OUT.
+      const cells = this.breachCells.get(c.id);
+      if (cells && cells.length > 0) {
+        for (const [x, y, z] of cells) {
+          this.localToWorld([(x + 0.5) * VOXEL_SIZE, (y + 0.5) * VOXEL_SIZE, (z + 0.5) * VOXEL_SIZE], p);
+          const extHead = surfaceHeight(waves, p.x, p.z, t) - p.y; // sea above the hole
+          const intHead = poolY - p.y; // internal pool above the hole
+          if (extHead > 0 || intHead > 0) this.pushBreach(c.id, cellArea, extHead, intHead);
+        }
+      }
+
+      // deck hatch: an orifice at the coaming lip (raised, so deck wash doesn't flood the hold).
+      // Two-way for free — the sea floods in when it tops the coaming; the pool drains out the
+      // same lip once she's rolled far enough that the hatch goes under on the low side.
+      if (c.hatchArea > 0) {
+        const COAMING = 0.55; // m
+        const hx = (c.bboxMin[0] + c.bboxMax[0]) / 2;
+        this.localToWorld(
+          [(hx + 0.5) * VOXEL_SIZE, (this.build.deckY + 0.5) * VOXEL_SIZE, (this.build.grid.dims[2] / 2) * VOXEL_SIZE],
+          p,
+        );
+        const holeY = p.y + COAMING;
+        const extHead = surfaceHeight(waves, p.x, p.z, t) - holeY;
+        const intHead = poolY - holeY;
+        if (extHead > 0 || intHead > 0) {
+          this.pushBreach(c.id, c.hatchArea * TUN.flood.inflowScale, extHead, intHead);
+        }
+      }
+    }
+    this.breachListDirty = false;
+  }
+
+  /** Append one resolved orifice to `breachInputs`, reusing a pooled BreachInput (no per-step alloc). */
+  private pushBreach(compartmentId: number, area: number, extHead: number, intHead: number): void {
+    const i = this.breachInputs.length;
+    let br = this.breachPool[i];
+    if (br) { br.compartmentId = compartmentId; br.area = area; br.extHead = extHead; br.intHead = intHead; }
+    else { br = { compartmentId, area, extHead, intHead }; this.breachPool[i] = br; }
+    this.breachInputs.push(br);
   }
 
   /** True if any compartment holds water or has a hull breach — i.e. there is flooding to simulate.
@@ -1206,6 +1249,9 @@ export class Ship implements ContactTarget {
         for (let i = 0; i < ids.length - 1; i++) this.openings.push({ a: ids[i], b: ids[i + 1], area: VOXEL_SIZE * VOXEL_SIZE });
       }
     }
+    // the orifice set just grew (new hull holes / bulkhead openings) → force the cached breach heads
+    // to refresh on the next flood step instead of waiting up to the next ~10 Hz geom tick.
+    this.breachListDirty = true;
   }
 
   /** Refresh rapier mass props + buoyancy probes from the current grid. */

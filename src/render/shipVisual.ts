@@ -185,6 +185,10 @@ export class ShipVisual {
     // first), parented under the ship group. Replaces the round-14 clipped plane the player
     // saw as "blue rectangles not bound to the inside" — and the older deck-parallel cubes.
     this.fluid = new CompartmentFluid(this.build.compartments, this.build.grid.dims);
+    // seed the fluid with the CURRENT cutaway clip (mirrors the cannon-material seed above): on a
+    // hull swap setCutaway(cutPlane) is also re-applied by main.ts, but seeding here covers any
+    // ordering and keeps the fresh hull's water sliced from birth if the cut is already on.
+    this.fluid.setClipPlane(this.cutawayPlane);
     this.group.add(this.fluid.group);
     // NOTE: the old "interior shell" black box that used to hide the ocean
     // inside the hull during cutaway is gone — the ocean itself now gets a
@@ -268,6 +272,11 @@ export class ShipVisual {
       m.clippingPlanes = planes;
       m.needsUpdate = true;
     }
+    // clip the interior FLOOD WATER in lock-step with the hull, with the SAME shared plane reference
+    // (main.ts mutates it in place each frame). Without this the whole cut-away half's water floats
+    // in the opened hull; CompartmentFluid's custom shader was given clipping:true + the clip includes
+    // so the plane actually bites instead of silently no-opping.
+    this.fluid.setClipPlane(plane);
     this.cutawayOn = !!plane; // animate() lifts the shade floor while cut away
   }
 

@@ -204,8 +204,13 @@ export function fillHeightLocal(curve: FillCurve, waterVolume: number): number {
   return (curve.layerY[lo] + frac) * VOXEL_SIZE;
 }
 
-const SEEP_FILL_GATE = 0.8; // a compartment only sheds to a neighbour once it's this full (was 0.55)
-const SEEP_RATE = 0.015; // per-second fraction of the fill-fraction gap moved (slow overtopping; was 0.06)
+const SEEP_FILL_GATE = 0.5; // a compartment only sheds to a neighbour once it's HALF full (was 0.8 — too
+// gated: a holed end stayed full while the rest read dry; 0.5 lets a substantially-flooded hold start
+// overtopping into its fore-aft neighbours so the spread is VISIBLE bow↔stern, still only once it's a
+// real standing pool, not a nick).
+const SEEP_RATE = 0.04; // per-second fraction of the fill-fraction gap moved (was 0.015 — overtopping
+// crawled too slowly to propagate across a 10-compartment hull; 0.04 spreads it in seconds while
+// staying a "seep", not a gush — see the SLOW-sliver test).
 
 /**
  * Slow cross-compartment seepage: real bulkheads aren't watertight under a standing head — once a
