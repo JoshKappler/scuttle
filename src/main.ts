@@ -675,7 +675,6 @@ async function main() {
   // driven each fixed step inside world.step — give it the effects sink so carved
   // voxels throw pulverization dust at the contact.
   world.contact.effects = effects;
-  world.rig.effects = effects; // bowsprit bore throws the same pulverization dust
   // helm model (playtest round 2): you ARE a pirate on deck at all times.
   // Steering only happens at the wheel (E to take/leave it). V cycles the view:
   // character 3rd-person (default) → character 1st-person → bird's-eye ship orbit.
@@ -1114,7 +1113,6 @@ async function main() {
     audio,
     sailing,
     contact: world.contact,
-    rig: world.rig, // RigManager — bowsprit bore (Phase 2); inspect DEBUG.rig
     debris,
     ocean, // ocean surface (setFogColor / setWaterDepth / setReflStrength) — live shader tuning
     sky: skySetup, // gradient dome (sky.material.uniforms uZenith/uHorizon/uSunColor) — live sky tuning
@@ -1979,19 +1977,6 @@ async function main() {
         // interior pool equalises to the sea (so a big-hole flood blends flush with the breach).
         { type: "slider", label: "flood skirt m", obj: TUN.flood.render, key: "skirtDepth", min: 0, max: 4, step: 0.1 },
         { type: "slider", label: "flood blend m", obj: TUN.flood.render, key: "blendBand", min: 0.1, max: 3, step: 0.1 },
-      ],
-    },
-    {
-      title: "⛵ Voxel rig (masts/sails)",
-      controls: [
-        { type: "toggle", label: "rig enabled", obj: TUN.rig, key: "enabled" },
-        { type: "toggle", label: "bowsprit bore", obj: TUN.rig, key: "bowsprit" },
-        { type: "toggle", label: "mast fall", obj: TUN.rig, key: "masts" },
-        { type: "slider", label: "bore radius", obj: TUN.rig, key: "boreRadiusVox", min: 0, max: 3, step: 1 },
-        { type: "slider", label: "topple kick", obj: TUN.rig, key: "toppleKick", min: 0, max: 6, step: 0.25 },
-        { type: "slider", label: "hinge time s", obj: TUN.rig, key: "hingeTime", min: 0, max: 4, step: 0.1 },
-        { type: "slider", label: "waterlog /s", obj: TUN.rig, key: "waterlog", min: 0, max: 0.3, step: 0.01 },
-        { type: "slider", label: "fall mass kg", obj: TUN.rig, key: "fallMass", min: 100, max: 2000, step: 50 },
       ],
     },
     {
