@@ -75,8 +75,18 @@ function armorBow(grid: VoxelGrid, forwardFrac = 0.7): void {
  * list / passes the symmetry oracle), each hold keeps its iron mass (fore-aft trim preserved), and the COM
  * only drops (stiffer, never tippier). Run BEFORE weldToSingleComponent (the cast rests on the keel = one
  * connected solid) and AFTER the bulkheads are stamped (so holds are already separate).
+ *
+ * BULKHEAD DE-SPIKE (`bulkheadXs`): the per-hold pass above only touches iron with AIR above it, so the
+ * original ballast PYRAMID's iron that got frozen INSIDE a bulkhead (the tiers narrow with height, peaking
+ * up the centreline) is left untouched — it survives as a tall iron spike up the middle of every bulkhead.
+ * The X-cutaway slices exactly down that centreline, so the spike reads as "the wall is ballast-textured for
+ * a few voxels at the centre" (user). So for each interior bulkhead we ALSO recast its own iron as a FLAT
+ * low layer across the wall's foot (full beam, lowest-first, mirror-paired) instead of a centre spike. It
+ * stays 100% inside the wall (oak↔iron only, never air → the wall stays solid + watertight), conserves that
+ * bulkhead's iron mass exactly (no draft/trim change — the iron keeps its X station), stays symmetric, and
+ * only lowers the COM. So the cutaway shows a clean low charcoal foot, no iron climbing the wall.
  */
-function castFlatBallast(grid: VoxelGrid, deckY: number): void {
+function castFlatBallast(grid: VoxelGrid, deckY: number, bulkheadXs: number[] = []): void {
   const [nx, ny, nz] = grid.dims;
   const zMax = nz - 1;
   const comps = findCompartments(grid, deckY);
@@ -132,6 +142,45 @@ function castFlatBallast(grid: VoxelGrid, deckY: number): void {
       for (const [x, y, z] of slot.cells) grid.set(x, y, z, IRON);
       budget -= slot.cells.length;
       if (budget === 0) break;
+    }
+  }
+
+  // BULKHEAD DE-SPIKE — recast the iron frozen inside each interior bulkhead as a flat low foot (see header).
+  for (const bx of bulkheadXs) {
+    // The bulkhead is a SOLID wall (oak + the pyramid's iron). Gather its below-deck solid cells (the
+    // fillable set) and count + clear its iron (→ oak) as the budget. Air cells (a carved gap) are skipped
+    // so the wall is never breached.
+    const wallCells: { y: number; z: number }[] = [];
+    let bBudget = 0;
+    for (let y = 0; y < deckY; y++) {
+      for (let z = 0; z < nz; z++) {
+        const m = grid.get(bx, y, z);
+        if (m === EMPTY) continue;
+        if (m === IRON) { grid.set(bx, y, z, OAK); bBudget++; }
+        wallCells.push({ y, z }); // every solid wall cell is a refill candidate
+      }
+    }
+    if (bBudget === 0) continue;
+    // Refill the LOWEST bBudget wall cells with iron in MIRROR PAIRS, lowest-first then centre-out — a flat
+    // iron foot across the wall instead of a centre spike. Identical ordering to the per-hold cast above.
+    type WSlot = { cells: [number, number][]; y: number; zd: number };
+    const wslots: WSlot[] = [];
+    for (const { y, z } of wallCells) {
+      const zm = zMax - z;
+      if (z > zm) continue; // mirror side handled from the lower-z column
+      const zd = Math.abs(z * 2 - zMax);
+      if (z === zm) {
+        wslots.push({ cells: [[y, z]], y, zd });
+      } else if (grid.get(bx, y, zm) !== EMPTY) {
+        wslots.push({ cells: [[y, z], [y, zm]], y, zd });
+      }
+    }
+    wslots.sort((a, b) => a.y - b.y || a.zd - b.zd);
+    for (const slot of wslots) {
+      if (bBudget < slot.cells.length) continue;
+      for (const [y, z] of slot.cells) grid.set(bx, y, z, IRON);
+      bBudget -= slot.cells.length;
+      if (bBudget === 0) break;
     }
   }
 }
@@ -484,7 +533,7 @@ export function buildSloop(): ShipBuild {
 
   // weld floating internals (diagonal-only ballast tiers etc.) to the main mass so the
   // hull is ONE 6-connected solid — otherwise findSevered sheds them all on the first hit.
-  castFlatBallast(grid, deckY); // flat-topped iron cast: drops the COM at constant mass + a flat flood floor
+  castFlatBallast(grid, deckY, bulkheadXs); // flat-topped iron cast + bulkhead de-spike (constant mass)
   weldToSingleComponent(grid);
 
   // compartments + leak audit
@@ -786,7 +835,7 @@ export function buildBrig(): ShipBuild {
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
 
   // weld floating internals to the main mass — ONE 6-connected solid (see weld.ts / buildSloop).
-  castFlatBallast(grid, deckY); // flat-topped iron cast: drops the COM at constant mass + a flat flood floor
+  castFlatBallast(grid, deckY, bulkheadXs); // flat-topped iron cast + bulkhead de-spike (constant mass)
   weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);
@@ -994,7 +1043,7 @@ export function buildCutter(): ShipBuild {
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
 
-  castFlatBallast(grid, deckY); // flat-topped iron cast: drops the COM at constant mass + a flat flood floor
+  castFlatBallast(grid, deckY, bulkheadXs); // flat-topped iron cast + bulkhead de-spike (constant mass)
   weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);
@@ -1233,7 +1282,7 @@ export function buildFrigate(): ShipBuild {
   const hatches: ShipBuild["hatches"] = [];
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
 
-  castFlatBallast(grid, deckY); // flat-topped iron cast: drops the COM at constant mass + a flat flood floor
+  castFlatBallast(grid, deckY, bulkheadXs); // flat-topped iron cast + bulkhead de-spike (constant mass)
   weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);
@@ -1498,7 +1547,7 @@ export function buildManOfWar(): ShipBuild {
   for (const hx of hatchXs) hatches.push({ x: hx, z: hatchZ, w: 2, d: 2 });
 
   // weld floating internals (diagonal ballast tiers) to the main mass — ONE 6-connected solid.
-  castFlatBallast(grid, deckY); // flat-topped iron cast: drops the COM at constant mass + a flat flood floor
+  castFlatBallast(grid, deckY, bulkheadXs); // flat-topped iron cast + bulkhead de-spike (constant mass)
   weldToSingleComponent(grid);
 
   const compartments = findCompartments(grid, deckY);
