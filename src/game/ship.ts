@@ -25,6 +25,7 @@ import { MATERIALS, breakEnergy, SPAR } from "../sim/materials";
 import { segmentBoxHit, segmentSailHit } from "../sim/rigDamage";
 import { meshChunk, type ChunkMesh } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
+import { BOWSPRIT_MARGIN_VOX } from "../sim/shipwright";
 import type { ShipVisual, SailRecord } from "../render/shipVisual";
 import type { Physics } from "./physics";
 import { HullCollider } from "./hullCollider";
@@ -341,7 +342,7 @@ export class Ship implements ContactTarget {
     const com = build.grid.centerOfMass();
     this.comLocal = com;
     const [nx, , nz] = build.grid.dims;
-    const l = nx * VOXEL_SIZE;
+    const l = (nx - BOWSPRIT_MARGIN_VOX) * VOXEL_SIZE; // exclude the empty bowsprit margin (Task 5): hull length — and thus rotational inertia/feel — is unchanged by the rig refactor
     // HULL height (m) for the box-inertia, NOT the grid height: the grid is now much taller than the
     // hull to contain the VOXEL MAST tower (ny grew ~3×), so `ny·VOXEL_SIZE` would massively inflate
     // the roll/pitch inertia and dull the tuned ship feel. Use the tallest HULL voxel (bulwark /
