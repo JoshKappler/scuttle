@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildSloop, buildCutter, buildFrigate, type ShipBuild } from "../src/sim/shipwright";
 import { mountSolidCount } from "../src/sim/cannonMount";
 import { WATER_DENSITY, VOXEL_SIZE } from "../src/core/constants";
-import { RAM } from "../src/sim/materials";
+import { OAK, RAM } from "../src/sim/materials";
 
 const ship = buildSloop();
 
@@ -22,12 +22,25 @@ describe("shipwright sloop", () => {
   it("has a reinforced RAM prow but a plain stern (directional bow armor)", () => {
     // armorBow lays the toughest material (RAM) over the forward hull so a bow-first ram wins
     // via material cost — the deformable contact never special-cases it. Lock the invariant:
-    // the stem carries RAM, the stern carries none.
+    // the stem carries RAM, the stern carries none. Windows are measured from the HULL PLATING's
+    // real x-extent (OAK/RAM cells), NOT the grid width nor any-solid — the forward bowsprit margin
+    // adds empty cells, and the bowsprit/masts are SPAR (not plating) further forward.
     const { grid } = ship;
     const [nx, ny, nz] = grid.dims;
+    let hullMinX = Infinity, hullMaxX = -Infinity;
+    for (let x = 0; x < nx; x++) {
+      let plateHere = false;
+      for (let y = 0; y < ny && !plateHere; y++)
+        for (let z = 0; z < nz; z++) {
+          const m = grid.get(x, y, z);
+          if (m === OAK || m === RAM) { plateHere = true; break; }
+        }
+      if (plateHere) { hullMinX = Math.min(hullMinX, x); hullMaxX = x; }
+    }
+    const hullLen = hullMaxX - hullMinX + 1;
+    const stemX0 = hullMaxX - Math.floor(hullLen * 0.15); // forward 15% of the hull
+    const sternX1 = hullMinX + Math.floor(hullLen * 0.15); // aft 15% of the hull
     let stemRam = 0, sternRam = 0;
-    const stemX0 = Math.floor(nx * 0.85); // forward 15%
-    const sternX1 = Math.floor(nx * 0.15); // aft 15%
     for (let x = 0; x < nx; x++)
       for (let y = 0; y < ny; y++)
         for (let z = 0; z < nz; z++) {

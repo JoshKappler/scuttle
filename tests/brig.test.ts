@@ -112,12 +112,19 @@ describe("shipwright brig (round 6: the real fighting vessel)", () => {
   });
 
   it("keeps a wider deck than the old canoe waist", () => {
-    // walkable plank span at midship, inside the bulwarks
+    // walkable plank span at midship, inside the bulwarks. Sample at the HULL's midship (the mid of
+    // the deck-plane's solid x-extent), NOT the grid centre — the forward bowsprit margin adds empty
+    // cells beyond the bow, so nx/2 would fall on the tapering bow.
     const grid = ship.grid;
-    const x = Math.round(grid.dims[0] / 2);
+    const [nx, , nz] = grid.dims;
+    let deckMinX = Infinity, deckMaxX = -Infinity;
+    for (let dx = 0; dx < nx; dx++)
+      for (let z = 0; z < nz; z++)
+        if (grid.isSolid(dx, ship.deckY, z)) { deckMinX = Math.min(deckMinX, dx); deckMaxX = Math.max(deckMaxX, dx); break; }
+    const x = Math.round((deckMinX + deckMaxX) / 2);
     let minZ = Infinity;
     let maxZ = -Infinity;
-    for (let z = 0; z < grid.dims[2]; z++) {
+    for (let z = 0; z < nz; z++) {
       if (grid.isSolid(x, ship.deckY, z)) {
         minZ = Math.min(minZ, z);
         maxZ = Math.max(maxZ, z);

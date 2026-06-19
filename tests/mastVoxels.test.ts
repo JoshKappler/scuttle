@@ -130,5 +130,22 @@ for (const [name, build] of builders) {
         expect(severed.some((s) => s.x === c.x && s.y === c.y && s.z === c.z)).toBe(true);
       }
     });
+
+    it("stamps a thick SPAR bowsprit spiking forward of the bow", () => {
+      // find the bow stem: the max solid x at/over the deck band
+      const [gx, gy, gz] = b.grid.dims;
+      let hullMaxX = 0;
+      for (let x = gx - 1; x >= 0 && hullMaxX === 0; x--)
+        for (let y = 0; y < gy && hullMaxX === 0; y++)
+          for (let z = 0; z < gz; z++)
+            if (b.grid.get(x, y, z) === 1 /*OAK*/) { hullMaxX = x; break; }
+      // there must be SPAR voxels forward of the hull stem (the bowsprit reaches past the bow)
+      let spritCells = 0;
+      for (let x = hullMaxX + 1; x < gx; x++)
+        for (let y = 0; y < gy; y++)
+          for (let z = 0; z < gz; z++)
+            if (b.grid.get(x, y, z) === SPAR) spritCells++;
+      expect(spritCells).toBeGreaterThan(10);
+    });
   });
 }

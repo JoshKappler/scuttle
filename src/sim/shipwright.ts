@@ -4,6 +4,10 @@ import { CANVAS, EMPTY, IRON, OAK, PINE, RAM, SPAR } from "./materials";
 import { findCompartments, type Compartment, type Opening } from "./compartments";
 import { weldToSingleComponent } from "./weld";
 
+/** Empty voxels added to the +x (bow) end of every hull grid so the forward-raking bowsprit fits.
+ *  Covers a capped 9 m bowsprit (≈36 voxels) at the 0.3-rad steeve, plus the heel inset + slack. */
+export const BOWSPRIT_MARGIN_VOX = 44;
+
 /**
  * Procedural voxel shipwright. Hulls come from analytic curves — plan-view
  * half-beam, keel rocker, flared sections — rasterized into a voxel shell
@@ -50,11 +54,24 @@ export interface ShipBuild {
  *  the same impact energy on both hulls barely chips the armored bow while the victim's
  *  unarmored oak side caves in — the asymmetry falls out of the material cost, with no
  *  special-casing in the collision code. A pure OAK→RAM swap (RAM density = oak), so
- *  draft and the tuned trim are unchanged: toughness only. Bow is at high x on every hull. */
+ *  draft and the tuned trim are unchanged: toughness only. Bow is at high x on every hull.
+ *
+ *  The band is measured from the hull's REAL forward extent (the highest-x OAK cell), NOT
+ *  the raw grid width — the forward bowsprit margin (BOWSPRIT_MARGIN_VOX) adds EMPTY cells
+ *  at high x, so `nx * frac` would point into that void and armor nothing. */
 function armorBow(grid: VoxelGrid, forwardFrac = 0.7): void {
   const [nx, ny, nz] = grid.dims;
-  const x0 = Math.floor(nx * forwardFrac);
-  for (let x = x0; x < nx; x++) {
+  // hull stem = highest-x OAK cell (the empty bow margin carries no oak)
+  let hullMaxX = 0;
+  outer: for (let x = nx - 1; x >= 0; x--) {
+    for (let y = 0; y < ny; y++) {
+      for (let z = 0; z < nz; z++) {
+        if (grid.get(x, y, z) === OAK) { hullMaxX = x; break outer; }
+      }
+    }
+  }
+  const x0 = Math.floor(hullMaxX * forwardFrac);
+  for (let x = x0; x <= hullMaxX; x++) {
     for (let y = 0; y < ny; y++) {
       for (let z = 0; z < nz; z++) {
         if (grid.get(x, y, z) === OAK) grid.set(x, y, z, RAM);
@@ -334,7 +351,7 @@ function stampRig(
   grid: VoxelGrid,
   masts: { x: number; z: number; h: number }[],
   deckYAt: (x: number) => number,
-  _bowsprit?: BowspritSpec, // wired in Task 5 (declared now for the call-site contract); leading _ satisfies noUnusedParameters
+  bowsprit?: BowspritSpec, // Task 5: a thick SPAR spar raking up & forward off the bow stem
 ): { mastVoxels: RigCell[][]; sailVoxels: RigCell[][] } {
   const [nx, ny, nz] = grid.dims;
   const cz = (nz - 1) / 2;
@@ -397,6 +414,7 @@ function stampRig(
         // taper the bay width linearly between the two yards; CONTIGUOUS span centred on the mast
         // (zPair) → mirror-symmetric by construction, like the yards.
         const f = (y - lo.yv) / (hi.yv - lo.yv);
+        // halfLo/halfHi are half-integers for odd spans; -0.5 before round collapses to the yard's halfW
         const p = Math.max(0, Math.round(halfLo + (halfHi - halfLo) * f - 0.5)); // cells each side of the centre pair
         for (let z = zPair[0] - p; z <= zPair[1] + p; z++) {
           if (z < 0 || z >= nz) continue;
@@ -410,6 +428,44 @@ function stampRig(
 
     mastVoxels.push(mastCells);
     sailVoxels.push(sailCells);
+  }
+
+  // --- bowsprit: a thick SPAR spar raking up & forward off the bow stem ---
+  if (bowsprit) {
+    const steeve = bowsprit.steeve ?? 0.3;
+    const diam = bowsprit.diameterVox ?? 3;
+    const rad = Math.floor(diam / 2);
+    // locate the bow stem: the highest-x solid hull cell, and the deck-ish y there.
+    let stemX = 0, stemY = 0;
+    for (let x = nx - 1; x >= 0 && stemX === 0; x--) {
+      for (let y = ny - 1; y >= 0; y--) {
+        let hit = false;
+        for (let z = 0; z < nz; z++) if (grid.isSolid(x, y, z)) { hit = true; break; }
+        if (hit) { stemX = x; stemY = y; break; }
+      }
+    }
+    const heelX = stemX - 2;                 // root a little inboard so it ties into the bow
+    const lenVox = Math.round(bowsprit.lengthM / VOXEL_SIZE);
+    const dxv = Math.cos(steeve), dyv = Math.sin(steeve);
+    const samples = Math.max(1, lenVox);
+    const czi0 = Math.floor(cz), czi1 = Math.ceil(cz);
+    for (let s = 0; s <= samples; s++) {
+      const cxf = heelX + dxv * s;
+      const cyf = stemY + dyv * s;
+      const cxi = Math.round(cxf), cyi = Math.round(cyf);
+      for (let dy = -rad; dy <= rad; dy++) {
+        for (let dz = -rad; dz <= rad; dz++) {
+          if (dy * dy + dz * dz > rad * rad + 1) continue; // round the square toward a cylinder
+          const y = cyi + dy;
+          // keep the cross-section mirror-symmetric about the centreline pair
+          for (const zc of [czi0, czi1]) {
+            const z = zc + dz;
+            if (cxi < 0 || cxi >= nx || y < 0 || y >= ny || z < 0 || z >= nz) continue;
+            if (grid.get(cxi, y, z) === EMPTY) grid.set(cxi, y, z, SPAR);
+          }
+        }
+      }
+    }
   }
 
   return { mastVoxels, sailVoxels };
@@ -443,7 +499,7 @@ export function buildSloop(): ShipBuild {
   // round-5 references: cross-section is a wide oval with the top sliced
   // off for the deck, widest at the waterline belt, narrow rounded bottom,
   // tumblehome above, and a lot of ship under the water
-  const nx = 104;
+  const nx = 104 + BOWSPRIT_MARGIN_VOX;
   // ny holds the HULL (deckY≈20) PLUS the VOXEL MAST tower above it (15 m ≈ 60 voxels) + headroom —
   // the trunk is real grid voxels now (stampRig), so the grid must be tall enough to contain it.
   const ny = 86;
@@ -697,7 +753,7 @@ export function buildSloop(): ShipBuild {
  * The old sloop above stays verbatim as the enemy's easier hull.
  */
 export function buildBrig(): ShipBuild {
-  const nx = 152;
+  const nx = 152 + BOWSPRIT_MARGIN_VOX;
   // ny holds the HULL (main deck ≈24, quarterdeck ≈33) PLUS a VOXEL MAST tower. A full 21 m mast in
   // voxels (+84) would push this wide hull's grid past ~1 M cells (a heavier findSevered scan). The
   // voxel trunk is CAPPED to the grid top (~16 m of breakable voxel mast — the bulk a fight shoots /
@@ -999,7 +1055,7 @@ export function buildBrig(): ShipBuild {
  * the smaller beam still self-trims at the belt.
  */
 export function buildCutter(): ShipBuild {
-  const nx = 84;
+  const nx = 84 + BOWSPRIT_MARGIN_VOX;
   // ny holds the HULL (deckY≈16) PLUS the VOXEL MAST tower (12 m ≈ 48 voxels) + headroom — the mast
   // is real grid voxels now (stampRig), so the grid must be tall enough to contain the trunk.
   const ny = 70;
@@ -1185,7 +1241,7 @@ export function buildCutter(): ShipBuild {
  * float at the belt with a deep COM.
  */
 export function buildFrigate(): ShipBuild {
-  const nx = 188;
+  const nx = 188 + BOWSPRIT_MARGIN_VOX;
   // ny holds the HULL (main deck ≈28, quarterdeck ≈37) PLUS a VOXEL MAST tower. A full 26 m mast in
   // voxels (+104) would push this big hull's grid past ~1.3 M cells (a heavier findSevered scan). The
   // voxel trunk is CAPPED to the grid top (~16 m of breakable voxel mast — the bulk a fight shoots /
@@ -1435,7 +1491,7 @@ export function buildFrigate(): ShipBuild {
 }
 
 export function buildManOfWar(): ShipBuild {
-  const nx = 208;
+  const nx = 208 + BOWSPRIT_MARGIN_VOX;
   // ny holds the HULL (weather deck ≈36) PLUS a tall VOXEL MAST tower. This first-rate's grid is
   // ALREADY huge in plan (208×60), so a full 32 m voxel mast (+128 voxels) would blow it past 2 M
   // cells (heavy findSevered + a per-cell test that stalls). The voxel trunk is CAPPED to the grid

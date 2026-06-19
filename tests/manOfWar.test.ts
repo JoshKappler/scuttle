@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildManOfWar } from "../src/sim/shipwright";
 import { mountSolidCount } from "../src/sim/cannonMount";
-import { RAM } from "../src/sim/materials";
+import { OAK, RAM } from "../src/sim/materials";
 
 const ship = buildManOfWar();
 
@@ -79,7 +79,15 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
     // user layout: the six bow guns are an orderly 2×3 grid — exactly TWO z columns (a mirror pair
     // about the centerline), THREE evenly-spaced y rows, all seated FAR forward so each barrel tip
     // clears the stem (stem skin ≈ x202 at the centerline; the ~11.3-voxel barrel reaches x≈212).
-    const [nx, , nz] = ship.grid.dims;
+    const [nx, ny, nz] = ship.grid.dims;
+    // hull stem = the forward extent of the OAK plating; the bow margin adds empty cells beyond it
+    // (and the bowsprit is SPAR, not part of the stem), so we measure "hard up against the bow"
+    // from the hull stem, not the grid width.
+    let stemMaxX = 0;
+    outer: for (let x = nx - 1; x >= 0; x--)
+      for (let y = 0; y < ny; y++)
+        for (let z = 0; z < nz; z++)
+          if (ship.grid.get(x, y, z) === OAK || ship.grid.get(x, y, z) === RAM) { stemMaxX = x; break outer; }
     const fore = ship.cannonPorts.filter((p) => p.facing === "fore");
     expect(fore.length).toBe(6);
     // distinct seats (no two guns share a voxel)
@@ -97,7 +105,7 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
     // every (row,col) cell is filled → a full 2×3 lattice
     expect(new Set(fore.map((p) => `${p.y},${p.z}`)).size).toBe(6);
     for (const p of fore) {
-      expect(p.x).toBeGreaterThanOrEqual(nx - 12); // hard up against the bow → barrel clears the stem
+      expect(p.x).toBeGreaterThanOrEqual(stemMaxX - 12); // hard up against the bow → barrel clears the stem
       expect(mountSolidCount(ship.grid, p)).toBeGreaterThan(0); // bolts to real bow timber
     }
   });
@@ -145,11 +153,24 @@ describe("shipwright man-o'-war (first-rate, three gun decks)", () => {
   });
 
   it("has a reinforced RAM prow but a plain stern (directional bow armor)", () => {
+    // Windows are measured from the HULL PLATING's real x-extent (OAK/RAM cells), NOT the grid width
+    // nor any-solid — the forward bowsprit margin adds empty cells, and the bowsprit/masts are SPAR.
     const { grid } = ship;
     const [nx, ny, nz] = grid.dims;
+    let hullMinX = Infinity, hullMaxX = -Infinity;
+    for (let x = 0; x < nx; x++) {
+      let plateHere = false;
+      for (let y = 0; y < ny && !plateHere; y++)
+        for (let z = 0; z < nz; z++) {
+          const m = grid.get(x, y, z);
+          if (m === OAK || m === RAM) { plateHere = true; break; }
+        }
+      if (plateHere) { hullMinX = Math.min(hullMinX, x); hullMaxX = x; }
+    }
+    const hullLen = hullMaxX - hullMinX + 1;
+    const stemX0 = hullMaxX - Math.floor(hullLen * 0.15); // forward 15% of the hull
+    const sternX1 = hullMinX + Math.floor(hullLen * 0.15); // aft 15% of the hull
     let stemRam = 0, sternRam = 0;
-    const stemX0 = Math.floor(nx * 0.85);
-    const sternX1 = Math.floor(nx * 0.15);
     for (let x = 0; x < nx; x++)
       for (let y = 0; y < ny; y++)
         for (let z = 0; z < nz; z++) {
