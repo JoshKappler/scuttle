@@ -37,7 +37,8 @@ interface DebrisPiece {
   liftMul?: number;
   /** Mast-only: the cloned YARD+SAIL group (shipVisual.cloneMastRig) re-parented under `mesh` in the
    *  body's local frame, so the canvas (with its shot-holes) tumbles WITH the falling spar instead of
-   *  vanishing. Tracked so despawn can dispose its cloned materials. */
+   *  vanishing. Tracked so despawn can dispose its cloned materials.
+   *  DEAD since Task 9 (sails are voxels in the island now); the field is never set — removed in Task 12. */
   rig?: THREE.Group;
   /** Mast-only: seconds remaining before this falling section can deal landing damage — a brief arm
    *  delay so it never craters its OWN deck on the spawn frame (it spawns AT the mast foot, overlapping
@@ -85,8 +86,9 @@ export function islandHasRig(island: Island): boolean {
 
 /**
  * Routing decision for a severed island (pure, unit-tested): a BIG piece (≥ BIG_SEVER, a hull torn
- * in half) becomes a free-floating "wreck" body; ANY piece carrying SPAR (a felled mast) becomes a
- * persistent floating "mast" body regardless of count; everything else is pulverized to "dust".
+ * in half) becomes a free-floating "wreck" body; ANY piece carrying RIG material (SPAR mast/yard or
+ * CANVAS sail) becomes a persistent floating "mast" body regardless of count; everything else is
+ * pulverized to "dust".
  */
 export type DebrisRoute = "wreck" | "mast" | "dust";
 export function routeIsland(island: Island): DebrisRoute {
@@ -532,7 +534,7 @@ export class DebrisManager {
       const sinkFloorY = p.mast ? -30 : p.wreck ? -40 : -60;
       if (p.age > lifetime || tr.y < sinkFloorY) {
         this.scene.remove(p.mesh);
-        this.disposeRig(p); // free the cloned yard/sail materials a felled mast carried down
+        this.disposeRig(p); // no-op until Task 12 removes the dead rig field; kept for future cleanup
         this.physics.debrisBodies.delete(p.body.handle); // drop the stale handle (recycled by Rapier)
         this.physics.world.removeRigidBody(p.body);
         this.pieces.splice(i, 1);
