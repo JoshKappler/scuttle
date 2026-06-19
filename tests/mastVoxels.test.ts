@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildCutter, buildSloop, buildBrig, buildFrigate, type ShipBuild } from "../src/sim/shipwright";
 import { findSevered } from "../src/sim/connectivity";
-import { SPAR } from "../src/sim/materials";
+import { SPAR, CANVAS } from "../src/sim/materials";
 import { VOXEL_SIZE } from "../src/core/constants";
 
 /**
@@ -83,8 +83,10 @@ for (const [name, build] of builders) {
       const cells = fresh.mastVoxels[0].slice().sort((a, c) => a.y - c.y);
       const ys = [...new Set(cells.map((c) => c.y))];
       const midY = ys[Math.floor(ys.length / 2)];
-      // remove the mid layer (both z cells at midY)
+      // remove the mid layer: all mast voxels (SPAR) AND all sail voxels (CANVAS) at midY —
+      // a cannonball or saw-cut slices the WHOLE cross-section at that height.
       for (const c of cells) if (c.y === midY) fresh.grid.remove(c.x, c.y, c.z);
+      for (const c of fresh.sailVoxels[0]) if (c.y === midY) fresh.grid.remove(c.x, c.y, c.z);
       const severed = findSevered(fresh.grid, keelAnchor(fresh)).flatMap((i) => i.cells);
       const above = cells.filter((c) => c.y > midY);
       const below = cells.filter((c) => c.y < midY);
@@ -109,6 +111,23 @@ for (const [name, build] of builders) {
       for (const [, zs] of byY) {
         if (zs.size <= 2) continue;
         for (const z of zs) expect(zs.has(b.grid.dims[2] - 1 - z)).toBe(true);
+      }
+    });
+
+    it("stamps CANVAS sail sheets that fall when the mast base is shot out", () => {
+      const fresh = build();
+      const sail = fresh.sailVoxels[0];
+      expect(sail.length).toBeGreaterThan(10); // a real sheet of cloth voxels
+      for (const c of sail) expect(fresh.grid.get(c.x, c.y, c.z)).toBe(CANVAS);
+      // sail voxels sit in the mast's x-plane and are mirror-symmetric about the centerline
+      for (const c of sail) expect(fresh.grid.get(c.x, c.y, fresh.grid.dims[2] - 1 - c.z)).toBe(CANVAS);
+      // shoot out the trunk base → the whole rig (incl. canvas) severs off as one island
+      const base = fresh.mastVoxels[0];
+      const baseY = Math.min(...base.map((c) => c.y));
+      for (const c of base) if (c.y === baseY) fresh.grid.remove(c.x, c.y, c.z);
+      const severed = findSevered(fresh.grid, keelAnchor(fresh)).flatMap((i) => i.cells);
+      for (const c of sail) {
+        expect(severed.some((s) => s.x === c.x && s.y === c.y && s.z === c.z)).toBe(true);
       }
     });
   });

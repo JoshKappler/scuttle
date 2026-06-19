@@ -1,6 +1,6 @@
 import { VOXEL_SIZE, VOXEL_VOLUME } from "../core/constants";
 import { createGrid, type VoxelGrid } from "./voxelGrid";
-import { EMPTY, IRON, OAK, PINE, RAM, SPAR } from "./materials";
+import { CANVAS, EMPTY, IRON, OAK, PINE, RAM, SPAR } from "./materials";
 import { findCompartments, type Compartment, type Opening } from "./compartments";
 import { weldToSingleComponent } from "./weld";
 
@@ -388,7 +388,25 @@ function stampRig(
       yardZsByLevel.push({ yv, zs }); // Task 4 fills the bays between consecutive yards
     }
 
-    // --- sails: arrive in Task 4 (insert here) ---
+    // --- sails: 1-thin CANVAS sheets filling each bay between consecutive yards (x = m.x) ---
+    for (let s = 0; s + 1 < yardZsByLevel.length; s++) {
+      const lo = yardZsByLevel[s], hi = yardZsByLevel[s + 1];
+      const halfLo = (Math.max(...lo.zs) - Math.min(...lo.zs)) / 2; // half the lower yard's z-span (voxels)
+      const halfHi = (Math.max(...hi.zs) - Math.min(...hi.zs)) / 2;
+      for (let y = lo.yv + 1; y < hi.yv; y++) {
+        // taper the bay width linearly between the two yards; CONTIGUOUS span centred on the mast
+        // (zPair) → mirror-symmetric by construction, like the yards.
+        const f = (y - lo.yv) / (hi.yv - lo.yv);
+        const p = Math.max(0, Math.round(halfLo + (halfHi - halfLo) * f - 0.5)); // cells each side of the centre pair
+        for (let z = zPair[0] - p; z <= zPair[1] + p; z++) {
+          if (z < 0 || z >= nz) continue;
+          if (grid.get(m.x, y, z) === EMPTY) { // skip the trunk/yard cells it laces to
+            grid.set(m.x, y, z, CANVAS);
+            sailCells.push({ x: m.x, y, z });
+          }
+        }
+      }
+    }
 
     mastVoxels.push(mastCells);
     sailVoxels.push(sailCells);
