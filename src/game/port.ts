@@ -296,7 +296,7 @@ export class PortController {
 
   private applyRepair(): void {
     const s = this.ship;
-    s.repairSails(); // resets each rigged mast's integrity AND clears the visual holes + holed-area accounting
+    s.repairSails(); // regrows each still-standing mast's shot-out SPAR/CANVAS voxels + restores its thrust integrity
     s.rudderHp = 3;
     s.rudderEff = 1;
     let guard = 64;
