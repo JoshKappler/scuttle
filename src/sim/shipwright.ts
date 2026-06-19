@@ -314,6 +314,13 @@ export interface BowspritSpec {
   diameterVox?: number; // cross-section diameter in voxels (default 3)
 }
 
+// Rig yard geometry: per level, fraction-of-mast-height for the y-position and the yard's z-width.
+const YARD_LEVELS = [
+  { f: 0.17, wf: 0.71 },
+  { f: 0.56, wf: 0.57 },
+  { f: 0.88, wf: 0.43 },
+];
+
 type RigCell = { x: number; y: number; z: number };
 
 /**
@@ -356,7 +363,30 @@ function stampRig(
       }
     }
 
-    // --- yards + sails arrive in Tasks 3 & 4 (insert here) ---
+    // --- yards: 1-thick SPAR bars across the centerline, in the mast x-plane (x = m.x) ---
+    // Use the ACTUAL grid-capped mast height (trunk may be clipped at ny) so yard fractions
+    // are relative to the real built mast height, not the nominal design height.
+    const hVoxBuilt = Math.min(hVox, ny - yBase);
+    const yardZsByLevel: { yv: number; zs: number[] }[] = [];
+    for (const lv of YARD_LEVELS) {
+      const yv = yBase + Math.min(Math.round(lv.f * hVoxBuilt), hVoxBuilt - 1);
+      if (yv >= ny) continue;
+      const halfW = Math.max(0, Math.round((lv.wf * m.h) / VOXEL_SIZE / 2));
+      const zs: number[] = [];
+      // symmetric span: the two centreline cells + halfW pairs out to each side
+      for (let k = halfW; k >= 0; k--) { zs.push(zPair[0] - k); }
+      for (let k = 0; k <= halfW; k++) { zs.push(zPair[1] + k); }
+      for (const z of zs) {
+        if (z < 0 || z >= nz) continue;
+        if (grid.get(m.x, yv, z) === EMPTY) {
+          grid.set(m.x, yv, z, SPAR);
+          mastCells.push({ x: m.x, y: yv, z });
+        }
+      }
+      yardZsByLevel.push({ yv, zs }); // Task 4 fills the bays between consecutive yards
+    }
+
+    // --- sails: arrive in Task 4 (insert here) ---
 
     mastVoxels.push(mastCells);
     sailVoxels.push(sailCells);

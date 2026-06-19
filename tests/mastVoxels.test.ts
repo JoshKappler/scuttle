@@ -38,11 +38,15 @@ for (const [name, build] of builders) {
         const cells = b.mastVoxels[mi];
         expect(cells.length).toBeGreaterThan(8); // a meaningful 2x2 trunk
         for (const c of cells) expect(b.grid.get(c.x, c.y, c.z)).toBe(SPAR);
-        // 2 distinct x and 2 distinct z columns => a 2x2 trunk cross-section
+        // 2 distinct x columns overall (trunk uses xPair = [m.x, m.x+1]; yards only stamp m.x)
         const xs = new Set(cells.map((c) => c.x));
-        const zs = new Set(cells.map((c) => c.z));
         expect(xs.size).toBe(2);
-        expect(zs.size).toBe(2);
+        // trunk cross-section: filter to the SECOND x column (m.x+1) — yards never stamp there,
+        // so these are pure trunk cells and must span exactly the 2 z-centreline cells
+        const xArr = [...xs].sort((a, b) => a - b);
+        const trunkCells = cells.filter((c) => c.x === xArr[1]);
+        const trunkZs = new Set(trunkCells.map((c) => c.z));
+        expect(trunkZs.size).toBe(2);
         // still a substantial breakable tower (whole mast, or capped at the grid top on big hulls)
         const ys = cells.map((c) => c.y);
         const span = (Math.max(...ys) - Math.min(...ys) + 1) * VOXEL_SIZE;
@@ -90,6 +94,21 @@ for (const [name, build] of builders) {
       }
       for (const c of below) {
         expect(severed.some((s) => s.x === c.x && s.y === c.y && s.z === c.z)).toBe(false);
+      }
+    });
+
+    it("stamps 1-thick SPAR yards spanning the centerline at each level", () => {
+      // a yard is a horizontal bar of SPAR in the mast x-plane, wider than the 2-cell trunk.
+      const cells = b.mastVoxels[0];
+      // group spar cells by y; at least 3 y-levels must be WIDER in z than the 2-cell trunk (the yards)
+      const byY = new Map<number, Set<number>>();
+      for (const c of cells) { (byY.get(c.y) ?? byY.set(c.y, new Set()).get(c.y)!).add(c.z); }
+      const wideLevels = [...byY.values()].filter((zs) => zs.size > 2).length;
+      expect(wideLevels).toBeGreaterThanOrEqual(3);
+      // yards stay mirror-symmetric about the centerline (port == starboard)
+      for (const [, zs] of byY) {
+        if (zs.size <= 2) continue;
+        for (const z of zs) expect(zs.has(b.grid.dims[2] - 1 - z)).toBe(true);
       }
     });
   });
