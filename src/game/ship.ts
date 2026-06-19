@@ -21,7 +21,8 @@ import {
 import { findSevered, type Island } from "../sim/connectivity";
 import { mastFootingCells, MAST_SUPPORT_MIN_FRAC } from "../sim/mastSupport";
 import { mountSolidCount, mountLost } from "../sim/cannonMount";
-import { MATERIALS, breakEnergy, SPAR } from "../sim/materials";
+import { MATERIALS, breakEnergy, SPAR, CANVAS } from "../sim/materials";
+import { survivingFraction, sailIntegrityValue } from "../sim/rigState";
 import { segmentBoxHit, segmentSailHit } from "../sim/rigDamage";
 import { meshChunk, type ChunkMesh } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
@@ -187,6 +188,9 @@ export class Ship implements ContactTarget {
    *  each step from the live grid. Static list of coords — a coord whose grid cell is no longer
    *  SPAR has been shot/severed away. */
   private mastCells: { x: number; y: number; z: number }[][];
+  /** Per mast: the CANVAS sail voxels stamped for it (from build.sailVoxels). A coord whose grid
+   *  cell is no longer CANVAS has been shot/severed away — the live survivor count drives integrity. */
+  private sailCells: { x: number; y: number; z: number }[][];
   /** Per mast: the intact count of hull cells carrying its step (sim/mastSupport.mastFootingCells),
    *  sampled at build. The denominator for the footing-survival fraction — once the hull beneath a
    *  mast falls below MAST_SUPPORT_MIN_FRAC of this, the step is undermined and the trunk is felled. */
@@ -388,6 +392,7 @@ export class Ship implements ContactTarget {
     // collision) — a dedicated cylinder would just be a GHOST you couldn't walk through after the
     // voxels were shot away.
     this.mastCells = (build.mastVoxels ?? build.masts.map(() => [])).map((cells) => cells.slice());
+    this.sailCells = (build.sailVoxels ?? build.masts.map(() => [])).map((cells) => cells.slice());
     // sample the intact hull carrying each mast's step (the denominator for the footing-survival check)
     this.mastFootInit = build.masts.map((m) => mastFootingCells(build.grid, m.x, build.deckYAt(m.x)));
     this.mastAlive = build.masts.map(() => true);
@@ -435,10 +440,13 @@ export class Ship implements ContactTarget {
       const aliveNow = topY > -Infinity;
       if (this.mastAlive[mi] && !aliveNow) {
         // the trunk has just been carved/severed away entirely → she's lost the mast.
-        this.sailIntegrity[mi] = 0;
         this.onMastFelled?.(mi);
       }
       this.mastAlive[mi] = aliveNow;
+      // sailIntegrity = surviving-canvas fraction (0 once the mast is down). Convex feel curve.
+      this.sailIntegrity[mi] = aliveNow
+        ? sailIntegrityValue(survivingFraction(grid, this.sailCells[mi], CANVAS))
+        : 0;
     }
   }
 
