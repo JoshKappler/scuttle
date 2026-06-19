@@ -35,11 +35,6 @@ interface DebrisPiece {
   mast?: boolean;
   /** Mast-only: buoyancy lift multiplier, decays from afloat toward fallSinkFloor as it waterlogs. */
   liftMul?: number;
-  /** Mast-only: the cloned YARD+SAIL group (shipVisual.cloneMastRig) re-parented under `mesh` in the
-   *  body's local frame, so the canvas (with its shot-holes) tumbles WITH the falling spar instead of
-   *  vanishing. Tracked so despawn can dispose its cloned materials.
-   *  DEAD since Task 9 (sails are voxels in the island now); the field is never set — removed in Task 12. */
-  rig?: THREE.Group;
   /** Mast-only: seconds remaining before this falling section can deal landing damage — a brief arm
    *  delay so it never craters its OWN deck on the spawn frame (it spawns AT the mast foot, overlapping
    *  the hull). Counts down in update(); damage probing starts once it reaches 0. */
@@ -458,18 +453,6 @@ export class DebrisManager {
   private ldWl = new THREE.Vector3();
   private ldCells: [number, number, number][] = [];
 
-  /** Free the cloned yard/sail materials a felled mast carried down (geometries are SHARED with the
-   *  live ship and must NOT be disposed; only the per-clone debris materials, tagged debrisRig). */
-  private disposeRig(p: DebrisPiece): void {
-    if (!p.rig) return;
-    p.mesh.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if ((m as THREE.Object3D).userData?.debrisRig && m.material) {
-        (m.material as THREE.Material).dispose();
-      }
-    });
-  }
-
   /**
    * A falling MAST section staves in whatever it lands on (its own deck once toppled, OR another
    * ship), via the ONE destruction rule: probe the spar body's volume against each ship grid and, at a
@@ -534,7 +517,6 @@ export class DebrisManager {
       const sinkFloorY = p.mast ? -30 : p.wreck ? -40 : -60;
       if (p.age > lifetime || tr.y < sinkFloorY) {
         this.scene.remove(p.mesh);
-        this.disposeRig(p); // no-op until Task 12 removes the dead rig field; kept for future cleanup
         this.physics.debrisBodies.delete(p.body.handle); // drop the stale handle (recycled by Rapier)
         this.physics.world.removeRigidBody(p.body);
         this.pieces.splice(i, 1);

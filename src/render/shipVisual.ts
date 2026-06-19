@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import { CHUNK_SIZE, VOXEL_SIZE } from "../core/constants";
 import { TUN } from "../core/tunables";
-import { SUN_DIR } from "./sky";
 import {
   barrelDirLocal,
   BARREL_INBOARD,
@@ -21,34 +20,12 @@ import type { ShipBuild } from "../sim/shipwright";
 
 /**
  * Binds a ship's voxel grid to renderable chunk meshes under one Group, plus
- * the non-voxel dressing: mast, boom, gaff sail, bowsprit (spec: sails and
- * spars are smooth geometry, not voxels). Group origin = grid (0,0,0) corner.
+ * the non-voxel dressing that is STILL a mesh: the stern rudder blade, the helm
+ * wheel, the cannons + gunports, and the stern ladder. The masts / yards / sails
+ * / bowsprit are now real voxels in the grid (drawn by the chunk mesher + carved
+ * by the unified crush), so they are no longer built here. Group origin = grid
+ * (0,0,0) corner.
  */
-/** One sail's hit rectangle (ship-local meters) + its puncture canvas. */
-export interface SailRecord {
-  mesh: THREE.Mesh;
-  mastIdx: number;
-  planeX: number;
-  yMin: number;
-  yMax: number;
-  zMin: number;
-  zMax: number;
-  canvas: HTMLCanvasElement;
-  tex: THREE.CanvasTexture;
-  /** Total cloth area of this sail (ship-local m²), the integrity denominator. Static. */
-  area: number;
-  /** DETERMINISTIC accumulated destroyed area (m²), summed as a fixed NOMINAL area per hole —
-   *  NOT the randomized jagged-polygon area and NOT a canvas pixel readback, so the thrust
-   *  integrity derived from it stays deterministic (THE LAW #1). Capped at `area`. The visual
-   *  hole shape is cosmetic and independent of this number. */
-  holedArea: number;
-  /** Centers (normalized u,v on the canvas) of the DISTINCT holes already torn in this sail. A new
-   *  puncture landing within ~one hole-radius of any of these is treated as already-holed there:
-   *  no fresh polygon, no fresh area. Stops a clustered broadside (N balls, each ≈the same spot)
-   *  from overlap-blobbing into one smooth oval AND from N-counting the same physical rip. */
-  holes: { u: number; v: number }[];
-}
-
 export class ShipVisual {
   readonly group = new THREE.Group();
   private chunkMeshes = new Map<string, THREE.Mesh>();
@@ -93,30 +70,6 @@ export class ShipVisual {
   /** Real clipped, world-leveled, sloshing flood fluid (round 14): replaced the
    *  emissive blue compartment cubes. */
   private fluid: CompartmentFluid;
-  /** Sails by mast, for ball-vs-cloth tests and hole decals. */
-  readonly sails: SailRecord[] = [];
-  /** the bowsprit spar mesh — detachBowsprit() hands a clone to game/rig.ts when it snaps off. */
-  private spritMesh: THREE.Mesh | null = null;
-  private mastRigs: {
-    group: THREE.Group; fallT: number; fallAxis: THREE.Vector3;
-    /** the trunk pole mesh — clipped (scaled down) to the stub on a mid-hit. */
-    pole: THREE.Mesh;
-    /** true only on a grid-capped hull (man-o-war): the voxel trunk can't reach the masthead, so
-     *  the thin `pole` cylinder stays visible as the cosmetic TOPMAST above the voxels (dropped by
-     *  updateRig once the voxel base under it is gone). false → the voxels ARE the whole mast. */
-    cosmeticPole: boolean;
-    /** each spar/sail part with its mast-local foot height (m above the foot), so a
-     *  detach can split the rig at the hit height: parts above the cut fall, below stay. */
-    parts: { mesh: THREE.Mesh; yLocal: number }[];
-    mastH: number;
-    /** the FULL pole height (m) — restore target if the mast is repaired/reset. */
-    poleH: number;
-    /** m above the foot the BUILD-time voxel trunk reaches (the grid cap on a capped hull). The
-     *  cosmetic topmast + its upper canvas only show at full rigged height while the trunk still
-     *  stands to ~this; once a shot carves the trunk BELOW it, the rig drops to the surviving voxel
-     *  height (the felled section went with the debris) — so a downed mast leaves nothing upright. */
-    capAboveFoot: number;
-  }[] = [];
 
   /** Real CC0 plank photos (ambientCG), shared by every ship. */
   private static deckTex: THREE.Texture | null = null;
@@ -258,24 +211,21 @@ export class ShipVisual {
     // shows real timber and real flood water only.
   }
 
-  /** Per-frame rig animation: sail flutter/fill, rudder + wheel answer the
-   *  helm (smoothed, correct sense: port turn → trailing edge to port),
-   *  cannon barrels track the aim (elevation AND traverse) on the aiming side. */
+  /** Per-frame mesh animation: the rudder + wheel answer the helm (smoothed, correct
+   *  sense: port turn → trailing edge to port), and the cannon barrels track the aim
+   *  (elevation AND traverse) on the aiming side. The masts/yards/sails are voxels now,
+   *  so there is no more sail flutter/fill here — `_sailSet` is kept only so the call
+   *  signature is unchanged for callers (it no longer drives anything). */
   animate(
     time: number,
     rudderNorm: number,
-    sailSet: number,
+    _sailSet: number,
     aim?: { bearing: 1 | -1 | GunFacing; elevationDeg: number; traverseDeg: number } | null,
   ): void {
     const dt = Math.min(Math.max(time - this.lastAnimT, 0), 0.1);
     this.lastAnimT = time;
     this.dispRudder += (rudderNorm - this.dispRudder) * Math.min(dt * 6, 1);
 
-    if (this.sailUniforms) {
-      this.sailUniforms.uTime.value = time;
-      this.sailUniforms.uFill.value = 0.35 + 0.65 * sailSet;
-      this.sailUniforms.uSailTrans.value = TUN.gfx.sail.glow; // live glow strength (sail stays opaque)
-    }
     // live shade-floor knob; while cut away, lift it hard so the exposed interior reads
     // (the cut faces point INTO the hull, away from sun + sky, so without this they go black).
     if (this.hullUniforms) {
@@ -297,8 +247,8 @@ export class ShipVisual {
     if (this.rudderPivot) this.rudderPivot.rotation.y = -this.dispRudder * 0.55;
     if (this.wheelSpin) this.wheelSpin.rotation.z = -this.dispRudder * 2.6;
 
-    // (Masts no longer topple as a rigid visual group — they're voxels, carved/severed in place.
-    //  updateRig() drops the yards/sails as their supporting trunk voxels go.)
+    // (Masts/yards/sails/bowsprit are real grid voxels now — drawn by the chunk mesher and
+    //  carved/severed in place by the unified crush, so there is no rig animation here.)
 
     // barrels share the gunnery module's direction math, so what you see is
     // exactly where the ball will go. Yaw-then-pitch keeps carriages upright
@@ -408,312 +358,6 @@ export class ShipVisual {
   updateWater(compartments: Compartment[], cameraPos: THREE.Vector3 | undefined, dt: number): void {
     this.fluid.update(compartments, cameraPos, dt);
   }
-
-  /** Mean ship-local radius (m) of one ball's shot hole — the DETERMINISTIC nominal used for the
-   *  thrust-integrity area accounting (the jagged visual below is cosmetic and may be larger/smaller).
-   *  Sized to a single ball through canvas; the integrity model destroys a sail at half its cloth
-   *  area (see ship.hitSail), a starting value for the feel-test pass. */
-  private static HOLE_R_M = 0.55;
-  private static HOLE_AREA_M2 = Math.PI * ShipVisual.HOLE_R_M * ShipVisual.HOLE_R_M;
-
-  /**
-   * Tear ONE ragged shot hole in a sail at the ship-local crossing point and account the damage.
-   *
-   * Returns the MAST's new destroyed-area FRACTION (this sail's holed area summed with its siblings on
-   * the same mast, over their total cloth area) — `ship.hitSail` turns that into the mast's thrust
-   * integrity. The accounted area is a fixed NOMINAL per hole (`HOLE_AREA_M2`), NOT the randomized
-   * polygon's area and NOT a canvas pixel readback, so the integrity stays DETERMINISTIC (THE LAW #1);
-   * the random shape here only affects how the hole LOOKS.
-   */
-  puncture(rec: SailRecord, yLocal: number, zLocal: number): number {
-    const ctx = rec.canvas.getContext("2d")!;
-    const u = (rec.zMax - zLocal) / (rec.zMax - rec.zMin); // geometry is Y-rotated: +z maps to u=0
-    const v = (yLocal - rec.yMin) / (rec.yMax - rec.yMin);
-    // NEARBY-HOLE MERGE: one ball ≙ at most one fresh hole. A broadside puts several balls through
-    // nearly the same spot; if a new strike lands within ~one hole-radius of an existing hole on
-    // this sail, treat it as already-holed there — DON'T add a polygon or area, so the cluster
-    // reads as one ragged rip, not an overlap-blobbed oval, and the deterministic area isn't
-    // double-counted. The radius is HOLE_R_M in meters, converted to each (u,v) axis's own scale.
-    const ru = ShipVisual.HOLE_R_M / (rec.zMax - rec.zMin); // hole radius in u units
-    const rv = ShipVisual.HOLE_R_M / (rec.yMax - rec.yMin); // hole radius in v units
-    for (const hpt of rec.holes) {
-      const du = (u - hpt.u) / ru;
-      const dv = (v - hpt.v) / rv;
-      if (du * du + dv * dv <= 1) {
-        // already holed here: return the CURRENT (unchanged) mast destroyed fraction.
-        let holed0 = 0;
-        let total0 = 0;
-        for (const s of this.sails) {
-          if (s.mastIdx !== rec.mastIdx) continue;
-          holed0 += s.holedArea;
-          total0 += s.area;
-        }
-        return total0 > 0 ? holed0 / total0 : 0;
-      }
-    }
-    const px = u * rec.canvas.width;
-    const py = (1 - v) * rec.canvas.height;
-    // px radius for the visual, from the nominal hole radius mapped through the sail's cloth width.
-    const rPx = (ShipVisual.HOLE_R_M / (rec.zMax - rec.zMin)) * rec.canvas.width;
-    // ONE irregular jagged polygon (a torn rip), NOT a soft stack of jittered circles (the old
-    // "oval blob"). ~10 vertices around the strike, each radius WIDELY jittered (0.42..1.2× the
-    // nominal) so the rim is sharply ragged — at 256² that reads as torn canvas, not a soft oval.
-    ctx.fillStyle = "#000";
-    const N = 10;
-    ctx.beginPath();
-    for (let i = 0; i < N; i++) {
-      const ang = (i / N) * Math.PI * 2;
-      const r = Math.max(rPx * (0.42 + Math.random() * 0.78), 2);
-      const x = px + Math.cos(ang) * r;
-      const y = py + Math.sin(ang) * r;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.fill();
-    rec.tex.needsUpdate = true;
-
-    // a NEW distinct hole: remember its center so future nearby strikes merge into it.
-    rec.holes.push({ u, v });
-    // DETERMINISTIC area accounting (independent of the random shape above): add a fixed nominal
-    // hole area, capped at the sail's total cloth, then sum this mast's destroyed fraction.
-    rec.holedArea = Math.min(rec.holedArea + ShipVisual.HOLE_AREA_M2, rec.area);
-    let holed = 0;
-    let total = 0;
-    for (const s of this.sails) {
-      if (s.mastIdx !== rec.mastIdx) continue;
-      holed += s.holedArea;
-      total += s.area;
-    }
-    return total > 0 ? holed / total : 0;
-  }
-
-  /** Port repair: wipe every (still-rigged) sail's shot holes — clear the deterministic holed-area
-   *  accounting AND repaint the alphaMap canvas white — so a repaired sail is whole again, in both
-   *  thrust integrity (see ship.hitSail / puncture) and appearance. `mastIdx` limits it to one mast;
-   *  omit to repair all. A felled mast's sails (mesh hidden) are skipped — repair doesn't re-rig. */
-  repairSails(mastIdx?: number): void {
-    for (const s of this.sails) {
-      if (mastIdx !== undefined && s.mastIdx !== mastIdx) continue;
-      if (s.holedArea === 0) continue;
-      s.holedArea = 0;
-      s.holes.length = 0; // wipe the merge-anchors so a repaired sail can tear fresh holes again
-      const ctx = s.canvas.getContext("2d")!;
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, s.canvas.width, s.canvas.height);
-      s.tex.needsUpdate = true;
-    }
-  }
-
-  /** A mast goes by the board. Build the REAL falling section as CLONES of the standing spars +
-   *  sails (so the wreck looks like an actual mast WITH its canvas, not voxel confetti), HIDE /
-   *  CLIP the corresponding static parts, and return the clone group + the pivot/centroid frame
-   *  game/rig.ts drives rigidly each step. `cutLocalY` is the ship-local world-Y of the felling
-   *  hit; parts whose foot sits above it fall, the rest stay as a standing stub. cutLocalY < the
-   *  foot (or a foot/low hit) → the WHOLE mast falls (nothing left standing).
-   *
-   *  The clones are placed at their SPAWN WORLD transforms and the returned group is left at the
-   *  scene's identity; game/rig.ts applies the rigid delta about `pivot` each frame. Returns null
-   *  for an out-of-range / already-felled mast (or headless with no parts). */
-  detachMast(mi: number, cutLocalY: number): {
-    group: THREE.Group; pivot: THREE.Vector3;
-  } | null {
-    const rig = this.mastRigs[mi];
-    if (!rig) return null;
-    const deckTopWorldLocalY = rig.group.position.y; // mast group sits at (mx, deckTop, mz)
-    // a part FALLS if its foot height clears the cut; on a foot/low hit cutLocalY is below the
-    // foot so EVERY part falls and the whole static group is hidden.
-    const cutAboveFoot = cutLocalY - deckTopWorldLocalY; // cut height measured from the mast foot
-    const wholeMast = cutAboveFoot <= 0.5; // hit at/below the foot → topple the lot
-    const holder = new THREE.Group();
-    holder.matrixAutoUpdate = false;
-
-    const tmpP = new THREE.Vector3();
-    const tmpQ = new THREE.Quaternion();
-    const tmpS = new THREE.Vector3();
-    const cloneInto = (mesh: THREE.Mesh) => {
-      // a debris clone: plain opaque material (the billow shader doesn't survive Material.clone()
-      // and a felled spar/sail doesn't billow). Keep the sail's alphaMap so shot holes still read.
-      mesh.getWorldPosition(tmpP);
-      mesh.getWorldQuaternion(tmpQ);
-      mesh.getWorldScale(tmpS);
-      const src = mesh.material as THREE.MeshStandardMaterial;
-      const mat = new THREE.MeshStandardMaterial({
-        color: src.color.clone(), map: src.map ?? null, roughness: src.roughness,
-        side: THREE.DoubleSide,
-      });
-      if (src.alphaMap) { mat.alphaMap = src.alphaMap; mat.alphaTest = src.alphaTest; }
-      const c = new THREE.Mesh(mesh.geometry, mat);
-      c.position.copy(tmpP); c.quaternion.copy(tmpQ); c.scale.copy(tmpS);
-      c.castShadow = true;
-      holder.add(c);
-    };
-
-    // --- the trunk pole: clone the section ABOVE the cut, clip the static pole to the stub below ---
-    // the pole spans local y∈[-0.5, mastH-0.5]; world-local foot = deckTop-0.5, top = deckTop+mastH-0.5.
-    if (wholeMast) {
-      cloneInto(rig.pole);
-      rig.pole.visible = false;
-    } else {
-      // split the pole at cutAboveFoot: clone a top cylinder, shrink the standing one to the stub.
-      const fullH = rig.poleH;
-      const cutA = Math.min(Math.max(cutAboveFoot + 0.5, 0.5), fullH - 0.5); // pole-local distance from its base
-      const topH = fullH - cutA;
-      if (topH > 0.4) {
-        const topGeo = new THREE.CylinderGeometry(rig.mastH * 0.006, rig.mastH * 0.009, topH, 8);
-        topGeo.userData.ownDispose = true; // unique to this clone → game/rig.ts disposes it on despawn
-        const topMesh = new THREE.Mesh(topGeo, (rig.pole.material as THREE.Material));
-        // place it where the upper pole section sits, in mast-local then to world
-        topMesh.position.set(0, (cutA - 0.5) + topH / 2, 0);
-        rig.group.add(topMesh); // momentarily, to read its world transform
-        topMesh.updateWorldMatrix(true, false);
-        cloneInto(topMesh);
-        rig.group.remove(topMesh);
-        // NOTE: topGeo is now owned by the clone — do NOT dispose here.
-      }
-      // shrink the standing pole down to the stub (scale a centered cylinder so its base stays put)
-      const stubH = cutA;
-      rig.pole.scale.y = stubH / fullH;
-      rig.pole.position.y = stubH / 2 - 0.5;
-    }
-
-    // --- yards + sails: each falls if its foot clears the cut; else it stays on the stub ----------
-    for (const part of rig.parts) {
-      const aboveCut = wholeMast || part.yLocal > cutAboveFoot;
-      if (!aboveCut) continue;
-      cloneInto(part.mesh);
-      part.mesh.visible = false;
-    }
-
-    // pivot = the mast FOOT world point (the standing stub's break face) — game/rig.ts rotates the
-    // falling section about a point near here; the exact value is refined to the chunk centroid there.
-    const pivot = new THREE.Vector3();
-    rig.group.getWorldPosition(pivot);
-    return { group: holder, pivot };
-  }
-
-  /**
-   * VOXEL-MAST debris dressing (the fix for "the sails just disappear when the mast is hit"): clone the
-   * still-visible YARDS + SAILS of mast `mi` into a DETACHED group and HIDE the statics, so a felled
-   * voxel section carries its real canvas (WITH its shot-holes) down as it falls instead of the cloth
-   * blinking out. Unlike detachMast this clones NO pole — the trunk is real voxels (the felled SPAR
-   * island is already re-meshed by debris.spawnMast), so cloning a cylinder here would double it.
-   *
-   * Each clone is positioned at its CURRENT WORLD transform (pos/quat/scale baked in); the caller
-   * (game/debris.spawnMast) re-parents them under the falling body and converts world→body-local, so
-   * they tumble rigidly WITH the spar. `cutLocalY` is the ship-local world-Y (m) of the break: a part
-   * whose foot sits ABOVE it falls (clone + hide), the rest stay laced to the standing stub. Pass −∞
-   * (or below the foot) to take the WHOLE rig. Returns null if there's nothing to carry (no parts above
-   * the cut, headless, or an out-of-range mast) so the caller can skip the empty attach.
-   *
-   * Note: updateRig() also hides yards/sails above the surviving mastTopY each step; hiding them HERE
-   * too makes the clone↔static handoff flash-free (no frame where both the live sail and its clone draw).
-   */
-  cloneMastRig(mi: number, cutLocalY = -Infinity): THREE.Group | null {
-    const rig = this.mastRigs[mi];
-    if (!rig) return null;
-    const deckTopWorldLocalY = rig.group.position.y; // mast group sits at (mx, deckTop, mz)
-    const cutAboveFoot = cutLocalY - deckTopWorldLocalY; // cut height measured from the mast foot
-    const wholeMast = !Number.isFinite(cutLocalY) || cutAboveFoot <= 0.5; // foot/low hit → take the lot
-
-    const holder = new THREE.Group();
-    const tmpP = new THREE.Vector3();
-    const tmpQ = new THREE.Quaternion();
-    const tmpS = new THREE.Vector3();
-    let cloned = 0;
-    const cloneInto = (mesh: THREE.Mesh) => {
-      if (!mesh.visible) return; // an already-dropped part (updateRig hid it) contributes nothing
-      // a debris clone: plain opaque material (the billow shader doesn't survive Material.clone() and a
-      // felled sail doesn't billow). KEEP the sail's alphaMap + alphaTest so its shot holes still read.
-      mesh.getWorldPosition(tmpP);
-      mesh.getWorldQuaternion(tmpQ);
-      mesh.getWorldScale(tmpS);
-      const src = mesh.material as THREE.MeshStandardMaterial;
-      const mat = new THREE.MeshStandardMaterial({
-        color: src.color.clone(), map: src.map ?? null, roughness: src.roughness,
-        side: THREE.DoubleSide,
-      });
-      if (src.alphaMap) { mat.alphaMap = src.alphaMap; mat.alphaTest = src.alphaTest; }
-      const c = new THREE.Mesh(mesh.geometry, mat);
-      c.position.copy(tmpP); c.quaternion.copy(tmpQ); c.scale.copy(tmpS);
-      c.castShadow = true;
-      c.userData.debrisRig = true; // so debris despawn can dispose the cloned materials
-      holder.add(c);
-      mesh.visible = false;
-      cloned++;
-    };
-
-    for (const part of rig.parts) {
-      const aboveCut = wholeMast || part.yLocal > cutAboveFoot;
-      if (aboveCut) cloneInto(part.mesh);
-    }
-    return cloned > 0 ? holder : null;
-  }
-
-  /**
-   * Sync the yards + sails to the LIVE voxel trunk. Masts are real voxels now (carved/severed by the
-   * hull), so the trunk itself is handled by the hull remesh; here we just DROP the separate spar/sail
-   * meshes whose foot now hangs above the surviving trunk. `mastTopY[mi]` is the ship-local Y (m) of
-   * the highest surviving SPAR voxel's top (−Infinity once the whole trunk is gone, derived in
-   * game/ship.updateMastState). A yard/sail is hidden once its foot clears that height — so a shot
-   * that lops the top drops just its upper canvas, a shot at the base drops the lot. Idempotent + cheap
-   * (a few visibility flags), called every step from ship.syncVisual.
-   */
-  updateRig(mastTopY: number[]): void {
-    for (let mi = 0; mi < this.mastRigs.length; mi++) {
-      const rig = this.mastRigs[mi];
-      // surviving trunk height measured from the mast-group origin (which sits at the deck top) —
-      // the same convention detachMast uses for its cut height.
-      const top = mastTopY[mi] ?? -Infinity;
-      const aliveAtFoot = top > -Infinity; // any voxel trunk still standing off the deck?
-      const survAboveFoot = aliveAtFoot ? top - rig.group.position.y : -Infinity;
-      // a grid-CAPPED mast (the man-o-war: its voxel trunk truncates at the grid cap, with a thin
-      // cosmetic topmast carrying the upper rig) shows its FULL rigged height ONLY while the trunk
-      // still stands to ~that build cap. The OLD rule extended to full height for ANY surviving foot
-      // stub, so a shot that severed the upper trunk left the cosmetic pole + its canvas hanging in
-      // the air while the felled voxels fell away as debris — the "mast clones itself, one stays
-      // upright" bug. Now once the trunk is carved BELOW the cap the rig drops to the real surviving
-      // voxel height (the upper section went with the debris); at full health it still shows the lot.
-      const intactAtCap = aliveAtFoot && survAboveFoot >= rig.capAboveFoot - 0.75;
-      const effHeight = rig.cosmeticPole && intactAtCap ? Math.max(survAboveFoot, rig.mastH) : survAboveFoot;
-      // the cosmetic TOPMAST cylinder hangs ABOVE the voxels: show it only while the trunk still
-      // reaches the cap, so a shot through the trunk drops it instead of leaving it floating.
-      if (rig.cosmeticPole) rig.pole.visible = intactAtCap;
-      for (const part of rig.parts) {
-        // a small slack (0.5 m) keeps a yard whose foot sits right at the surviving top still shown.
-        part.mesh.visible = aliveAtFoot && part.yLocal <= effHeight + 0.5;
-      }
-    }
-  }
-
-  /** The bowsprit snaps off (Task 9): clone the real spar as a falling-debris mesh and HIDE the
-   *  static one. Returns the clone group at the scene identity (game/rig.ts drives it rigidly) +
-   *  its spawn-world centroid as the pivot. Null if there's no spar mesh (headless / already gone). */
-  detachBowsprit(): { group: THREE.Group; pivot: THREE.Vector3 } | null {
-    const sprit = this.spritMesh;
-    if (!sprit || !sprit.visible) return null;
-    const holder = new THREE.Group();
-    holder.matrixAutoUpdate = false;
-    const pos = new THREE.Vector3();
-    const quat = new THREE.Quaternion();
-    const scl = new THREE.Vector3();
-    sprit.getWorldPosition(pos);
-    sprit.getWorldQuaternion(quat);
-    sprit.getWorldScale(scl);
-    // a FRESH debris material (its map texture is shared, which is fine) so game/rig.ts can dispose
-    // the falling clone's material on despawn without touching the live ship's shared woodMat.
-    const src = sprit.material as THREE.MeshStandardMaterial;
-    const mat = new THREE.MeshStandardMaterial({ color: src.color.clone(), map: src.map ?? null, roughness: src.roughness });
-    const c = new THREE.Mesh(sprit.geometry, mat);
-    c.position.copy(pos); c.quaternion.copy(quat); c.scale.copy(scl);
-    c.castShadow = true;
-    holder.add(c);
-    sprit.visible = false;
-    return { group: holder, pivot: pos.clone() };
-  }
-
-  /** True while the bowsprit spar mesh is still standing (game/rig.ts gates its detach on this). */
-  get bowspritStanding(): boolean { return !!this.spritMesh && this.spritMesh.visible; }
 
   /** A cannon loses its mount: HIDE the static gun mesh (the live physical fall is a falling
    *  body spawned by game/rig.ts) and report its current WORLD pose so the caller can spawn the
@@ -826,7 +470,6 @@ export class ShipVisual {
     this.chunkMeshes.set(key, mesh);
   }
 
-  private sailUniforms: { uTime: { value: number }; uFill: { value: number }; uSailTrans: { value: number } } | null = null;
   private rudderPivot: THREE.Group | null = null;
   private rudderBlade: THREE.Mesh | null = null;
   private wheelSpin: THREE.Group | null = null;
@@ -856,238 +499,19 @@ export class ShipVisual {
     wheelR: THREE.CylinderGeometry;
   } | null = null;
 
-  /** Square rig + bowsprit, stern rudder, helm wheel, guns, stern ladder. */
+  /** Stern rudder, helm wheel, guns, stern ladder. The masts / yards / sails / bowsprit
+   *  are now real voxels in the grid (drawn by the chunk mesher + carved by the unified
+   *  crush), so they are no longer built or animated here. */
   private addRig(): void {
-    // real wood + fabric photos on the rig (playtest round 5: "the mast and
-    // other wooden features have no wooden texture"; the canvas sail looked
-    // "like a piece of lined notebook paper")
+    // real wood photos on the still-mesh dressing (playtest round 5: "the … wooden
+    // features have no wooden texture")
     const wood = ShipVisual.loadWood();
     const rigTex = wood.hull.clone();
     rigTex.repeat.set(1, 4);
     rigTex.needsUpdate = true;
-    // dark weathered oak for every spar, carriage, rudder, ladder and wheel —
+    // dark weathered oak for the carriage, rudder, ladder and wheel —
     // 0xb89878 was a pale tan that read birch next to the hull (round 9)
     const woodMat = new THREE.MeshStandardMaterial({ map: rigTex, color: 0x5a4128, roughness: 0.85 });
-    const sailTex = new THREE.TextureLoader().load("assets/textures/sail.jpg", (t) => {
-      t.wrapS = t.wrapT = THREE.RepeatWrapping;
-      t.colorSpace = THREE.SRGBColorSpace;
-      t.repeat.set(3, 2.2);
-    });
-
-    // billow + flutter in the vertex stage; uFill scales the belly with sail
-    // set. SQUARE RIG: the sail hangs between two yards (top/bottom pinned by
-    // sin(πv)) and bellies FORWARD along its normal — a vertical bulge, per
-    // playtest ("billow out vertically, not in a horizontal curve")
-    this.sailUniforms = { uTime: { value: 0 }, uFill: { value: 1 }, uSailTrans: { value: TUN.gfx.sail.glow } };
-    const su = this.sailUniforms;
-    // shared constants for the sail back-light: the world sun direction + a warm tint
-    // for the light transmitted through the canvas (consumed in the fragment inject below).
-    const uSunDirW = { value: SUN_DIR.clone() };
-    const uSailSun = { value: new THREE.Color(1.0, 0.84, 0.62) };
-    const injectBillow = (shader: { uniforms: Record<string, unknown>; vertexShader: string; fragmentShader: string }) => {
-      shader.uniforms.uTime = su.uTime;
-      shader.uniforms.uFill = su.uFill;
-      shader.uniforms.uSailTrans = su.uSailTrans;
-      shader.uniforms.uSunDirW = uSunDirW;
-      shader.uniforms.uSailSun = uSailSun;
-      shader.vertexShader = shader.vertexShader
-        .replace(
-          "#include <common>",
-          "#include <common>\nuniform float uTime;\nuniform float uFill;\nattribute float aBelly;\nvarying vec3 vSailWN;",
-        )
-        .replace(
-          "#include <begin_vertex>",
-          `#include <begin_vertex>
-          {
-            // uv.y: 0 at one yard → 1 at the other (both pinned, vertical
-            // bulge between); uv.x: edges nearly pinned by the sheets.
-            // Geometry is pre-rotated: +x is FORWARD, away from the mast.
-            // aBelly carries each sail's own depth (∝ its width) — a flat
-            // 1 m bulge on a 15 m course read as paper (round 6.5)
-            // sin(uv.y·π) is 0 at each yard: BOTH the belly and the flutter
-            // vanish where the cloth is laced to the spar, so the head and
-            // foot stay welded to the wood while the body breathes. Round 8's
-            // flutter had no such envelope — the laced edges floated off the
-            // yards and snapped back ("warbles … parts that are supposed to be
-            // attached to the wood float away and then return", round 9).
-            float yardPin = sin(uv.y * 3.14159);
-            float belly = yardPin * (0.35 + 0.65 * sin(uv.x * 3.14159)) * aBelly * uFill;
-            float flutter = sin(uTime * 4.6 + uv.x * 8.0 + uv.y * 5.0) * (0.04 + aBelly * 0.03) * uFill * yardPin;
-            transformed.x += belly + flutter;
-          }
-          // world-space cloth normal, for the back-light term in the fragment
-          vSailWN = normalize(mat3(modelMatrix) * normal);`,
-        );
-      // back-lit translucency: when the sun lights the FAR side of the thin canvas, that
-      // light "leaks" through to the side we're viewing — a sail shaded from the front
-      // glows warmly instead of going flat-dark. gl_FrontFacing picks the viewed side
-      // (DoubleSide); the amount ∝ how squarely the sun strikes the far face, tinted warm
-      // and modulated by the cloth texture so the weave still reads through the glow.
-      shader.fragmentShader = shader.fragmentShader
-        .replace(
-          "#include <common>",
-          "#include <common>\nvarying vec3 vSailWN;\nuniform vec3 uSunDirW;\nuniform vec3 uSailSun;\nuniform float uSailTrans;",
-        )
-        .replace(
-          "#include <opaque_fragment>",
-          `{
-            vec3 wnf = normalize(vSailWN);
-            if (!gl_FrontFacing) wnf = -wnf;                      // normal facing the viewer
-            float backlit = max(dot(-wnf, normalize(uSunDirW)), 0.0); // sun lighting the far side
-            // pow 0.8 (was 1.5): real backlit cloth scatters light BROADLY, so the glow
-            // should fall off gently — a tight specular lobe only lit the sail at the exact
-            // sun-dead-behind angle and read as "not there". A broad lobe glows across a
-            // wide arc of headings, so it actually shows on every ship as it sails.
-            backlit = pow(backlit, 0.8);
-            float texL = dot(diffuseColor.rgb, vec3(0.3333));
-            // ADD warm light only — the cloth itself stays fully opaque (same texture)
-            totalEmissiveRadiance += uSailSun * (uSailTrans * backlit * (0.45 + 0.55 * texL));
-          }
-          #include <opaque_fragment>`,
-        );
-    };
-    // every sail needs its OWN material (its own puncture alphaMap), and
-    // Material.clone() does NOT carry onBeforeCompile — round 7's first cut
-    // cloned the base and every sail went paper-flat. Build each from scratch.
-    const newSailMaterial = () => {
-      const m = new THREE.MeshStandardMaterial({
-        color: 0xe8dfc8,
-        map: sailTex,
-        roughness: 0.95,
-        side: THREE.DoubleSide,
-      });
-      m.onBeforeCompile = injectBillow;
-      return m;
-    };
-
-    this.build.masts.forEach((m, mi) => {
-      const mastH = m.h;
-      const deckTop = (this.build.deckYAt(m.x) + 1) * VOXEL_SIZE;
-      const mx = (m.x + 0.5) * VOXEL_SIZE;
-      const mz = (m.z + 0.5) * VOXEL_SIZE;
-
-      // every spar and sail of one mast lives under ONE group pivoted at its
-      // FOOT, so shooting the foot out drops the whole rig as a unit
-      // (round 7: "taking out a ship's mast at the bottom will cause the
-      // entire thing to fall down")
-      const mastGroup = new THREE.Group();
-      mastGroup.position.set(mx, deckTop, mz);
-      this.group.add(mastGroup);
-      // tip abeam (alternating side per mast) and a touch aft
-      const df = new THREE.Vector3(-0.4, 0, mi % 2 === 0 ? 1 : -1).normalize();
-      // parts list (yards + sails) with each part's local foot-height, filled below — lets
-      // detachMast(mi, cutY) split the rig at the hit height (above = falls, below = stub).
-      const parts: { mesh: THREE.Mesh; yLocal: number }[] = [];
-
-      // The trunk is REAL VOXELS now (sim/shipwright stampMasts), meshed + carved by the hull, so the
-      // smooth cylinder is normally HIDDEN — it would just double the trunk and never break voxel-by-
-      // voxel. EXCEPTION: on a hull whose grid is too short to hold the WHOLE mast in voxels (the
-      // man-o-war, capped for perf), the voxel trunk truncates partway up and the thin cylinder stays
-      // visible as the cosmetic TOPMAST above the voxels. Kept (mesh always present) so detachMast /
-      // the parts list keep a valid `pole` reference. updateRig() keeps it in sync with damage.
-      const vox = this.build.mastVoxels?.[mi] ?? [];
-      const voxTopLocalY = vox.length ? (Math.max(...vox.map((c) => c.y)) + 1) * VOXEL_SIZE : deckTop;
-      const voxTopAboveFoot = voxTopLocalY - deckTop; // mast-group-local height the voxels reach
-      const fullyVoxel = voxTopAboveFoot >= mastH - 1; // voxels reach (near) the masthead → no cylinder
-      const mast = new THREE.Mesh(
-        new THREE.CylinderGeometry(mastH * 0.006, mastH * 0.012, mastH, 8),
-        woodMat,
-      );
-      mast.position.set(0, mastH / 2 - 0.5, 0);
-      mast.castShadow = true;
-      mast.visible = !fullyVoxel; // voxel trunk replaces it unless the voxels were capped short
-      mastGroup.add(mast);
-
-      this.mastRigs.push({
-        group: mastGroup,
-        fallT: -1,
-        fallAxis: new THREE.Vector3(df.z, 0, -df.x), // up × df
-        pole: mast,
-        cosmeticPole: !fullyVoxel,
-        parts,
-        mastH,
-        poleH: mastH,
-        capAboveFoot: voxTopAboveFoot,
-      });
-
-      // square rig, canvas up to the masthead (playtest round 4): three
-      // yards crossing the FORE side of the mast, two tapered sails laced
-      // tight between consecutive yards. Round 10: the yards and the sail used
-      // to float just in front of the mast (and each other) — now the yard is
-      // slung ONTO the mast (its after side buried in the trunk) and the sail
-      // is laced to the yard's fore face, so mast↔yard↔sail all intersect as if
-      // really attached. Yards thickened so they read as real spars.
-      const mastR = mastH * 0.009; // ~trunk radius at the yards
-      const yardR = 0.12; // thicker than the old 0.07
-      const yardOff = mastR + yardR * 0.4; // yard buried into the mast front
-      const sailOff = yardOff + yardR; // sail laced to the yard's fore face
-      const levels = [
-        { y: mastH * 0.17, w: mastH * 0.71 }, // course yard
-        { y: mastH * 0.56, w: mastH * 0.57 }, // topsail yard
-        { y: mastH * 0.88, w: mastH * 0.43 }, // topgallant yard
-      ];
-      for (const lv of levels) {
-        const yardGeo = new THREE.CylinderGeometry(yardR, yardR, lv.w + 0.3, 8);
-        yardGeo.rotateX(Math.PI / 2); // axis beam-wise
-        const yard = new THREE.Mesh(yardGeo, woodMat);
-        yard.position.set(yardOff, lv.y, 0);
-        yard.castShadow = true;
-        mastGroup.add(yard);
-        parts.push({ mesh: yard, yLocal: lv.y });
-      }
-      for (let i = 0; i < levels.length - 1; i++) {
-        const foot = levels[i];
-        const head = levels[i + 1];
-        const h = head.y - foot.y - 0.12; // laced to both yards, no air gap
-        const geo = new THREE.PlaneGeometry(foot.w, h, 14, 10);
-        // taper the head to the upper yard's span (trapezoid, like real canvas)
-        const pos = geo.attributes.position as THREE.BufferAttribute;
-        for (let vi = 0; vi < pos.count; vi++) {
-          const f = (pos.getY(vi) + h / 2) / h; // 0 at foot → 1 at head
-          pos.setX(vi, pos.getX(vi) * (1 - f + (f * head.w) / foot.w));
-        }
-        geo.rotateY(Math.PI / 2); // width spans the beam; normal points forward
-        const bellyArr = new Float32Array(pos.count).fill(foot.w * 0.17);
-        geo.setAttribute("aBelly", new THREE.BufferAttribute(bellyArr, 1));
-
-        // every sail carries its own puncture canvas (white = cloth, black =
-        // shot holes) wired as an alphaMap from birth so the shader program
-        // never changes — balls tear it instead of passing through (round 7)
-        const canvas = document.createElement("canvas");
-        // 256² (was 128²): a ~0.55 m shot hole was only a few px on a 128 canvas and the alphaTest
-        // edge blurred it into a round blob. At 256 the jagged 10-gon rim reads as torn cloth. rPx
-        // in puncture() scales off canvas.width, so it stays consistent with the bump.
-        canvas.width = canvas.height = 256;
-        const cctx = canvas.getContext("2d")!;
-        cctx.fillStyle = "#fff";
-        cctx.fillRect(0, 0, canvas.width, canvas.height);
-        const tex = new THREE.CanvasTexture(canvas);
-        const mat = newSailMaterial();
-        mat.alphaMap = tex;
-        mat.alphaTest = 0.45;
-
-        const sail = new THREE.Mesh(geo, mat);
-        sail.position.set(sailOff, (foot.y + head.y) / 2, 0);
-        sail.castShadow = true;
-        mastGroup.add(sail);
-        parts.push({ mesh: sail, yLocal: (foot.y + head.y) / 2 });
-
-        this.sails.push({
-          mesh: sail,
-          mastIdx: mi,
-          planeX: mx + sailOff,
-          yMin: deckTop + foot.y,
-          yMax: deckTop + head.y,
-          zMin: mz - foot.w / 2,
-          zMax: mz + foot.w / 2,
-          canvas,
-          tex,
-          area: (head.y - foot.y) * foot.w, // rect cloth area (m²) — the integrity denominator
-          holedArea: 0,
-          holes: [],
-        });
-      }
-    });
 
     // stern rudder: hinged blade reaching below the keel for clear flow, and
     // UP the transom toward the deck so you can actually watch it answer the
@@ -1339,27 +763,7 @@ export class ShipVisual {
     ladder.position.x = 0.88; // proud of the transom
     this.group.add(ladder);
     this.ladderLocal = [0.88, 2.0, lz];
-
-    // bowsprit: a real spar scaled to the hull, ROOTED on the foredeck — its
-    // heel sits 2 m inboard of the stem so it visibly belongs to the ship
-    // (round 6.5: "the front mast … is floating slightly ahead of the ship")
-    const spritLen = this.build.lengthM * 0.28;
-    const steeve = 0.3; // radians above horizontal
-    const sprit = new THREE.Mesh(
-      new THREE.CylinderGeometry(spritLen * 0.014, spritLen * 0.028, spritLen, 8),
-      woodMat,
-    );
-    sprit.rotation.z = -Math.PI / 2 + steeve;
-    const stemX = this.build.footprint.maxX - 1.5; // true bow tip (margin off)
-    const heelX = stemX - 2.0;
-    const bowDeckTop = (this.build.deckY + 2) * VOXEL_SIZE;
-    sprit.position.set(
-      heelX + (Math.cos(steeve) * spritLen) / 2,
-      bowDeckTop + (Math.sin(steeve) * spritLen) / 2 - 0.15,
-      (this.build.grid.dims[2] / 2) * VOXEL_SIZE,
-    );
-    sprit.castShadow = true;
-    this.group.add(sprit);
-    this.spritMesh = sprit;
+    // NOTE: the bowsprit (like the masts/yards/sails) is real grid voxels now — it's
+    // drawn by the chunk mesher + bored/snapped by the unified crush, not a mesh here.
   }
 }

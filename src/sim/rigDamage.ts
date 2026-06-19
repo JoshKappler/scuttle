@@ -1,7 +1,8 @@
 /**
- * Rig damage geometry (round 7): cannonballs vs the soft/standing rigging —
- * sails, mast trunks, the rudder blade. All tests run in SHIP-LOCAL meters
- * on the segment a ball swept this step. Pure functions, unit-tested.
+ * Rig damage geometry: a cannonball's swept segment vs the rudder blade (an axis-aligned box).
+ * Masts and sails are real grid voxels now (bored by the unified crush), so the old sail-rectangle
+ * and mast-cylinder tests are gone — only the rudder is still a mesh tested here. Ship-local meters,
+ * pure + unit-tested.
  */
 
 export interface V3 {
@@ -10,107 +11,10 @@ export interface V3 {
   z: number;
 }
 
-/** A sail as a vertical rectangle on a fore-aft-facing plane (x = const). */
-export interface SailRect {
-  planeX: number;
-  yMin: number;
-  yMax: number;
-  zMin: number;
-  zMax: number;
-}
-
-/** A mast trunk as a vertical cylinder. */
-export interface MastCyl {
-  x: number;
-  z: number;
-  yBase: number;
-  yTop: number;
-  r: number;
-}
-
 /** Axis-aligned box (the rudder blade zone). */
 export interface Box {
   min: V3;
   max: V3;
-}
-
-/**
- * Where (if anywhere) the segment p0→p1 strikes the sail inside its rectangle, returning the
- * (y, z) of the strike or null.
- *
- * `thickness` gives the canvas a small FORE-AFT depth so it's a thin SLAB, not a zero-width plane.
- * With thickness 0 (default — what the geometry tests use) only a ball PIERCING the plane fore-aft
- * tears it. A real broadside ball, though, crosses the rig nearly BEAM-WISE (parallel to the cloth)
- * and the old plane-only test let every such shot sail straight through untouched ("sails don't get
- * holes every time they should"). A slab lets a beam-wise ball passing through the canvas's depth
- * tear it too.
- */
-export function segmentSailHit(
-  p0: V3,
-  p1: V3,
-  sail: SailRect,
-  thickness = 0,
-): { y: number; z: number } | null {
-  const dx = p1.x - p0.x;
-  const half = thickness / 2;
-  if (Math.abs(dx) < 1e-9) {
-    // beam-wise (parallel to the cloth): tears only if it runs within the canvas depth AND some
-    // point of its sweep ACTUALLY lands inside the y/z rectangle. The old code trusted 3 coarse
-    // samples (t∈{0,0.5,1}); on a long oblique per-frame segment (~2.4 m) grazing the plane that
-    // both MISSED real crossings between samples and FALSE-POSITIVED when the true overlap fell
-    // outside [0,1] — "holes with no hit". Solve the exact y/z slab-interval overlap instead.
-    if (Math.abs(p0.x - sail.planeX) > half) return null;
-    // segment-parameter interval [0,1] clipped to the y band, then the z band (1-D slab tests).
-    let tEnter = 0;
-    let tExit = 1;
-    const clip = (a: number, lo: number, hi: number, d: number): boolean => {
-      if (Math.abs(d) < 1e-12) return a >= lo && a <= hi; // axis-constant: in-band or reject whole span
-      let t1 = (lo - a) / d;
-      let t2 = (hi - a) / d;
-      if (t1 > t2) { const s = t1; t1 = t2; t2 = s; }
-      tEnter = Math.max(tEnter, t1);
-      tExit = Math.min(tExit, t2);
-      return tEnter <= tExit;
-    };
-    if (!clip(p0.y, sail.yMin, sail.yMax, p1.y - p0.y)) return null;
-    if (!clip(p0.z, sail.zMin, sail.zMax, p1.z - p0.z)) return null;
-    if (tExit < 0 || tEnter > 1) return null;
-    const t = Math.min(Math.max(tEnter, 0), 1); // first in-rectangle point on the swept segment
-    return { y: p0.y + (p1.y - p0.y) * t, z: p0.z + (p1.z - p0.z) * t };
-  }
-  // Real SLAB-INTERVAL overlap test for the fore-aft band [planeX-half, planeX+half] (the bare plane
-  // crossing when half=0). The two plane crossings give the segment-parameter interval the ray spends
-  // INSIDE the slab; if that interval doesn't overlap [0,1] the segment never reaches the slab and we
-  // reject. (The old code CLAMPED the entry t into [0,1] before the range check, which made the check
-  // dead — a ball passing entirely fore/aft of the sail reported a false hit at its clamped endpoint:
-  // BUG-5's "a miss punches ~40 holes".)
-  const ta = (sail.planeX - half - p0.x) / dx;
-  const tb = (sail.planeX + half - p0.x) / dx;
-  const tEnter = Math.min(ta, tb);
-  const tExit = Math.max(ta, tb);
-  if (tExit < 0 || tEnter > 1) return null; // the segment's slab span lies entirely off [0,1] → no hit
-  const t = Math.max(tEnter, 0); // first point of the segment actually inside the slab
-  const y = p0.y + (p1.y - p0.y) * t;
-  const z = p0.z + (p1.z - p0.z) * t;
-  if (y < sail.yMin || y > sail.yMax || z < sail.zMin || z > sail.zMax) return null;
-  return { y, z };
-}
-
-/** Does the segment pass through the mast trunk? */
-export function segmentMastHit(p0: V3, p1: V3, m: MastCyl): boolean {
-  // closest approach of the xz-projected segment to the trunk axis
-  const dx = p1.x - p0.x;
-  const dz = p1.z - p0.z;
-  const fx = p0.x - m.x;
-  const fz = p0.z - m.z;
-  const a = dx * dx + dz * dz;
-  let t = 0;
-  if (a > 1e-12) t = Math.min(Math.max(-(fx * dx + fz * dz) / a, 0), 1);
-  const cx = fx + dx * t;
-  const cz = fz + dz * t;
-  if (cx * cx + cz * cz > m.r * m.r) return false;
-  const y = p0.y + (p1.y - p0.y) * t;
-  return y >= m.yBase && y <= m.yTop;
 }
 
 /** Segment vs axis-aligned box (slab method). */

@@ -21,13 +21,13 @@ import {
 import { findSevered, type Island } from "../sim/connectivity";
 import { mastFootingCells, MAST_SUPPORT_MIN_FRAC } from "../sim/mastSupport";
 import { mountSolidCount, mountLost } from "../sim/cannonMount";
-import { MATERIALS, breakEnergy, SPAR, CANVAS } from "../sim/materials";
+import { MATERIALS, breakEnergy, EMPTY, SPAR, CANVAS } from "../sim/materials";
 import { survivingFraction, sailIntegrityValue } from "../sim/rigState";
 import { segmentBoxHit } from "../sim/rigDamage";
 import { meshChunk, type ChunkMesh } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
 import { BOWSPRIT_MARGIN_VOX } from "../sim/shipwright";
-import type { ShipVisual, SailRecord } from "../render/shipVisual";
+import type { ShipVisual } from "../render/shipVisual";
 import type { Physics } from "./physics";
 import { HullCollider } from "./hullCollider";
 import type { HullView } from "../sim/voxelOverlap";
@@ -450,40 +450,6 @@ export class Ship implements ContactTarget {
     }
   }
 
-  /**
-   * Map a SEVERED island back to the mast it came from + the ship-local world-Y (m) at which it broke
-   * away — so the render layer can clone exactly THAT mast's still-standing sails/yards above the cut
-   * onto the falling debris body (the fix for "the sails just disappear when the mast is hit"). A
-   * SPAR-bearing felled section is matched by testing its cells against each mast's ORIGINAL spar-voxel
-   * coords (`mastCells`, the static stamp); the best-overlap mast wins (a section can only belong to
-   * one mast). `cutLocalY` = the foot of the felled chunk = its LOWEST spar cell's bottom face in
-   * ship-local meters, the same frame ShipVisual.detachMast/cloneMastRig measure their cut in (parts
-   * whose foot sits above it fall, the rest stay on the stub). Returns null for a non-mast island.
-   *
-   * Called from main.ts's onSevered wiring — NOT inside flushDamage — so it must not depend on
-   * updateMastState having run yet (it reads the static stamp + the island, not the live mastTopY).
-   */
-  mastIndexForIsland(island: Island): { mi: number; cutLocalY: number } | null {
-    let bestMi = -1;
-    let bestHits = 0;
-    let minSparY = Infinity;
-    for (let mi = 0; mi < this.mastCells.length; mi++) {
-      const keys = new Set<number>();
-      const nz = this.build.grid.dims[2];
-      const ny = this.build.grid.dims[1];
-      for (const c of this.mastCells[mi]) keys.add((c.x * ny + c.y) * nz + c.z);
-      let hits = 0;
-      let localMinY = Infinity;
-      for (const c of island.cells) {
-        if (c.mat !== SPAR) continue;
-        if (keys.has((c.x * ny + c.y) * nz + c.z)) { hits++; if (c.y < localMinY) localMinY = c.y; }
-      }
-      if (hits > bestHits) { bestHits = hits; bestMi = mi; minSparY = localMinY; }
-    }
-    if (bestMi < 0) return null;
-    return { mi: bestMi, cutLocalY: minSparY * VOXEL_SIZE };
-  }
-
   /** A cannon's hull mount has been carved away: the gun is dead. It no longer fires or
    *  counts toward a broadside (cannons.ts / main.ts read cannonAlive), and the receiver
    *  (onCannonLost → game/rig.ts) tips the static gun mesh off the side as a falling body. */
@@ -493,33 +459,18 @@ export class Ship implements ContactTarget {
     this.onCannonLost?.(portIndex);
   }
 
-  /** Legacy shim: a ball into the mast used to deal scripted HP. Masts are VOXELS now, so the ball
-   *  bores through the trunk via the normal voxel crush (rigImpacts no longer reports a mast stop, so
-   *  this is never called) — kept only so the cannon module keeps compiling against the interface. */
-  hitMast(_mi: number, _localY = -1): void { /* masts break voxel-by-voxel via crush() now */ }
-
-  /** A ball through the canvas: that mast pulls less, PROPORTIONAL to the share of its cloth shot
-   *  away. `destroyedFrac` (0..1) is the mast's holed-area / total-cloth-area, computed
-   *  deterministically by visual.puncture (fixed nominal area per hole — never the random visual
-   *  shape). Integrity = 1 − 3·frac² — a CONVEX curve so a couple of holes are nearly free (frac 0.1
-   *  → ~0.97) but a peppered sail still collapses fast (frac 0.5 → ~0.25, frac→1 → 0). The old linear
-   *  1 − 2·frac killed ALL drive at half cloth, which read as "a few holes ≈ no thrust"; this keeps
-   *  "half-peppered ≪ half thrust" without nerfing light damage. sailing.ts scales each mast's thrust
-   *  linearly by this value. No floor: a truly shredded mast pulls nothing. */
-  hitSail(mi: number, destroyedFrac: number): void {
-    this.sailIntegrity[mi] = Math.min(Math.max(1 - destroyedFrac * destroyedFrac * 3, 0), 1);
-  }
-
-  /** Restore canvas to full: reset each (still-rigged) mast's thrust integrity AND wipe the visual
-   *  shot holes + the deterministic holed-area accounting (visual.repairSails) so the area model
-   *  starts clean — otherwise a repaired sail that's shot again would re-apply its OLD holed area.
-   *  The port repair (game/port.ts applyRepair) should call THIS instead of poking sailIntegrity
-   *  directly, so the area accounting and the canvas stay consistent with the integrity. */
+  /** Port repair: re-grow every still-standing mast's shot-out trunk/yard/canvas voxels and restore
+   *  its thrust. A mast that's by the board (mastAlive false) is NOT re-rigged. updateMastState
+   *  recomputes integrity from the restored grid on the next flush. */
   repairSails(): void {
-    for (let i = 0; i < this.sailIntegrity.length; i++) {
-      if (this.mastAlive[i]) this.sailIntegrity[i] = 1;
+    const grid = this.build.grid;
+    for (let mi = 0; mi < this.mastCells.length; mi++) {
+      if (!this.mastAlive[mi]) continue;
+      for (const c of this.mastCells[mi]) if (grid.get(c.x, c.y, c.z) === EMPTY) grid.set(c.x, c.y, c.z, SPAR);
+      for (const c of this.sailCells[mi]) if (grid.get(c.x, c.y, c.z) === EMPTY) grid.set(c.x, c.y, c.z, CANVAS);
+      this.sailIntegrity[mi] = 1;
     }
-    this.visual.repairSails();
+    this.visual.refresh(); // remesh the hull + rig from the restored grid
   }
 
   /** A ball into the rudder: the helm answers ever more sluggishly. */
@@ -533,24 +484,17 @@ export class Ship implements ContactTarget {
   private tmpHitB = new THREE.Vector3();
 
   /**
-   * Everything a ball's swept segment hits in the RIG this step: every sail crossed (cloth never
-   * stops a ball) plus the first hard stop (the rudder blade), if any. World-space in, ship-local
-   * tests inside.
+   * The first hard RIG stop a ball's swept segment meets this step — now only the rudder blade
+   * (still a mesh), if any. World-space in, ship-local tests inside.
    *
-   * The MAST is no longer tested here: it's real grid voxels now, so the ball falls through to the
-   * normal voxel march/crush in cannons.ts and BORES the SPAR trunk like any other timber (THE LAW
-   * #4 — one destruction rule). Sails are also real CANVAS voxels now — the voxel bore handles
-   * them too. Only the rudder (still a mesh) is tested here.
+   * Masts AND sails are real grid voxels now, so a ball falls through to the normal voxel
+   * march/crush in cannons.ts and BORES the SPAR trunk / CANVAS like any other timber (THE LAW
+   * #4 — one destruction rule). Only the rudder is tested here.
    */
   rigImpacts(
     fromW: THREE.Vector3,
     toW: THREE.Vector3,
-  ): {
-    // NOTE: `sails` is always [] and the `mast` stop is never produced now — the voxel bore handles
-    // sails/masts (Task 8). `SailRecord` + the mast variant stay in this type only until Task 12 strips the mesh rig.
-    sails: { rec: SailRecord; y: number; z: number }[];
-    stop: { kind: "mast"; mi: number; localY: number } | { kind: "rudder" } | null;
-  } {
+  ): { stop: { kind: "rudder" } | null } {
     const p0 = this.worldToLocal(this.tmpHitA.copy(fromW), this.tmpHitA);
     const p1 = this.worldToLocal(this.tmpHitB.copy(toW), this.tmpHitB);
 
@@ -572,7 +516,7 @@ export class Ship implements ContactTarget {
       if (segmentBoxHit(p0, p1, box)) stop = { kind: "rudder" };
     }
 
-    return { sails: [], stop };
+    return { stop };
   }
 
   /**
@@ -1199,9 +1143,8 @@ export class Ship implements ContactTarget {
     const rot = this.body.rotation();
     this.visual.group.position.set(tr.x, tr.y, tr.z);
     this.visual.group.quaternion.set(rot.x, rot.y, rot.z, rot.w);
-    // the mast trunk itself is voxels (remeshed automatically as it's carved); push the surviving
-    // trunk height so the visual drops any YARD/SAIL whose foot now hangs above the cut.
-    this.visual.updateRig(this.mastTopY);
+    // the masts/yards/sails are voxels now — the chunk mesher remeshes them automatically as the
+    // trunk is carved/severed, so there is no separate rig-visibility push from here any more.
   }
 
   /**
