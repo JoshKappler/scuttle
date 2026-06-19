@@ -546,6 +546,8 @@ export class Ship implements ContactTarget {
     fromW: THREE.Vector3,
     toW: THREE.Vector3,
   ): {
+    // NOTE: `sails` is always [] and the `mast` stop is never produced now — the voxel bore handles
+    // sails/masts (Task 8). `SailRecord` + the mast variant stay in this type only until Task 12 strips the mesh rig.
     sails: { rec: SailRecord; y: number; z: number }[];
     stop: { kind: "mast"; mi: number; localY: number } | { kind: "rudder" } | null;
   } {
