@@ -24,12 +24,13 @@ export interface ShipBuild {
   cannonPorts: { x: number; y: number; z: number; side: 1 | -1; facing?: "fore" | "aft" }[];
   masts: { x: number; z: number; h: number }[]; // voxel coords on centerline; h = rig height (m)
   /** Per mast: the SPAR voxels stamped into the grid for that mast (the actual voxel trunk), in
-   *  voxel coords, ascending keel→top. Masts are now REAL grid voxels (stampMasts) so they break
+   *  voxel coords, ascending keel→top. Masts are now REAL grid voxels (stampRig) so they break
    *  voxel-by-voxel under the unified destruction + 18-connectivity sever — render/game read this to
    *  know which voxels carry which mast (e.g. to drop a sail once its supporting trunk is gone). */
   mastVoxels: { x: number; y: number; z: number }[][];
-  /** Per mast: the CANVAS sail voxels stamped for it (sim/shipwright stampRig), keel→top. Masts'
-   *  sails are real grid voxels now; ship derives sailIntegrity from how many still survive. */
+  /** Per mast: the CANVAS sail voxels stamped for it (sim/shipwright stampRig), keel→top. Empty
+   *  until Task 4 stamps the sail sheets; once populated, the ship will derive sailIntegrity from
+   *  how many still survive (Task 7). */
   sailVoxels: { x: number; y: number; z: number }[][];
   hatches: { x: number; z: number; w: number; d: number }[]; // deck openings
   lengthM: number;
@@ -394,7 +395,7 @@ export function buildSloop(): ShipBuild {
   // tumblehome above, and a lot of ship under the water
   const nx = 104;
   // ny holds the HULL (deckY≈20) PLUS the VOXEL MAST tower above it (15 m ≈ 60 voxels) + headroom —
-  // the trunk is real grid voxels now (stampMasts), so the grid must be tall enough to contain it.
+  // the trunk is real grid voxels now (stampRig), so the grid must be tall enough to contain it.
   const ny = 86;
   const nz = 32;
   const grid = createGrid(nx, ny, nz);
@@ -950,7 +951,7 @@ export function buildBrig(): ShipBuild {
 export function buildCutter(): ShipBuild {
   const nx = 84;
   // ny holds the HULL (deckY≈16) PLUS the VOXEL MAST tower (12 m ≈ 48 voxels) + headroom — the mast
-  // is real grid voxels now (stampMasts), so the grid must be tall enough to contain the trunk.
+  // is real grid voxels now (stampRig), so the grid must be tall enough to contain the trunk.
   const ny = 70;
   const nz = 26;
   const grid = createGrid(nx, ny, nz);
@@ -1388,7 +1389,7 @@ export function buildManOfWar(): ShipBuild {
   // ny holds the HULL (weather deck ≈36) PLUS a tall VOXEL MAST tower. This first-rate's grid is
   // ALREADY huge in plan (208×60), so a full 32 m voxel mast (+128 voxels) would blow it past 2 M
   // cells (heavy findSevered + a per-cell test that stalls). The voxel trunk is CAPPED to the grid
-  // top here (~16 m of breakable voxel mast — the part a fight actually shoots/rams); stampMasts
+  // top here (~16 m of breakable voxel mast — the part a fight actually shoots/rams); stampRig
   // truncates cleanly at ny, and shipVisual keeps the thin cosmetic topmast cylinder for the slender
   // upper third. Every other (smaller) hull fits its WHOLE mast in voxels.
   const ny = 102;
