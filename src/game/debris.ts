@@ -537,7 +537,7 @@ export class DebrisManager {
       // (fallFloatBuoy) and waterlogs DOWN over ~tens of seconds. SPAR is FAR lighter than water
       // (density 120 vs 1025 → it floats at ~7% of `volume`'s lift), so to actually let it SLOWLY GO
       // UNDER by the end of its life the floor here is a small LOCAL value below that neutral point
-      // (not TUN.rig.fallSinkFloor, which is tuned for the rig.ts lattice spar's heavier nodes); a
+      // (not a global tunable — this floor is lower than fallFloatBuoy's neutral point so the spar
       // grace-period scale keeps it riding high for most of fallLifetime, then it slips beneath.
       if (p.mast) {
         const MAST_SINK_FLOOR = 0.04; // < the ~0.07 neutral ratio → eventually founders
@@ -564,8 +564,8 @@ export class DebrisManager {
         // The vertical buoyancy spring was only ~0.18 of critically damped, so chunks
         // bobbed instead of settling. Raise VERTICAL damping near-critical to kill the
         // bob; keep HORIZONTAL light so wreckage still drifts calmly rather than freezing.
-        // A felled mast uses the dev-tuned fallVertDamp so its float matches the rig.ts feel
-        // (settles awash, no trampoline) and a touch of angular drag so the spar lies still.
+        // A felled mast uses the dev-tuned fallVertDamp so it settles awash without trampoline;
+        // a touch of angular drag keeps the spar lying still.
         const kv = m * (p.mast ? TUN.rig.fallVertDamp : 6) * wet;
         const kh = m * 0.8 * wet;
         p.body.addForce({ x: -v.x * kh, y: -v.y * kv, z: -v.z * kh }, true);

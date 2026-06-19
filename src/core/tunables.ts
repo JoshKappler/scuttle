@@ -247,39 +247,14 @@ export const TUN = {
     fling: 1,
   },
 
-  /** Voxel RIG (masts, yards, bowsprit, sails as ONE breakable point-mass lattice —
-   *  sim/rigLattice.ts + sim/rigBuild.ts, driven by game/rig.ts). Built incrementally:
-   *  Phase 2 wires the BOWSPRIT into the existing ½·μ·v² crush so the forward ram spar
-   *  bores an enemy hull instead of phasing through. Like every TUN knob, NOT read by the
-   *  deterministic vitest oracle. */
+  /** Felled-mast float physics — consumed by game/debris.ts (spawnMast / stepDebris).
+   *  Masts are now real SPAR voxels carved by the unified crush; when the trunk is severed
+   *  debris.spawnMast spawns a falling rigid body and these knobs tune how it topples,
+   *  floats, and eventually waterlogs. NOT read by the deterministic vitest oracle. */
   rig: {
-    /** master enable — off → the rig is inert decoration (old behaviour). */
-    enabled: true,
-    /** the bowsprit/ram spar participates in ship-vs-ship destruction (game/rig.ts bore).
-     *  It feeds the SAME crush rule as a hull ram, just sourced from the spar's reach, so it
-     *  obeys all the crush.* knobs (vBreak gate, toughness, biteDvCap, transferFrac, …). */
-    bowsprit: true,
-    /** bore tunnel half-width in VOXELS perpendicular to the spar (0 = 1-wide, 1 = 3-wide).
-     *  The spar has girth, so a hit punches a real gash, not a needle hole (like the cannon's
-     *  boreRadiusVox). */
-    boreRadiusVox: 1,
-    /** spar sampling spacing in VOXELS along its length — how finely the polyline is walked to
-     *  find the cells it occupies. 0.5 = two samples per voxel (no gaps in the tunnel). */
-    boreStep: 0.5,
-
-    // --- Phase 3: felled masts get their own physics (game/rig.ts spawnFallingMast/stepFalling) ---
-    /** master switch for lattice mast-fall. Off → a felled mast just vanishes (shipVisual hides it). */
-    masts: true,
     /** sideways shove (m/s) given the felled mast so a vertical spar topples OVER the side instead of
      *  dropping straight down. The "goes by the board" lean (seeds the chunk's linear + roll kick). */
     toppleKick: 2.0,
-    /** RIGID-chunk velocity retention per step (1 = none). A felled section falls as ONE stiff body —
-     *  it holds its shape (no noodle); these only bleed a touch of air drag so it doesn't spin forever. */
-    linDamp: 0.999,
-    angDamp: 0.995,
-    /** (legacy) seconds the foot used to stay a hinge — the chunk model no longer hinges, but the
-     *  dev-panel slider in main.ts still binds this key, so keep it to avoid an out-of-scope edit. */
-    hingeTime: 1.2,
     /** buoyancy lift decay per second — a downed mast floats on entrained air, then waterlogs and
      *  founders (cf. debris.wreckLift). R4: 0.06→0.02 so a felled spar FLOATS and drifts for a good
      *  while (the user's "fall into the water and then float around") before it slowly waterlogs under. */
@@ -289,22 +264,13 @@ export const TUN = {
     fallMass: 800,
     /** seconds before a falling-mast wreck is despawned (also goes early once fully sunk). */
     fallLifetime: 40,
-    /** max metres a felled section is lifted per step out of deck penetration so it RESTS on the
-     *  deck instead of phasing through (BUG 3). Capped so a deep teleport-overlap can't fling it. */
-    restLift: 0.6,
-    /** Task 9: bore energy (J) the bowsprit must shed into hulls before it SNAPS OFF and falls. One
-     *  good bow-first ram sheds tens of kJ, so this is a few solid bites' worth of damage. */
-    spritBreak: 60000,
-    /** R4 mast-FLOAT (game/rig.ts stepFalling): a felled spar must SETTLE and FLOAT, not bob/bounce.
-     *  The old fall used a 1.3 buoyancy spring with no vertical velocity damping → it rocketed back up
-     *  off the swell and bounced. fallFloatBuoy = the target buoyancy multiplier while afloat (≈neutral
-     *  so it rests awash, not a trampoline); fallVertDamp = near-critical vertical velocity damping that
-     *  kills the bob the instant it touches water (cf. debris.ts kv = m·6·wet); fallSinkFloor = the
-     *  buoyancy floor the lift decays toward, kept high enough that it stays awash and drifting for a
-     *  good while before `waterlog` finally pulls it under. */
+    /** R4 mast-FLOAT: a felled spar must SETTLE and FLOAT, not bob/bounce.
+     *  fallFloatBuoy = the target buoyancy multiplier while afloat (≈neutral so it rests awash,
+     *  not a trampoline); fallVertDamp = near-critical vertical velocity damping that kills the bob
+     *  the instant it touches water (kv = m·fallVertDamp·wet); the per-debris MAST_SINK_FLOOR
+     *  constant in debris.ts sets the floor the lift decays toward so it eventually waterlogs under. */
     fallFloatBuoy: 1.0,
     fallVertDamp: 5.0,
-    fallSinkFloor: 0.6,
   },
 
   /** Navigational hazards (game/islandField.ts) — extra terrain scattered at world generation.

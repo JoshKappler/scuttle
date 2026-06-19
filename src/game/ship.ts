@@ -164,16 +164,11 @@ export class Ship implements ContactTarget {
    *  via the unified crush + 18-connectivity sever, never a scripted one-piece topple. */
   mastAlive: boolean[];
   /** Per mast: ship-local Y (m) of the HIGHEST surviving SPAR voxel's top, or −Infinity if the
-   *  whole trunk is gone. The render hides any yard/sail whose foot sits above this — so a shot
-   *  that drops the upper trunk drops its canvas, while a low shot drops the lot. */
+   *  whole trunk is gone. Internal intermediate only — used to derive `mastAlive` (> -Infinity).
+   *  Masts/sails are voxels drawn by the chunk mesher; nothing in render reads this directly. */
   mastTopY: number[];
   /** Per mast: 1 = whole canvas → 0.15 floor as shot full of holes. */
   sailIntegrity: number[];
-  /** Per mast: TRUE when the voxel trunk is CAPPED below the rigged height (the man-o-war, whose
-   *  grid is too short to hold the whole mast — a thin cosmetic topmast carries the upper rig).
-   *  For such a mast the voxel top is artificially low, so sail visibility/puncture must use the
-   *  FULL rig height while the trunk stands; only an actual sever (mastAlive→false) drops the rig. */
-  mastCapped: boolean[];
   rudderHp = 3;
   /** Steering authority 0.15..1 — yaw torque multiplier (DAMAGE state). */
   rudderEff = 1;
@@ -399,13 +394,6 @@ export class Ship implements ContactTarget {
     this.mastTopY = build.masts.map(() => -Infinity);
     this.sailIntegrity = build.masts.map(() => 1);
     this.updateMastState(); // seed mastAlive / mastTopY from the freshly-stamped voxels
-    // a mast whose freshly-stamped voxel trunk falls short of its rigged height was grid-CAPPED
-    // (the man-o-war). Its upper yards/sails ride the cosmetic topmast, so they must stay
-    // visible + hittable while the trunk stands — never culled by the artificially-low voxel top.
-    this.mastCapped = build.masts.map((m, mi) => {
-      const footY = (build.deckYAt(m.x) + 1) * VOXEL_SIZE; // first spar voxel sits on the deck
-      return this.mastTopY[mi] < footY + m.h - 1; // trunk top short of foot+riggedHeight → capped
-    });
 
     // cannon mounts: every gun starts bolted on; record its intact mount-cell count so
     // flushDamage can fell it once the hull beneath it is carved below TUN.gun.mountToughness.
@@ -452,7 +440,7 @@ export class Ship implements ContactTarget {
 
   /** A cannon's hull mount has been carved away: the gun is dead. It no longer fires or
    *  counts toward a broadside (cannons.ts / main.ts read cannonAlive), and the receiver
-   *  (onCannonLost → game/rig.ts) tips the static gun mesh off the side as a falling body. */
+   *  (onCannonLost → main.ts spawns a falling gun via debris.spawnFallingCannon). */
   loseCannon(portIndex: number): void {
     if (!this.cannonAlive[portIndex]) return;
     this.cannonAlive[portIndex] = false;

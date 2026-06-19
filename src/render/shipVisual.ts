@@ -360,7 +360,7 @@ export class ShipVisual {
   }
 
   /** A cannon loses its mount: HIDE the static gun mesh (the live physical fall is a falling
-   *  body spawned by game/rig.ts) and report its current WORLD pose so the caller can spawn the
+   *  body spawned by game/debris.ts) and report its current WORLD pose so the caller can spawn the
    *  toppling cannon exactly where it sat. Returns null if that port has no mesh (e.g. headless). */
   hideCannon(portIndex: number): { pos: THREE.Vector3; quat: THREE.Quaternion } | null {
     const rec = this.barrels.find((b) => b.portIndex === portIndex);
