@@ -32,20 +32,22 @@ for (const [name, build] of builders) {
   describe(`voxel masts: ${name}`, () => {
     const b = build();
 
-    it("stamps a real SPAR voxel trunk per mast, rising off the deck", () => {
+    it("stamps a real 2x2 SPAR voxel trunk per mast, rising off the deck", () => {
       expect(b.mastVoxels.length).toBe(b.masts.length);
       for (let mi = 0; mi < b.masts.length; mi++) {
         const cells = b.mastVoxels[mi];
-        expect(cells.length).toBeGreaterThan(4); // a meaningful trunk
-        // every recorded cell is actually SPAR in the grid
+        expect(cells.length).toBeGreaterThan(8); // a meaningful 2x2 trunk
         for (const c of cells) expect(b.grid.get(c.x, c.y, c.z)).toBe(SPAR);
-        // the trunk is a substantial breakable tower: either the WHOLE mast (small hulls fit it) or
-        // capped at the grid top (big hulls cap the voxel mast for perf; a cosmetic topmast shows
-        // above). Either way it must be ≥ ~12 m of real voxels, OR ≥ 80% of the rig height.
+        // 2 distinct x and 2 distinct z columns => a 2x2 trunk cross-section
+        const xs = new Set(cells.map((c) => c.x));
+        const zs = new Set(cells.map((c) => c.z));
+        expect(xs.size).toBe(2);
+        expect(zs.size).toBe(2);
+        // still a substantial breakable tower (whole mast, or capped at the grid top on big hulls)
         const ys = cells.map((c) => c.y);
         const span = (Math.max(...ys) - Math.min(...ys) + 1) * VOXEL_SIZE;
         const top = Math.max(...ys);
-        const cappedAtGridTop = top >= b.grid.dims[1] - 2; // ran into the grid ceiling → intentional cap
+        const cappedAtGridTop = top >= b.grid.dims[1] - 2;
         expect(span >= b.masts[mi].h * 0.8 || (cappedAtGridTop && span >= 12)).toBe(true);
       }
     });

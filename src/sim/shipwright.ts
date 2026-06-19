@@ -28,6 +28,9 @@ export interface ShipBuild {
    *  voxel-by-voxel under the unified destruction + 18-connectivity sever — render/game read this to
    *  know which voxels carry which mast (e.g. to drop a sail once its supporting trunk is gone). */
   mastVoxels: { x: number; y: number; z: number }[][];
+  /** Per mast: the CANVAS sail voxels stamped for it (sim/shipwright stampRig), keel→top. Masts'
+   *  sails are real grid voxels now; ship derives sailIntegrity from how many still survive. */
+  sailVoxels: { x: number; y: number; z: number }[][];
   hatches: { x: number; z: number; w: number; d: number }[]; // deck openings
   lengthM: number;
   beamM: number;
@@ -304,50 +307,61 @@ function carveBulkheadGaps(
   return openings;
 }
 
+export interface BowspritSpec {
+  lengthM: number;      // bowsprit length (m); the builder passes ≈0.28 × hull length
+  steeve?: number;      // radians above horizontal (default 0.3)
+  diameterVox?: number; // cross-section diameter in voxels (default 3)
+}
+
+type RigCell = { x: number; y: number; z: number };
+
 /**
- * Stamp each mast as a real VOXEL trunk (SPAR) rising from the deck — the change that makes masts
- * break voxel-by-voxel under the ONE destruction rule (cannons bore through, rams crush) and lets the
- * 18-connectivity sever pass (sim/connectivity + game/ship flushDamage) shed whatever is left above a
- * shot-out base as debris. NO more one-piece rigid topple.
- *
- * Geometry: a thin column at the mast's (x,z). To stay PORT/STARBOARD SYMMETRIC (every hull has an
- * even beam, so `round(cz)` is an off-centre cell), the trunk is 2 voxels wide in z spanning the two
- * true centreline cells {floor(cz), ceil(cz)} (they sum to nz−1 → exact mirror), and 1 voxel in x.
- * It rises from deckTop+1 up `h` metres. The base voxel sits directly ON the deck plank (face-adjacent
- * below), and each voxel is face-adjacent to the one beneath, so the whole trunk is 6-/18-connected to
- * the keel through the deck — a shot-out base severs everything above it (NOT before). Returns the
- * stamped voxels per mast (keel→top) so the build can expose them. Deterministic (pure integer math).
- *
- * Run BEFORE weldToSingleComponent (a stray gap would get welded) and AFTER castFlatBallast (which only
- * relocates IRON BELOW deck, never touches above-deck SPAR). Masts never overwrite existing solid
- * (bulwark/quarterdeck), and a mast on the centreline is interior, clear of the edge fence.
+ * Stamp the whole rig as grid voxels: a 2×2 SPAR trunk per mast (Task 2), 1-thick SPAR yards +
+ * 1-thin CANVAS sails (Tasks 3–4), and a thick SPAR bowsprit (Task 5). One face-connected island
+ * anchored through the deck to the keel, so the unified crush + 18-connectivity sever break and fell
+ * it with no rig-specific code. Returns the SPAR mast voxels and the CANVAS sail voxels per mast.
+ * Run BEFORE weldToSingleComponent, AFTER castFlatBallast. Deterministic integer math.
  */
-function stampMasts(
+function stampRig(
   grid: VoxelGrid,
   masts: { x: number; z: number; h: number }[],
   deckYAt: (x: number) => number,
-): { x: number; y: number; z: number }[][] {
-  const [, ny, nz] = grid.dims;
+  _bowsprit?: BowspritSpec, // wired in Task 5 (declared now for the call-site contract); leading _ satisfies noUnusedParameters
+): { mastVoxels: RigCell[][]; sailVoxels: RigCell[][] } {
+  const [nx, ny, nz] = grid.dims;
   const cz = (nz - 1) / 2;
-  const zPair = [Math.floor(cz), Math.ceil(cz)]; // {floor,ceil} → mirror pair (sum = nz−1) for symmetry
-  const out: { x: number; y: number; z: number }[][] = [];
+  const zPair = [Math.floor(cz), Math.ceil(cz)]; // mirror pair (sum = nz−1)
+  const mastVoxels: RigCell[][] = [];
+  const sailVoxels: RigCell[][] = [];
+
   for (const m of masts) {
-    const cells: { x: number; y: number; z: number }[] = [];
-    const yBase = deckYAt(m.x) + 1; // first voxel sits on the deck plank (face-adjacent below)
+    const mastCells: RigCell[] = [];
+    const sailCells: RigCell[] = []; // filled in Task 4
+    const yBase = deckYAt(m.x) + 1;
     const hVox = Math.max(1, Math.round(m.h / VOXEL_SIZE));
+    const xPair = [m.x, Math.min(m.x + 1, nx - 1)]; // 2 voxels in x → a 2×2 trunk with zPair
+
+    // --- trunk (2×2) ---
     for (let i = 0; i < hVox; i++) {
       const y = yBase + i;
-      if (y >= ny) break; // never run off the top of the grid
-      for (const z of zPair) {
-        if (grid.get(m.x, y, z) === EMPTY) {
-          grid.set(m.x, y, z, SPAR);
-          cells.push({ x: m.x, y, z });
+      if (y >= ny) break;
+      for (const x of xPair) {
+        for (const z of zPair) {
+          if (grid.get(x, y, z) === EMPTY) {
+            grid.set(x, y, z, SPAR);
+            mastCells.push({ x, y, z });
+          }
         }
       }
     }
-    out.push(cells);
+
+    // --- yards + sails arrive in Tasks 3 & 4 (insert here) ---
+
+    mastVoxels.push(mastCells);
+    sailVoxels.push(sailCells);
   }
-  return out;
+
+  return { mastVoxels, sailVoxels };
 }
 
 /**
@@ -592,7 +606,7 @@ export function buildSloop(): ShipBuild {
   // single mast slightly forward of midship
   const masts = [{ x: x0 + Math.round(L * 0.42), z: Math.round(cz), h: 15 }];
   // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
-  const mastVoxels = stampMasts(grid, masts, () => deckY);
+  const { mastVoxels, sailVoxels } = stampRig(grid, masts, () => deckY, { lengthM: Math.min(0.28 * L * VOXEL_SIZE, 9) });
 
   armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
 
@@ -606,6 +620,7 @@ export function buildSloop(): ShipBuild {
     cannonPorts,
     masts,
     mastVoxels,
+    sailVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
@@ -895,7 +910,7 @@ export function buildBrig(): ShipBuild {
     { x: x0 + Math.round(L * 0.68), z: Math.round(cz), h: 18 },
   ];
   // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
-  const mastVoxels = stampMasts(grid, masts, deckYAt);
+  const { mastVoxels, sailVoxels } = stampRig(grid, masts, deckYAt, { lengthM: Math.min(0.28 * L * VOXEL_SIZE, 9) });
 
   armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
 
@@ -909,6 +924,7 @@ export function buildBrig(): ShipBuild {
     cannonPorts,
     masts,
     mastVoxels,
+    sailVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
@@ -1080,7 +1096,7 @@ export function buildCutter(): ShipBuild {
 
   const masts = [{ x: x0 + Math.round(L * 0.44), z: Math.round(cz), h: 12 }];
   // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
-  const mastVoxels = stampMasts(grid, masts, () => deckY);
+  const { mastVoxels, sailVoxels } = stampRig(grid, masts, () => deckY, { lengthM: Math.min(0.28 * L * VOXEL_SIZE, 9) });
 
   armorBow(grid);
 
@@ -1094,6 +1110,7 @@ export function buildCutter(): ShipBuild {
     cannonPorts,
     masts,
     mastVoxels,
+    sailVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
@@ -1336,7 +1353,7 @@ export function buildFrigate(): ShipBuild {
     { x: x0 + Math.round(L * 0.74), z: Math.round(cz), h: 22 },
   ];
   // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
-  const mastVoxels = stampMasts(grid, masts, deckYAt);
+  const { mastVoxels, sailVoxels } = stampRig(grid, masts, deckYAt, { lengthM: Math.min(0.28 * L * VOXEL_SIZE, 9) });
 
   armorBow(grid);
 
@@ -1350,6 +1367,7 @@ export function buildFrigate(): ShipBuild {
     cannonPorts,
     masts,
     mastVoxels,
+    sailVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
@@ -1637,7 +1655,7 @@ export function buildManOfWar(): ShipBuild {
     { x: x0 + Math.round(L * 0.74), z: Math.round(cz), h: 26 },
   ];
   // masts are REAL voxels now — break voxel-by-voxel + sever above a shot-out base (no rigid topple).
-  const mastVoxels = stampMasts(grid, masts, deckYAt);
+  const { mastVoxels, sailVoxels } = stampRig(grid, masts, deckYAt, { lengthM: Math.min(0.28 * L * VOXEL_SIZE, 9) });
 
   armorBow(grid); // reinforced forward shell — a bow-first ram wins (material cost asymmetry)
 
@@ -1651,6 +1669,7 @@ export function buildManOfWar(): ShipBuild {
     cannonPorts,
     masts,
     mastVoxels,
+    sailVoxels,
     hatches,
     lengthM: L * VOXEL_SIZE,
     beamM: halfBeamMax * 2 * VOXEL_SIZE,
