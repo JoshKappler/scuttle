@@ -5,6 +5,7 @@ export const PINE = 2;
 export const IRON = 3;
 export const RAM = 4; // reinforced bow armor (voxel-destruction branch)
 export const SPAR = 13; // mast/spar timber — VOXEL masts (light topweight, shootable). See MATERIALS below.
+export const CANVAS = 14; // sail cloth — VOXEL sails (near-massless, easily torn). See MATERIALS below.
 // Tropical terrain materials (islands & town). Additive — ships never use these.
 export const SAND = 5;
 export const ROCK = 6;
@@ -68,6 +69,15 @@ export const MATERIALS: Record<number, Material> = {
   // = half of oak, so a cannonball bores clean through and a ram crushes it readily (the user's
   // "a mast should be shootable"). Colour: a weathered mid-brown spar, lighter than the dark hull oak.
   [SPAR]: { name: "spar", density: 120, color: [0.085, 0.058, 0.03], strength: 1.5 },
+  // VOXEL SAILS (cloth). Sails are now real grid voxels (sim/shipwright stampRig): a 1-voxel-thin
+  // CANVAS sheet between the yards. A cannonball bores clean holes through it (it adds almost no ram
+  // resistance), and a felled mast/yard sheds its cloth as a severed voxel island — one destruction
+  // rule for the whole rig. CRITICAL (THE LAW #2/#3): a sail is a LARGE flat area high above the
+  // waterline (pure topweight — buoyancy only lifts SUBMERGED voxels), so it must be near-massless or
+  // it raises the COM and capsizes her under sail. A real sail occupying a 0.25 m voxel is a ~1 mm
+  // cloth sheet → effective density ~8 kg/m³ (cloth ≈1500 × 0.001/0.25). STRENGTH 0.4 = far below oak
+  // (3): the ball tears through. Colour: light weathered off-white canvas.
+  [CANVAS]: { name: "canvas", density: 8, color: [0.16, 0.15, 0.12], strength: 0.4 },
   // Terrain palette — linear RGB. Visual-pass-1: DARKENED + desaturated ~35–45%
   // off the old bright values (player: islands "much too bright … like a super
   // early version of Minecraft"). Weathered, grittier tones; render/islandVisual.ts

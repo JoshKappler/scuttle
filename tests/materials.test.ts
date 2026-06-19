@@ -12,6 +12,8 @@ import {
   PINE,
   IRON,
   RAM,
+  SPAR,
+  CANVAS,
   breakEnergy,
   STRENGTH_TO_JOULES,
 } from "../src/sim/materials";
@@ -50,5 +52,21 @@ describe("material break energy", () => {
   });
   it("empty / unknown material costs nothing to break", () => {
     expect(breakEnergy(0)).toBe(0);
+  });
+});
+
+describe("CANVAS material (voxel sail cloth)", () => {
+  it("exists, is near-massless and tears far more easily than wood", () => {
+    const canvas = MATERIALS[CANVAS];
+    expect(canvas).toBeDefined();
+    // a ~1 mm cloth sheet inside a 0.25 m voxel is nearly weightless vs spar (120) / oak (430)
+    expect(canvas.density).toBeLessThan(20);
+    expect(canvas.density).toBeGreaterThan(0);
+    // far softer than oak (3) and spar (1.5): a ball punches straight through
+    expect(breakEnergy(CANVAS)).toBeLessThan(breakEnergy(SPAR));
+    expect(MATERIALS[CANVAS].strength).toBeLessThan(MATERIALS[OAK].strength);
+    // a light, distinct off-white colour (lighter than spar brown)
+    const [r, g, b] = canvas.color;
+    expect(r + g + b).toBeGreaterThan(MATERIALS[SPAR].color.reduce((a, c) => a + c, 0));
   });
 });
