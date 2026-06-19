@@ -349,8 +349,10 @@ function stampRig(
     const hVox = Math.max(1, Math.round(m.h / VOXEL_SIZE));
     const xPair = [m.x, Math.min(m.x + 1, nx - 1)]; // 2 voxels in x → a 2×2 trunk with zPair
 
+    const hVoxBuilt = Math.min(hVox, ny - yBase); // effective trunk rows after the grid cap; yards scale to this
+
     // --- trunk (2×2) ---
-    for (let i = 0; i < hVox; i++) {
+    for (let i = 0; i < hVoxBuilt; i++) {
       const y = yBase + i;
       if (y >= ny) break;
       for (const x of xPair) {
@@ -366,16 +368,16 @@ function stampRig(
     // --- yards: 1-thick SPAR bars across the centerline, in the mast x-plane (x = m.x) ---
     // Use the ACTUAL grid-capped mast height (trunk may be clipped at ny) so yard fractions
     // are relative to the real built mast height, not the nominal design height.
-    const hVoxBuilt = Math.min(hVox, ny - yBase);
     const yardZsByLevel: { yv: number; zs: number[] }[] = [];
     for (const lv of YARD_LEVELS) {
       const yv = yBase + Math.min(Math.round(lv.f * hVoxBuilt), hVoxBuilt - 1);
       if (yv >= ny) continue;
       const halfW = Math.max(0, Math.round((lv.wf * m.h) / VOXEL_SIZE / 2));
-      const zs: number[] = [];
+      const zsSet = new Set<number>();
       // symmetric span: the two centreline cells + halfW pairs out to each side
-      for (let k = halfW; k >= 0; k--) { zs.push(zPair[0] - k); }
-      for (let k = 0; k <= halfW; k++) { zs.push(zPair[1] + k); }
+      for (let k = halfW; k >= 0; k--) zsSet.add(zPair[0] - k);
+      for (let k = 0; k <= halfW; k++) zsSet.add(zPair[1] + k);
+      const zs = [...zsSet];
       for (const z of zs) {
         if (z < 0 || z >= nz) continue;
         if (grid.get(m.x, yv, z) === EMPTY) {
