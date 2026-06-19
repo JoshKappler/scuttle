@@ -3,7 +3,7 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import { G, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
 import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
-import { MATERIALS, SPAR } from "../sim/materials";
+import { MATERIALS, SPAR, CANVAS } from "../sim/materials";
 import { createGrid } from "../sim/voxelGrid";
 import { meshChunk } from "../render/voxelMesher";
 import { CHUNK_SIZE } from "../core/constants";
@@ -72,13 +72,14 @@ export function wreckLift(age: number): number {
   return Math.max(1.45 - (age / 45) * 1.05, 0.32);
 }
 
-/** Does a severed island contain any SPAR (mast) voxels? A felled mast is a few-hundred-cell
- *  island — far below BIG_SEVER — so cell COUNT alone would route it to dust(). We instead detect
- *  SPAR CONTENT and force the persistent floating-body path for those, while leaving small NON-mast
- *  hull fragments to dust as before (the "destroyed material = loose voxels/dust" design). Keying on
- *  the material — not a lowered global threshold — is what keeps small hull chips from floating. */
-export function islandHasSpar(island: Island): boolean {
-  for (const c of island.cells) if (c.mat === SPAR) return true;
+/** Does a severed island contain any RIG material (mast/yard SPAR or sail CANVAS)? Such pieces take
+ *  the persistent floating-body path regardless of size, while small plain-hull chips still dust.
+ *  A felled mast is a few-hundred-cell SPAR island — far below BIG_SEVER — so cell COUNT alone would
+ *  route it to dust(). A severed pure-CANVAS sail (cloth shot free of intact yards) has no SPAR, so
+ *  this check covers both. Keying on the material — not a lowered global threshold — keeps small hull
+ *  chips from floating. */
+export function islandHasRig(island: Island): boolean {
+  for (const c of island.cells) if (c.mat === SPAR || c.mat === CANVAS) return true;
   return false;
 }
 
@@ -90,7 +91,7 @@ export function islandHasSpar(island: Island): boolean {
 export type DebrisRoute = "wreck" | "mast" | "dust";
 export function routeIsland(island: Island): DebrisRoute {
   if (island.cells.length >= BIG_SEVER) return "wreck";
-  if (islandHasSpar(island)) return "mast";
+  if (islandHasRig(island)) return "mast";
   return "dust";
 }
 
@@ -105,18 +106,17 @@ export class DebrisManager {
     private effects?: Effects,
   ) {}
 
-  /** Spawn one debris body from a severed island, in the source ship's frame. `mastRig` (optional) is
-   *  a pre-cloned YARD+SAIL group from shipVisual.cloneMastRig: when the severed island is a felled
-   *  MAST it's attached to the floating spar body so the canvas falls WITH it (the fix for "the sails
-   *  just disappear"); ignored for non-mast routes. Optional so existing 2-arg callers still compile. */
-  spawn(island: Island, ship: Ship, mastRig?: THREE.Group | null): void {
+  /** Spawn one debris body from a severed island, in the source ship's frame. Routes by content:
+   *  a hull torn in half (≥ BIG_SEVER) → wreck; any RIG-bearing island (SPAR or CANVAS) → persistent
+   *  floating mast body; everything else → dust. */
+  spawn(island: Island, ship: Ship): void {
     if (island.cells.length === 0) return;
     // Route by content, not raw count: a hull torn clean in half (≥ BIG_SEVER) → free-floating
     // WRECK; a felled MAST (any SPAR-bearing island, typ. a few hundred cells) → a persistent
     // floating walkable body; everything else → DUST (loose voxels, never a "floating beam").
     const route = routeIsland(island);
     if (route === "dust") { this.dust(island, ship); return; }
-    if (route === "mast") { this.spawnMast(island, ship, mastRig ?? undefined); return; }
+    if (route === "mast") { this.spawnMast(island, ship); return; }
     const { world, RAPIER: R } = this.physics;
 
     // island bounds
@@ -236,7 +236,7 @@ export class DebrisManager {
    * dropped these voxels and re-derived its inertia (ship.recomputeMassProperties), so this never
    * double-counts the mast's weight on the ship.
    */
-  private spawnMast(island: Island, ship: Ship, mastRig?: THREE.Group): void {
+  private spawnMast(island: Island, ship: Ship): void {
     const { world, RAPIER: R } = this.physics;
 
     // island bounds + true mass from its own cells (SPAR is light — density 120).
@@ -335,29 +335,6 @@ export class DebrisManager {
       [hx, hy, hz * 1.6],
     ];
 
-    // CARRY THE SAILS DOWN: re-parent the pre-cloned yard/sail group (at WORLD transforms) under the
-    // spar body's visual group, converting each clone world→body-local so it tumbles rigidly with the
-    // spar. The body starts at origin/rot, and `group` tracks the body each step (update() sets
-    // group.position/quaternion = body), so local = (body world)⁻¹ · (clone world).
-    // Capture BEFORE the loop — re-parenting (group.add) empties mastRig.children, so a post-loop
-    // length check would always read 0 and leave p.rig undefined (→ disposeRig leaks the clones).
-    const carriedRig = !!(mastRig && mastRig.children.length > 0);
-    if (carriedRig) {
-      const bodyMat = new THREE.Matrix4().compose(
-        origin, this.tmpQ.set(rot.x, rot.y, rot.z, rot.w), this.tmpP.set(1, 1, 1),
-      );
-      const bodyInv = bodyMat.clone().invert();
-      const childMat = new THREE.Matrix4();
-      // snapshot children first — reparenting mutates mastRig.children mid-iteration.
-      for (const child of [...mastRig.children]) {
-        child.updateMatrix(); // its pos/quat/scale are baked world transforms
-        childMat.multiplyMatrices(bodyInv, child.matrix);
-        childMat.decompose(child.position, child.quaternion, child.scale);
-        child.matrixAutoUpdate = true;
-        group.add(child); // now expressed in the body's local frame
-      }
-    }
-
     this.pieces.push({
       body,
       mesh: group,
@@ -379,7 +356,6 @@ export class DebrisManager {
       wreck: false,
       mast: true,
       liftMul: TUN.rig.fallFloatBuoy,
-      rig: carriedRig ? mastRig : undefined,
       impactArm: 0.25, // brief delay so it can't crater its own deck on the spawn frame
     });
   }

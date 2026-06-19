@@ -445,18 +445,7 @@ async function main() {
   effects.attachSpray(spray);
   const cannons = new Cannons(scene, effects);
   const debris = new DebrisManager(physics, scene, effects);
-  // When a sever drops a MAST section, clone THAT mast's still-standing sails/yards (with their
-  // shot-holes) so they fall WITH the spar debris instead of vanishing. ship.mastIndexForIsland maps
-  // the SPAR island → its mast index + break height; shipVisual.cloneMastRig builds the detached
-  // canvas group. Returns null for a non-mast island (debris.spawn then just makes the usual body).
-  const mastClonesFor = (
-    ship: Ship,
-    island: { cells: { x: number; y: number; z: number; mat: number }[] },
-  ): THREE.Group | null => {
-    const m = ship.mastIndexForIsland(island as Parameters<typeof ship.mastIndexForIsland>[0]);
-    return m ? ship.visual.cloneMastRig(m.mi, m.cutLocalY) : null;
-  };
-  sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop, mastClonesFor(sloop, i)));
+  sloop.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, sloop));
   sloop.onCannonLost = (pi) => debris.spawnFallingCannon(sloop, pi);
 
   // ---- the hostile fleet (game/fleet.ts) ----
@@ -497,7 +486,7 @@ async function main() {
     const ship = new Ship(physics, build, visual, { x: ex, y: 0.2, z: ez }, false); // enemy → no walkable deck collider
     const ea = -Math.atan2(cz - ez, cx - ex); // bow toward the ring centre
     ship.body.setRotation({ x: 0, y: Math.sin(ea / 2), z: 0, w: Math.cos(ea / 2) }, true);
-    ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship, mastClonesFor(ship, i)));
+    ship.onSevered = (islands) => islands.forEach((i) => debris.spawn(i, ship));
     ship.onCannonLost = (pi) => debris.spawnFallingCannon(ship, pi);
     ship.onMastFelled = () => gs.msg.post("her mast goes by the board!");
     ship.onRudderHit = (hp) => {
@@ -621,7 +610,7 @@ async function main() {
     const visual = new ShipVisual(build);
     const fresh = new Ship(physics, build, visual, { x: at.x, y: Math.max(at.y, 0.5), z: at.z });
     fresh.body.setRotation(rot, true);
-    fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh, mastClonesFor(fresh, i)));
+    fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
     fresh.onCannonLost = (pi) => debris.spawnFallingCannon(fresh, pi);
     fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
     fresh.onRudderHit = (hp) => {

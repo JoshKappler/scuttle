@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { wreckLift, WRECK_CELLS, BIG_SEVER, routeIsland, islandHasSpar } from "../src/game/debris";
+import { wreckLift, WRECK_CELLS, BIG_SEVER, routeIsland, islandHasRig } from "../src/game/debris";
 import { findSevered, type Island } from "../src/sim/connectivity";
 import { createGrid } from "../src/sim/voxelGrid";
-import { PINE, OAK, SPAR } from "../src/sim/materials";
+import { PINE, OAK, SPAR, CANVAS } from "../src/sim/materials";
 
 /** Build a synthetic severed island of `n` cells, all of material `mat`. */
 const island = (n: number, mat: number): Island => ({
@@ -43,7 +43,7 @@ describe("severed-island routing (BUG-4: shot masts must FALL, not vanish)", () 
     // become a persistent floating body instead of a one-shot dust puff (the disappear bug).
     const mast = island(150, SPAR);
     expect(mast.cells.length).toBeLessThan(BIG_SEVER);
-    expect(islandHasSpar(mast)).toBe(true);
+    expect(islandHasRig(mast)).toBe(true);
     expect(routeIsland(mast)).toBe("mast");
   });
 
@@ -51,7 +51,7 @@ describe("severed-island routing (BUG-4: shot masts must FALL, not vanish)", () 
     // the design keeps small destroyed hull chips as loose voxels/dust — gating on SPAR CONTENT
     // (not a lowered global threshold) is what preserves that.
     const chip = island(150, OAK);
-    expect(islandHasSpar(chip)).toBe(false);
+    expect(islandHasRig(chip)).toBe(false);
     expect(routeIsland(chip)).toBe("dust");
   });
 
@@ -69,11 +69,25 @@ describe("severed-island routing (BUG-4: shot masts must FALL, not vanish)", () 
         { x: 0, y: 1, z: 0, mat: SPAR },
       ],
     };
-    expect(islandHasSpar(mixed)).toBe(true);
+    expect(islandHasRig(mixed)).toBe(true);
     expect(routeIsland(mixed)).toBe("mast");
   });
 
   it("pine flotsam (no spar, sub-BIG) is unaffected — still dust", () => {
     expect(routeIsland(island(300, PINE))).toBe("dust");
+  });
+});
+
+describe("debris routing keeps rig pieces afloat", () => {
+  const isl = (mat: number, n = 20) =>
+    ({ cells: Array.from({ length: n }, (_, i) => ({ x: i, y: 0, z: 0, mat })) });
+  it("a pure-CANVAS severed island floats (route 'mast'), not dust", () => {
+    expect(routeIsland(isl(CANVAS))).toBe("mast");
+  });
+  it("a SPAR island still floats", () => {
+    expect(routeIsland(isl(SPAR))).toBe("mast");
+  });
+  it("a small plain-OAK chip still dusts", () => {
+    expect(routeIsland(isl(OAK))).toBe("dust");
   });
 });
