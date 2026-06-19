@@ -5,7 +5,6 @@ import { surfaceHeight, type Wave } from "../sim/gerstner";
 import type { Effects } from "../render/effects";
 import { muzzleWorld, velocityAtPoint, type GunFacing, type MuzzleOut } from "./gunnery";
 import type { Ship } from "./ship";
-import type { SailRecord } from "../render/shipVisual";
 
 /**
  * Broadside batteries + pooled cannonball projectiles. Projectiles are
@@ -21,11 +20,6 @@ interface Ball {
   prev: THREE.Vector3;
   age: number;
   mesh: THREE.Mesh;
-  /** Sails this ball has already torn. rigImpacts re-runs every substep along the WHOLE 9 s
-   *  flight against every sail, so without this one ball racked up dozens of holes in a single
-   *  sail (BUG-5's multiplicity). A sail (its stable SailRecord ref) is holed at most once per
-   *  ball; the ball flies on through cloth as before. Cleared on (re)launch. */
-  hitSails: Set<SailRecord>;
 }
 
 /** Live aim for a battery: read at the MOMENT each gun fires, not when the click landed.
@@ -157,7 +151,6 @@ export class Cannons {
         prev: new THREE.Vector3(),
         age: 0,
         mesh,
-        hitSails: new Set<SailRecord>(),
       });
     }
   }
@@ -274,29 +267,16 @@ export class Cannons {
       const sMinY = Math.min(b.prev.y, b.pos.y), sMaxY = Math.max(b.prev.y, b.pos.y);
       const sMinZ = Math.min(b.prev.z, b.pos.z), sMaxZ = Math.max(b.prev.z, b.pos.z);
 
-      // rig first (round 7): cloth tears and the ball flies on; a mast trunk
-      // or the rudder blade stops it cold
+      // rudder check: the rudder blade is still a mesh (not a voxel), so test it here;
+      // sails and mast trunks are real CANVAS/SPAR voxels — the bore below handles them.
       let stopped = false;
       for (let ti = 0; ti < targets.length; ti++) {
         const tb = TB[ti];
         if (sMaxX < tb.min.x || sMinX > tb.max.x || sMaxY < tb.min.y || sMinY > tb.max.y || sMaxZ < tb.min.z || sMinZ > tb.max.z) continue;
         const ship = targets[ti];
         const rig = ship.rigImpacts(b.prev, b.pos);
-        for (const s of rig.sails) {
-          // one ball tears a given sail AT MOST ONCE — rigImpacts re-tests the whole flight every
-          // substep, so without this de-dup a single shot punched dozens of holes in one sail.
-          if (b.hitSails.has(s.rec)) continue;
-          b.hitSails.add(s.rec);
-          // paint a ragged shot hole into the sail's alphaMap (the sail keeps its shape); puncture
-          // accrues this mast's DETERMINISTIC destroyed-area fraction (nominal per-hole area, not the
-          // random visual) and returns it, which sets the mast's thrust integrity.
-          const destroyedFrac = ship.visual.puncture(s.rec, s.y, s.z);
-          ship.hitSail(s.rec.mastIdx, destroyedFrac);
-          this.effects.muzzleSmoke(b.pos, this.tmpDir.copy(b.vel).normalize());
-        }
         if (rig.stop) {
-          if (rig.stop.kind === "mast") ship.hitMast(rig.stop.mi, rig.stop.localY);
-          else ship.hitRudder();
+          ship.hitRudder();
           this.effects.splinters(b.pos, this.tmpDir.copy(b.vel).normalize().negate());
           this.kill(b);
           stopped = true;
@@ -350,7 +330,6 @@ export class Cannons {
     if (!b) return;
     b.alive = true;
     b.age = 0;
-    b.hitSails.clear(); // fresh shot: it hasn't torn any sail yet
     b.pos.copy(pos);
     b.prev.copy(pos);
     b.vel.copy(dir).multiplyScalar(TUN.gun.muzzleSpeed).add(baseVel);

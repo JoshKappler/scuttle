@@ -23,7 +23,7 @@ import { mastFootingCells, MAST_SUPPORT_MIN_FRAC } from "../sim/mastSupport";
 import { mountSolidCount, mountLost } from "../sim/cannonMount";
 import { MATERIALS, breakEnergy, SPAR, CANVAS } from "../sim/materials";
 import { survivingFraction, sailIntegrityValue } from "../sim/rigState";
-import { segmentBoxHit, segmentSailHit } from "../sim/rigDamage";
+import { segmentBoxHit } from "../sim/rigDamage";
 import { meshChunk, type ChunkMesh } from "../render/voxelMesher";
 import type { ShipBuild } from "../sim/shipwright";
 import { BOWSPRIT_MARGIN_VOX } from "../sim/shipwright";
@@ -539,8 +539,8 @@ export class Ship implements ContactTarget {
    *
    * The MAST is no longer tested here: it's real grid voxels now, so the ball falls through to the
    * normal voxel march/crush in cannons.ts and BORES the SPAR trunk like any other timber (THE LAW
-   * #4 — one destruction rule). The {kind:"mast"} variant stays in the return type only so the
-   * (un-owned) cannon module keeps compiling; it is never produced.
+   * #4 — one destruction rule). Sails are also real CANVAS voxels now — the voxel bore handles
+   * them too. Only the rudder (still a mesh) is tested here.
    */
   rigImpacts(
     fromW: THREE.Vector3,
@@ -552,24 +552,8 @@ export class Ship implements ContactTarget {
     const p0 = this.worldToLocal(this.tmpHitA.copy(fromW), this.tmpHitA);
     const p1 = this.worldToLocal(this.tmpHitB.copy(toW), this.tmpHitB);
 
-    const sails: { rec: SailRecord; y: number; z: number }[] = [];
-    for (const rec of this.visual.sails) {
-      if (!this.mastAlive[rec.mastIdx]) continue; // whole rig gone: rects are stale
-      // a partly-felled mast keeps its lower canvas: skip a sail whose foot now hangs above the
-      // surviving trunk (its mesh is hidden by updateRig), so a ball can't "tear" a dropped sail.
-      // EXCEPTION: a grid-capped mast (man-o-war) always has a short voxel trunk; its sails ride
-      // the cosmetic topmast and stay hittable while the mast stands (matching updateRig).
-      if (!this.mastCapped[rec.mastIdx] && rec.yMin > this.mastTopY[rec.mastIdx]) continue;
-      // a thin (~0.25 m) fore-aft slab so a BEAM-WISE broadside ball passing through the canvas tears
-      // it, not just a shot that pierces the zero-width plane (which a side-on duel almost never
-      // produces). Kept tight (0.25, not 0.5) so ONE ball can't punch through BOTH of a mast's two
-      // stacked sails, and a ball comfortably fore/aft of the cloth can't false-trigger.
-      const hit = segmentSailHit(p0, p1, rec, 0.25);
-      if (hit) sails.push({ rec, y: hit.y, z: hit.z });
-    }
-
-    let stop: { kind: "mast"; mi: number; localY: number } | { kind: "rudder" } | null = null;
-    if (!stop && this.rudderHp > 0) {
+    let stop: { kind: "rudder" } | null = null;
+    if (this.rudderHp > 0) {
       // the rudder hangs off the stern post (low-x end), reaching from the
       // heel up the transom — mirror of shipVisual's blade construction
       const sternX = 4 * VOXEL_SIZE;
@@ -586,7 +570,7 @@ export class Ship implements ContactTarget {
       if (segmentBoxHit(p0, p1, box)) stop = { kind: "rudder" };
     }
 
-    return { sails, stop };
+    return { sails: [], stop };
   }
 
   /**
