@@ -436,14 +436,15 @@ function stampRig(
     const diam = bowsprit.diameterVox ?? 3;
     const rad = Math.floor(diam / 2);
     // locate the bow stem: the highest-x solid hull cell, and the deck-ish y there.
-    let stemX = 0, stemY = 0;
-    for (let x = nx - 1; x >= 0 && stemX === 0; x--) {
+    let stemX = -1, stemY = 0;
+    stemScan: for (let x = nx - 1; x >= 0; x--) {
       for (let y = ny - 1; y >= 0; y--) {
         let hit = false;
         for (let z = 0; z < nz; z++) if (grid.isSolid(x, y, z)) { hit = true; break; }
-        if (hit) { stemX = x; stemY = y; break; }
+        if (hit) { stemX = x; stemY = y; break stemScan; }
       }
     }
+    if (stemX < 0) stemX = 0; // empty-grid fallback (never happens for a real hull)
     const heelX = stemX - 2;                 // root a little inboard so it ties into the bow
     const lenVox = Math.round(bowsprit.lengthM / VOXEL_SIZE);
     const dxv = Math.cos(steeve), dyv = Math.sin(steeve);

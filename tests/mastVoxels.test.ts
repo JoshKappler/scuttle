@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildCutter, buildSloop, buildBrig, buildFrigate, type ShipBuild } from "../src/sim/shipwright";
 import { findSevered } from "../src/sim/connectivity";
-import { SPAR, CANVAS } from "../src/sim/materials";
+import { SPAR, CANVAS, OAK } from "../src/sim/materials";
 import { VOXEL_SIZE } from "../src/core/constants";
 
 /**
@@ -138,7 +138,7 @@ for (const [name, build] of builders) {
       for (let x = gx - 1; x >= 0 && hullMaxX === 0; x--)
         for (let y = 0; y < gy && hullMaxX === 0; y++)
           for (let z = 0; z < gz; z++)
-            if (b.grid.get(x, y, z) === 1 /*OAK*/) { hullMaxX = x; break; }
+            if (b.grid.get(x, y, z) === OAK) { hullMaxX = x; break; }
       // there must be SPAR voxels forward of the hull stem (the bowsprit reaches past the bow)
       let spritCells = 0;
       for (let x = hullMaxX + 1; x < gx; x++)
