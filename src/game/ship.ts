@@ -239,6 +239,41 @@ export function turnHeelDeepeningFade(heelDeg: number, cap: number): number {
   return Math.min(Math.max((cap - heelDeg) / (cap * 0.4), 0), 1);
 }
 
+/** One restored rig cell: grid coords + the material to stamp back (SPAR | CANVAS). */
+export interface RigRepairCell { x: number; y: number; z: number; mat: number }
+
+/** PURE planner for port sail-repair (round 12 — unit-testable without Rapier). A STANDING mast
+ *  regrows its shot-out trunk/yard/canvas cells; a FELLED mast (mastAlive false — its voxels were
+ *  severed off as debris) is fully re-stepped, but ONLY if the hull carrying its step still holds
+ *  MAST_SUPPORT_MIN_FRAC of the build-time footing (mirror of flushDamage's felling rule — you
+ *  cannot re-rig a mast on a blown-open bow; hull repair is out of scope). footInit ≤ 0 = footing
+ *  untracked → allow (same semantics as flushDamage's skip). Deterministic grid reads only. */
+export function planRigRepair(
+  build: ShipBuild,
+  mastCells: { x: number; y: number; z: number }[][],
+  sailCells: { x: number; y: number; z: number }[][],
+  mastAlive: boolean[],
+  mastFootInit: number[],
+): { mi: number; cells: RigRepairCell[] }[] {
+  const grid = build.grid;
+  const out: { mi: number; cells: RigRepairCell[] }[] = [];
+  for (let mi = 0; mi < mastCells.length; mi++) {
+    if (!mastAlive[mi]) {
+      const footInit = mastFootInit[mi] ?? 0;
+      if (footInit > 0) {
+        const mx = build.masts[mi].x;
+        const frac = mastFootingCells(grid, mx, build.deckYAt(mx)) / footInit;
+        if (frac < MAST_SUPPORT_MIN_FRAC) continue; // no step left to rig on
+      }
+    }
+    const cells: RigRepairCell[] = [];
+    for (const c of mastCells[mi]) if (grid.get(c.x, c.y, c.z) === EMPTY) cells.push({ x: c.x, y: c.y, z: c.z, mat: SPAR });
+    for (const c of sailCells[mi]) if (grid.get(c.x, c.y, c.z) === EMPTY) cells.push({ x: c.x, y: c.y, z: c.z, mat: CANVAS });
+    if (cells.length > 0) out.push({ mi, cells });
+  }
+  return out;
+}
+
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
  * Buoyancy/flood/drag forces are applied at probe points every fixed step;
@@ -282,6 +317,11 @@ export class Ship implements ContactTarget {
   /** Fired when a cannon's hull mount is shot/rammed away — receiver hides the static gun
    *  mesh and spawns a falling cannon body that tips off the side and sinks. */
   onCannonLost?: (portIndex: number) => void;
+  /** Fired by port repair when a FELLED mast is about to be re-stepped, so the game layer can
+   *  despawn that ship's floating rig debris (wired in main.ts to debris.removeRigFor — the
+   *  round-12 wave-1 API). Optional: unwired, the stale debris still waterlogs + self-despawns
+   *  within TUN.rig.fallLifetime (~40 s); only the visual duplicate lingers briefly. */
+  onRigRepair?: (ship: Ship) => void;
 
   // ---- rig state — masts are now VOXELS, this is DERIVED from their survival ----
   /** Per mast: does any trunk voxel still stand above the deck? DERIVED from the live grid by
@@ -580,17 +620,39 @@ export class Ship implements ContactTarget {
     this.onCannonLost?.(portIndex);
   }
 
-  /** Port repair: re-grow every still-standing mast's shot-out trunk/yard/canvas voxels and restore
-   *  its thrust. A mast that's by the board (mastAlive false) is NOT re-rigged. updateMastState
-   *  recomputes integrity from the restored grid on the next flush. */
+  /** Port repair: re-grow every still-standing mast's shot-out trunk/yard/canvas voxels AND
+   *  re-step FELLED masts whose hull footing survives (round 12 — a fully dismasted ship repairs
+   *  at port; the felled rig's floating debris is despawned via onRigRepair). Restored cells
+   *  re-enter EVERY live structure the carve removed them from: grid, Rapier hull voxel collider,
+   *  packed surface set (ship-ship contact), buoyancy columns + mass properties, walkable deck
+   *  collider, and the visual mesh. (Pre-round-12 this only wrote the grid + remeshed — repaired
+   *  rig was intangible to contact and weightless; fixed for standing-mast repair too.) */
   repairSails(): void {
     const grid = this.build.grid;
-    for (let mi = 0; mi < this.mastCells.length; mi++) {
-      if (!this.mastAlive[mi]) continue;
-      for (const c of this.mastCells[mi]) if (grid.get(c.x, c.y, c.z) === EMPTY) grid.set(c.x, c.y, c.z, SPAR);
-      for (const c of this.sailCells[mi]) if (grid.get(c.x, c.y, c.z) === EMPTY) grid.set(c.x, c.y, c.z, CANVAS);
-      this.sailIntegrity[mi] = 1;
+    const plan = planRigRepair(this.build, this.mastCells, this.sailCells, this.mastAlive, this.mastFootInit);
+    // despawn the floating rig debris of any felled mast we are about to re-step
+    if (plan.some((m) => !this.mastAlive[m.mi])) this.onRigRepair?.(this);
+    const nz = grid.dims[2];
+    let restored = 0;
+    for (const m of plan) {
+      for (const c of m.cells) {
+        grid.set(c.x, c.y, c.z, c.mat);
+        try { this.hull.collider.setVoxel(c.x, c.y, c.z, true); } catch { /* collider mid-teardown — skip */ }
+        this.dirtyColumns.add(c.x * nz + c.z); // INVARIANT: every live grid mutation records its column
+        this.markColliderChunkDirty(c.x, c.y, c.z);
+        restored++;
+      }
+      this.sailIntegrity[m.mi] = 1;
     }
+    if (restored > 0) {
+      // restored cells re-enter the hull boundary — full recompute is fine here (port-time, not a hot path)
+      this.surface = computeSurface(grid);
+      this.seedSurfacePacked();
+      this.hullTopLocalY = -1; // restored CANVAS/SPAR may raise the tracked top
+      this.recomputeMassProperties(); // consumes dirtyColumns → columns + mass + tuned inertia restored
+      this.rebuildDeckCollider(); // player-only inside; re-sweeps just the dirtied chunks
+    }
+    this.updateMastState(); // re-derives mastAlive / mastTopY / sailIntegrity from the restored grid
     this.visual.refresh(); // remesh the hull + rig from the restored grid
   }
 
