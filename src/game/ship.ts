@@ -210,8 +210,13 @@ export class WaveFieldCache {
 /** Box-inertia added-mass factors: a hull drags entrained water when it rotates. Split per axis
  *  (round 12 SP3): PITCH keeps the swell-tuned 1.6 (brig hobby-horse fix, round 8); YAW gets its
  *  own factor so turning agility is tunable without touching the pitch feel. Roll (ixx) never
- *  carried a factor. Exported for the deterministic turn-rate oracle (tests/turnRate.test.ts). */
-export const YAW_ADDED_MASS = 1.6;
+ *  carried a factor. Exported for the deterministic turn-rate oracle (tests/turnRate.test.ts).
+ *  Round 12 SP3: YAW eased 1.6 → 1.3 — the entrained-water moment for yaw about a slender hull is
+ *  far below the pitch case (the hull slices; only the ends carry added moment), and the shared
+ *  1.6 was tuned for PITCH hobby-horsing, inherited by yaw incidentally. 1.3 keeps real added-mass
+ *  weight while raising steady turn rate ~23% (ω_ss ∝ 1/factor); the spin-up time constant
+ *  T = 1/(yawDamp+0.15) is untouched by this factor (damping torque scales with I). */
+export const YAW_ADDED_MASS = 1.3;
 export const PITCH_ADDED_MASS = 1.6;
 /** Rapier body-level angular damping (constructor .setAngularDamping). Acts on yaw IN ADDITION to
  *  TUN.phys.yawDamp — the turn-rate model must include it (effective decay = yawDamp + this). */
