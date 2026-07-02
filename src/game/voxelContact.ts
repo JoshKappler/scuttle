@@ -109,7 +109,7 @@ export class VoxelContact {
   private hvA: HullView = { surface: new Int32Array(0), isSolid: () => false, dims: [0, 0, 0], pos: [0, 0, 0], quat: [0, 0, 0, 1] };
   private hvB: HullView = { surface: new Int32Array(0), isSolid: () => false, dims: [0, 0, 0], pos: [0, 0, 0], quat: [0, 0, 0, 1] };
   // contact scratch, grown to hold the smaller hull's surface (one contact per A surface cell max).
-  private scratch: ContactScratch = { aCells: new Int32Array(0), bCells: new Int32Array(0), points: new Float32Array(0) };
+  private scratch: ContactScratch = { aCells: new Int32Array(0), bCells: new Int32Array(0), points: new Float32Array(0), normals: new Float32Array(0) };
   // BREAK-regime scratch: the cells broken this step per hull, reused (cleared each pair) backed by
   // a tuple pool, so a sustained ram allocates nothing classifying or carving contacts.
   private brokenA: [number, number, number][] = [];
@@ -175,7 +175,7 @@ export class VoxelContact {
   private ensureScratch(contacts: number): void {
     if (this.scratch.aCells.length >= contacts * 3) return;
     const n = contacts * 3;
-    this.scratch = { aCells: new Int32Array(n), bCells: new Int32Array(n), points: new Float32Array(n) };
+    this.scratch = { aCells: new Int32Array(n), bCells: new Int32Array(n), points: new Float32Array(n), normals: new Float32Array(n) };
   }
 
   /** One ship pair: walk the SMALLER hull's surface (fewer cells) as A; both ships carve. */
@@ -206,9 +206,13 @@ export class VoxelContact {
     const lvA = a.linvel(), avA = a.angvel();
     const lvB = b.linvel(), avB = b.angvel();
 
-    // aggregate HORIZONTAL closing direction d̂ from the relative velocity at the contact centroid.
-    // Horizontal-only so wave heave never reads as closing, and so the bite (applied at COM height)
-    // yaws but never rolls. If there's essentially no relative motion, it's a pure REST contact.
+    // Aggregate HORIZONTAL relative direction d̂ at the contact centroid — now only (a) a cheap
+    // "is anything moving" gate and (b) the FALLBACK closing axis for contacts whose local surface
+    // normal is degenerate (contacted B cell fully interior — a deep engulf — or a purely vertical
+    // face). Classification itself is PER CONTACT along each contact's local normal (below): a
+    // T-bone/angled ram reads its true perpendicular closing speed and a parallel scrape reads ~0
+    // instead of the full slide speed (the old single-d̂ rule misread both). Horizontal-only so
+    // wave heave never reads as closing, and so the bite (applied at COM height) yaws, never rolls.
     const cx = ov.centroid[0], cy = ov.centroid[1], cz = ov.centroid[2];
     this.velAt(this.comA, lvA, avA, cx, cy, cz, this.vA);
     this.velAt(this.comB, lvB, avB, cx, cy, cz, this.vB);
@@ -222,12 +226,23 @@ export class VoxelContact {
     const mu = (mA * mB) / (mA + mB); // reduced mass — terrain's huge mB makes this ≈ mA
     const tough = TUN.crush.toughness;
 
-    // ---- classify each contact: BREAK (closing > vBreak) vs REST ----
-    // brokenA/brokenB are reused member scratch (cleared here), backed by a tuple pool, so
-    // classifying contacts allocates nothing during a sustained ram.
+    // ---- classify each contact: BREAK (LOCAL closing > vBreak) vs REST ----
+    // Each contact's closing speed is measured along its OWN horizontal contact normal ĝ — the
+    // occupancy-gradient normal of B at the contacted cell (from detectContacts), negated to point
+    // INTO B, horizontal-projected and re-normalized. Round-12 fix: the old rule projected every
+    // contact onto ONE aggregate direction d̂ (the relative-velocity direction itself), which (a)
+    // read a parallel side-scrape's slide speed as "closing" → grinding hulls tore each other's
+    // sides off, and (b) mixed a T-bone victim's forward motion into the closing axis → the bite
+    // braked motion TANGENT to the impact. A degenerate local normal (interior cell in a deep
+    // engulf, or a purely vertical face) falls back to d̂ — the old behavior, which is what the
+    // deep-lodge COM-line logic was designed around. brokenA/brokenB are reused member scratch
+    // (cleared here), backed by a tuple pool, so classification allocates nothing in a sustained ram.
     let bSumX = 0, bSumY = 0, bSumZ = 0;
+    let sumV2 = 0;            // Σ vci² over breaking contacts → per-contact energy budget (½·μ·mean v²)
+    let gSumX = 0, gSumZ = 0; // Σ ĝ·vci → closing-weighted mean break direction ḡ
     const brokenA = this.brokenA, brokenB = this.brokenB;
     const ptsA = this.ptsA, ptsB = this.ptsB;
+    const nrm = sc.normals!;
     brokenA.length = 0;
     brokenB.length = 0;
     ptsA.length = 0;
@@ -236,10 +251,18 @@ export class VoxelContact {
       for (let i = 0; i < count; i++) {
         const o = i * 3;
         const px = sc.points[o], py = sc.points[o + 1], pz = sc.points[o + 2];
+        // local horizontal closing axis ĝ, pointing INTO B (= −outward normal of B at the contact).
+        let gx = -nrm[o], gz = -nrm[o + 2];
+        const glen = Math.hypot(gx, gz);
+        if (glen > 1e-4) { gx /= glen; gz /= glen; }
+        else { gx = dhx; gz = dhz; } // degenerate local normal → aggregate fallback (old behavior)
         this.velAt(this.comA, lvA, avA, px, py, pz, this.vA);
         this.velAt(this.comB, lvB, avB, px, py, pz, this.vB);
-        const vci = (this.vA.x - this.vB.x) * dhx + (this.vA.z - this.vB.z) * dhz; // horizontal closing
+        const vci = (this.vA.x - this.vB.x) * gx + (this.vA.z - this.vB.z) * gz; // horizontal LOCAL closing
         if (vci <= TUN.crush.vBreak) continue;
+        // DEFENSIVE clamp, mirrored from sim/crush.breakImpulse: real closing speeds are <~10 m/s;
+        // 50 only catches a teleport-deep degenerate overlap blowing up the energy budget.
+        const vc = Math.min(vci, 50);
         // pooled push (no per-contact allocation in a sustained ram). Only flag B's cell when B can
         // actually be carved — terrain (canCarve === false) is never eroded, so its broken layer is
         // never collected and ALL the budget falls on the ship. The A and B cells of one contact share
@@ -248,6 +271,8 @@ export class VoxelContact {
         ptsA.push(px, py, pz);
         if (b.canCarve) { this.pushBroken(brokenB, this.poolB, sc.bCells[o], sc.bCells[o + 1], sc.bCells[o + 2]); ptsB.push(px, py, pz); }
         bSumX += px; bSumY += py; bSumZ += pz;
+        sumV2 += vc * vc;
+        gSumX += gx * vc; gSumZ += gz * vc;
       }
     }
     const breakCount = brokenA.length;
@@ -256,42 +281,41 @@ export class VoxelContact {
 
     if (breakCount > 0) {
       // ---- BREAK regime: destruction is BOUNDED by the collision energy ----
-      // Carve cheapest-first up to ½·μ·vClose² (the closing KE): a ram can only break as much wood
-      // as its energy can pay for, so it bites a hole and LODGES once that energy is spent instead of
-      // carving the whole overlap for free and clipping out the far side. The broken wood's energy is
-      // then taken straight out of the closing motion (breakImpulse). The carve clears the wood in the
-      // way, so NO position de-penetration runs here (running it while breaking was the jar). maxStepEnergy
-      // is only an anti-vaporize clamp for a pathological (teleport) deep overlap. Against terrain B can't
-      // carve, so ALL the budget erodes the ship — an immovable, indestructible wall takes the full hit.
+      // The budget is allocated PER CONTACT: each breaking contact contributes ½·(μ/N)·vci² — its
+      // own closing KE at an equal reduced-mass share — so the total is ½·μ·mean(vci²) = ½·μ·vEff².
+      // For a uniform head-on this is EXACTLY the old ½·μ·vClose² (every vci equal); for an angled
+      // hit only the genuinely-closing share of the motion pays for carving — the tangential slide
+      // is never spent as break energy, and since vci ≤ |vrel| per contact the total can never
+      // exceed the pair's real closing KE (no energy injection). Carve nearest-the-impact first up
+      // to that budget: a ram bites a hole and LODGES once the energy is spent instead of carving
+      // the whole overlap. Against terrain B can't carve, so ALL the budget erodes the ship.
+      // maxStepEnergy is only an anti-vaporize clamp for a pathological (teleport) deep overlap.
       const bcx = bSumX / breakCount, bcy = bSumY / breakCount, bcz = bSumZ / breakCount;
+      // closing-weighted mean break direction ḡ (unit, horizontal). Head-on: every ĝ ≡ d̂ → ḡ = d̂
+      // exactly. Degenerate (a symmetric pincer summing to ~0) → d̂ fallback.
+      let gbx = gSumX, gbz = gSumZ;
+      const gblen = Math.hypot(gbx, gbz);
+      if (gblen > 1e-6) { gbx /= gblen; gbz /= gblen; } else { gbx = dhx; gbz = dhz; }
       this.velAt(this.comA, lvA, avA, bcx, bcy, bcz, this.vA);
       this.velAt(this.comB, lvB, avB, bcx, bcy, bcz, this.vB);
-      const sA = this.vA.x * dhx + this.vA.z * dhz; // A's speed along the closing axis d̂
-      const sB = this.vB.x * dhx + this.vB.z * dhz; // B's speed along d̂ (0 for static terrain)
-      // DEFENSIVE clamp: real closing speeds are <~10 m/s; 50 is a generous ceiling that only catches
-      // a teleport-deep degenerate overlap (whose vClose² would otherwise blow up the energy budget
-      // and the bite impulse). Cannot change a healthy frame. Mirrored in sim/crush.breakImpulse.
-      vClose = Math.min(sA - sB, 50);
+      const sA = this.vA.x * gbx + this.vA.z * gbz; // A's speed along ḡ (who is driving in?)
+      const sB = this.vB.x * gbx + this.vB.z * gbz; // B's speed along ḡ (0 for static terrain)
+      vClose = Math.min(Math.sqrt(sumV2 / breakCount), 50); // RMS per-contact closing (≡ old head-on vClose)
       const budget = Math.min(0.5 * mu * vClose * vClose, TUN.crush.maxStepEnergy);
       energy = this.carveWithinBudget(a, b, brokenA, brokenB, this.ptsA, this.ptsB, bcx, bcy, bcz, tough, budget);
       removedA = this.lastRemovedA; removedB = this.lastRemovedB;
       // The fracture energy is shed as a DRAG on the hull(s) driving INTO the contact — the crumbling
       // layer carries its momentum off as debris and pushes the body behind it ~nothing, so a heavy
-      // ram spends its OWN speed boring through and a dead-in-the-water victim is NOT accelerated up to
-      // ramming speed. The old equal-and-opposite bite did exactly that → both ships ended at the same
-      // speed, the closing differential vanished, breaking stopped, and the ram coasted on through,
-      // lodged. Slowing only the aggressor keeps the differential alive so it chews until IT stops.
+      // ram spends its OWN speed boring through and a dead-in-the-water victim is NOT accelerated up
+      // to ramming speed (see crush.splitClosingImpulse; transferFrac dials the shove back in).
       const dvClose = breakImpulse(mu, vClose, energy, TUN.crush.biteDvCap) / mu; // closing-speed to remove
-      // split into the aggressor-drag + (tunable) momentum-transfer mix (see crush.splitClosingImpulse):
-      // transferFrac 0 = a stationary victim isn't shoved at all; higher = it picks up more of the hit.
-      // For static terrain (sB=0, huge mB) jA ≈ mShip·dvClose and jB lands on the immovable rock (no-op).
       let { jA, jB } = splitClosingImpulse(mA, mB, mu, sA, sB, dvClose, TUN.crush.transferFrac);
       // DEFENSIVE finite guard: a NaN/Inf impulse (e.g. from a degenerate mass/velocity) must never
       // reach applyImpulseAtPoint and launch a hull. Real impulses are finite; this only catches corruption.
       if (!Number.isFinite(jA)) jA = 0;
       if (!Number.isFinite(jB)) jB = 0;
-      this.pushAtComHeight(a, bcx, bcz, this.comA.y, -dhx, -dhz, jA); // slow A's approach (+d̂)
-      this.pushAtComHeight(b, bcx, bcz, this.comB.y, dhx, dhz, jB);   // drag/transfer onto B (−d̂; no-op for terrain)
+      this.pushAtComHeight(a, bcx, bcz, this.comA.y, -gbx, -gbz, jA); // slow A's approach (+ḡ)
+      this.pushAtComHeight(b, bcx, bcz, this.comB.y, gbx, gbz, jB);   // drag/transfer onto B (−ḡ; no-op for terrain)
       force = (jA + jB) / dt;
 
       const removed = removedA + removedB;
@@ -300,7 +324,7 @@ export class VoxelContact {
       }
       if (this.effects && TUN.crush.fling > 0 && removed > 0) {
         this.pt2.set(bcx, bcy, bcz);
-        this.imp.set(dhx, 0, dhz);
+        this.imp.set(gbx, 0, gbz);
         this.effects.impactDebris(this.pt2, this.imp, Math.min(removed * TUN.crush.fling, 40));
       }
     } else if (depth >= TUN.crush.minDepth) {

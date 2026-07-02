@@ -156,3 +156,44 @@ describe("characterization — head-on ram (must survive the round-12 classifica
     expect(A.pos.y).toBeCloseTo(0, 9);       // de-pen never touches the vertical (horizontal-only law)
   });
 });
+
+describe("local-normal classification (round-12 fix)", () => {
+  it("a 45° ram carves comparably to a head-on with the same face-normal closing speed", () => {
+    const contact = new VoxelContact();
+    const head = mkPair({ x: 6, y: 0, z: 0 });
+    const dH = contact.resolveContact(head.A, head.B, DT)!;
+    const diag = mkPair({ x: 6, y: 0, z: 6 }); // same +x closing, PLUS an equal tangential slide
+    const dD = contact.resolveContact(diag.A, diag.B, DT)!;
+    const removedH = dH.removedA + dH.removedB;
+    const removedD = dD.removedA + dD.removedB;
+    expect(removedD).toBeGreaterThan(0);               // never misread as REST
+    expect(removedD / removedH).toBeGreaterThan(0.7);  // carves comparably…
+    expect(removedD / removedH).toBeLessThan(1.4);     // …and the slide does NOT inflate the
+                                                       // budget (aggregate rule scored ≈ 2.0 here)
+  });
+
+  it("a parallel side-scrape above vBreak breaks NOTHING (a slide is not a closing)", () => {
+    const contact = new VoxelContact();
+    // A slides +z along B's -x face at 5 m/s (> vBreak 4), pressed 0.5 m in. The aggregate rule
+    // read the slide speed as closing and tore both sides; the face-normal closing here is ~0.
+    const { A, B } = mkPair({ x: 0, y: 0, z: 5 }, { x: 0, y: 0, z: 0 }, 7.5);
+    const d = contact.resolveContact(A, B, DT);
+    expect(d).not.toBeNull();
+    expect(d!.removedA + d!.removedB).toBe(0);
+    expect(A.removed).toHaveLength(0);
+    expect(B.removed).toHaveLength(0);
+  });
+
+  it("T-bone: the bite acts along the struck face's normal, not the victim's course", () => {
+    const contact = new VoxelContact();
+    const { A, B } = mkPair({ x: 6, y: 0, z: 0 }, { x: 0, y: 0, z: 6 }); // A rams +x; B sails +z across
+    const d = contact.resolveContact(A, B, DT)!;
+    expect(d.removedA + d.removedB).toBeGreaterThan(0);
+    expect(A.impulses).toHaveLength(1);
+    const imp = A.impulses[0].imp;
+    // The drag slows A's +x approach; it must NOT brake the tangential (z) motion. The old
+    // aggregate d̂ was the diagonal relative-velocity direction → |imp.z| == |imp.x|.
+    expect(imp.x).toBeLessThan(0);
+    expect(Math.abs(imp.z)).toBeLessThan(0.3 * Math.abs(imp.x));
+  });
+});
