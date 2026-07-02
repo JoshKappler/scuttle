@@ -47,6 +47,7 @@ import { Effects } from "./render/effects";
 import { createSpray } from "./render/spray";
 import { TUN } from "./core/tunables";
 import { AimUI } from "./render/aimUI";
+import { CutawayController } from "./render/cutawayController";
 import { createDevPanel } from "./render/devPanel";
 import { Economy } from "./sim/economy";
 import { createPortScreen } from "./render/portScreen";
@@ -623,9 +624,7 @@ async function main() {
     character.setShip(fresh);
     rebindPlayerRenderHooks();
     rebuildFloodSegments(); // new hull → new compartment count → rebuild the flood readout
-    // if the cutaway is on, carry it onto the freshly-built hull (the plane is the player's
-    // centerline; the per-frame block keeps it tracking this new ship's pose).
-    if (cutaway) visual.setCutaway(cutPlane);
+    cutawayCtl.onShipSwapped(); // carry the X cutaway onto the freshly-built hull
   }
   function rebindPlayerRenderHooks(): void {
     sloopProfile = makeProfileTex(sloop.build.grid, sloop.build.deckY);
@@ -932,55 +931,9 @@ async function main() {
   document.addEventListener("fullscreenchange", fitViewport);
   new ResizeObserver(fitViewport).observe(app);
 
-  // cutaway damage view (X): a FIXED half-cut of the PLAYER ship. The plane is the
-  // ship's LONGITUDINAL CENTERLINE (a vertical plane through the keel, normal = the
-  // hull's beam axis), so she's sliced in half down her length and the whole interior
-  // — decks, compartments, flooding — reads as a clean cross-section. The plane is
-  // STATIC RELATIVE TO THE SHIP: clipping planes are world-space, so each frame we
-  // transform that fixed local plane by the live ship pose (it rides the centerline as
-  // she turns) — NOT the old camera-driven sweep, which playtested as "too hard to deal
-  // with". The ocean gets a box hole around the player so the hold reads as air, not sea.
-  let cutaway = false;
-  const cutPlane = new THREE.Plane();
-  // the ship-local beam axis (+Z) and a point on the keel centerline, reused each frame
-  // to rebuild the world-space centerline cut plane from the live hull pose.
-  const cutNormalWorld = new THREE.Vector3();
-  const cutPointWorld = new THREE.Vector3();
-  // CUTAWAY SEA BACKING: a downward sightline through the cut hole must land on deep water, never the white
-  // sky/void. The old fix was a separate 70 m navy BOWL centred under the ship — but its flat rim sat just
-  // under the sea and the swell is NOT flat, so the rim poked through the waves as a hard "circular cutout
-  // ring around the ship" (and where the cut reached past the hull you saw the bowl as a flat-blue "void").
-  // DELETED. The ocean already carries a huge (r≈2350) seamless underwater backdrop shell that follows the
-  // camera and holds its rim just under the live surface (render/ocean.ts) — it backs every downward cut
-  // sightline with the SAME deep navy as the open sea, with no near rim to ring and no second disc to read
-  // as void. So the cutaway now relies on that one shared backdrop; there is no ship-local bowl.
-  // INTERIOR FILL — "the inside of the ship is always well lit and visible". The sun +
-  // hemisphere only graze the deck; the hold, the lower deck, and anything seen through a
-  // breach / open hatch / the cutaway sit in shadow and crush near-black. A soft point
-  // light parked at the player hull's centre (short range, so it's a LOCAL fill that lifts
-  // the interior timber + flood water without touching the bright ocean/exterior) keeps the
-  // inside readable at all times — under the deck, through shot holes, and in the cutaway.
-  // No shadow casting (it's a fill, and the inside has no sun-shadow to honour).
-  // Intensity is deliberately LOW (was 2.4): parked at the hull COM only a few cells above the bilge, a
-  // bright point light blew the nearest below-deck cap faces past 1.0 → tonemapped to a pale WHITE wash that
-  // read as "the ballast is white and bleeds into the bulkheads" in the cutaway. 0.9 keeps the interior
-  // readable (the cutaway `shadeFloor` ambient does the lifting) while the iron reads as dark charcoal.
-  const interiorFill = new THREE.PointLight(0xfff0d8, 0.9, 26, 1.6);
-  interiorFill.castShadow = false;
-  scene.add(interiorFill);
-  const holeQ = new THREE.Quaternion();
-  const holeFwd = new THREE.Vector3();
-  const holeCenter = new THREE.Vector3();
-  const updateHole = () => {
-    const rotS = sloop.body.rotation();
-    holeQ.set(rotS.x, rotS.y, rotS.z, rotS.w);
-    holeFwd.set(1, 0, 0).applyQuaternion(holeQ);
-    holeFwd.y = 0;
-    holeFwd.normalize();
-    const fp = sloop.build.footprint;
-    sloop.localToWorld([(fp.minX + fp.maxX) / 2, 2, fp.zC], holeCenter);
-    ocean.updateCutaway(holeCenter, holeFwd.x, holeFwd.z, cutPlane);
-  };
+  // cutaway damage view (X) — toggle state, centerline plane, camera-side flip, interior
+  // fill light and the ocean hole all live in render/cutawayController.ts (round 12, pure move).
+  const cutawayCtl = new CutawayController({ scene, camera, ocean, getShip: () => sloop });
   // fullscreen (round 7/8): F or the brass corner button. The request can be
   // REFUSED (browser policy, missing user-activation edge cases) — surface
   // the reason as a toast instead of silently doing nothing, and re-grab
@@ -1061,13 +1014,7 @@ async function main() {
     // G toggles fullscreen (moved off F, which now fires; G is free — grapple/boarding is gone).
     // Browser F11 also still fullscreens.
     if (e.code === "KeyG") toggleFullscreen();
-    if (e.code === "KeyX") {
-      cutaway = !cutaway;
-      // only the PLAYER ship is cut — the plane is HER centerline (the camera follows
-      // her). Enemy hulls stay whole; they're inspected from afar.
-      sloop.visual.setCutaway(cutaway ? cutPlane : null);
-      ocean.setCutaway(cutaway);
-    }
+    if (e.code === "KeyX") cutawayCtl.toggle();
   });
 
   // Dynamic weather controller — one eased storminess fans out to sky/clouds/ocean/rain/lightning/audio.
@@ -2072,13 +2019,7 @@ async function main() {
 
     const tr = sloop.body.translation();
     const sd = skySetup.sunDir;
-    // keep the interior fill at the player hull's centre of mass — it rides inside the
-    // hold so it lights the lower deck / compartments / flood water (seen via cutaway or
-    // a breach) at all times, then falls off well before reaching the open sea.
-    {
-      const com = sloop.body.worldCom();
-      interiorFill.position.set(com.x, com.y, com.z);
-    }
+    cutawayCtl.updateInteriorFill();
     if (firstPerson && character.player) {
       // eye-level camera — at the model's eye line, not its collar
       // (playtest round 5: "really only shows the inside of the uniform")
@@ -2155,36 +2096,7 @@ async function main() {
       scene.fog = camUnder ? underFog : aboveFog;
     }
 
-    if (cutaway) {
-      // STATIC half-cut, fixed to the SHIP: the plane is the hull's longitudinal
-      // centerline (normal = beam axis). Build it from the live pose so it stays on
-      // the keel as she turns. THREE clips away the NEGATIVE side, so we point the
-      // normal at the half FACING AWAY from the camera → the near half is removed and
-      // we look straight down the open interior, full length.
-      const rotS = sloop.body.rotation();
-      holeQ.set(rotS.x, rotS.y, rotS.z, rotS.w);
-      // ship-local +Z is the beam (centerline normal); keep it horizontal so the cut is
-      // a clean vertical slice regardless of heel/pitch.
-      cutNormalWorld.set(0, 0, 1).applyQuaternion(holeQ);
-      cutNormalWorld.y = 0;
-      cutNormalWorld.normalize();
-      // a point ON the centerline: the hull footprint's z-center, mid-length, at deck level.
-      const fp = sloop.build.footprint;
-      sloop.localToWorld([(fp.minX + fp.maxX) / 2, 2, fp.zC], cutPointWorld);
-      // flip the normal to face away from the camera so the near (camera-side) half clips.
-      if (cutNormalWorld.x * (camera.position.x - cutPointWorld.x) +
-          cutNormalWorld.z * (camera.position.z - cutPointWorld.z) > 0) {
-        cutNormalWorld.negate();
-      }
-      cutPlane.setFromNormalAndCoplanarPoint(cutNormalWorld, cutPointWorld);
-      updateHole();
-      // re-cull the HULL half every frame as the camera orbits (the cannons' clip plane already follows
-      // for free). refresh() — which also does this — is only called on damage, so without this the open
-      // hull half never swapped when you dragged to the other side; only the cannons flipped.
-      sloop.visual.updateCutawayCull();
-      // (no ship-local backing bowl any more — the ocean's own shared underwater backdrop backs the cut
-      //  hole's downward view with seamless deep navy, with no near rim to read as a ring. See ocean.ts.)
-    }
+    cutawayCtl.update();
     skySetup.sunLight.target.position.set(tr.x, tr.y, tr.z);
     skySetup.sunLight.position.set(tr.x + sd.x * 120, tr.y + sd.y * 120, tr.z + sd.z * 120);
     // refresh the (autoUpdate-off) shadow map at ~15 Hz instead of every frame — see sky.ts.
