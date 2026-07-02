@@ -38,9 +38,11 @@ export const TUN = {
     heaveDamp: 0.2 * Math.sqrt(1.5),
     /** yaw angular damping (×yaw inertia) — the water + rudder resisting a spin. The one
      *  rotational axis with no buoyant restoring of its own, so it keeps a light damper. SHIP-FEEL
-     *  pass: eased 0.7→0.6 so the stronger rudder (phys.rudderGain) settles at a higher steady yaw
-     *  rate → a tighter turning circle, while still damping enough that she doesn't free-spin. */
-    yawDamp: 0.6,
+     *  pass eased 0.7→0.6; ROUND-12 SP3 eased 0.6→0.4 (with the yaw added-mass split 1.6→1.3 and
+     *  the hull-length rudder lever) so the steady rate rises and the coast-through after
+     *  centering the helm stays damped by the body's 0.15 angular damping — final value
+     *  calibrated by tests/turnRate.test.ts (cutter ~2.5 s, frigate ~5.5 s to 90°). */
+    yawDamp: 0.4,
     /** hydrodynamic lateral (leeway) resistance — the keel's grip on the water
      *  (×mass·vLat·submergedFrac). A REAL force (without it she slides sideways forever);
      *  applied at the centre of buoyancy so it supplies the turn's centripetal pull AND, sitting

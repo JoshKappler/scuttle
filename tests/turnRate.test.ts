@@ -15,17 +15,17 @@ const builds = {
 } as const;
 type Tier = keyof typeof builds;
 
-// predicted (1-DOF model, verified numerically): cutter 2.68, sloop 3.28, brig 6.07, frigate 8.15
+// predicted (1-DOF model, verified numerically): cutter 2.47, sloop 2.98, brig 5.20, frigate 6.78
 const EXPECT: Record<Tier, [number, number]> = {
-  cutter: [2.3, 3.1],
-  sloop: [2.9, 3.7],
-  brig: [5.6, 6.6],
-  frigate: [7.7, 8.7],
+  cutter: [2.1, 2.9],
+  sloop: [2.6, 3.4],
+  brig: [4.7, 5.7],
+  frigate: [6.3, 7.3],
 };
 
 describe("turn rate — time to 90° heading at cruise, full rudder (deterministic 1-DOF yaw model)", () => {
   it("pins the shipped handling knobs (a tunables drift fails HERE, loudly)", () => {
-    expect(TUN.phys.yawDamp).toBe(0.6);
+    expect(TUN.phys.yawDamp).toBe(0.4);
     expect(TUN.phys.rudderGain).toBe(2.0);
     expect(TUN.phys.rudderLowFloor).toBe(2.5);
     expect(YAW_ADDED_MASS).toBe(1.3);
