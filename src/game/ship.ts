@@ -207,6 +207,26 @@ export class WaveFieldCache {
   }
 }
 
+/** Box-inertia added-mass factors: a hull drags entrained water when it rotates. Split per axis
+ *  (round 12 SP3): PITCH keeps the swell-tuned 1.6 (brig hobby-horse fix, round 8); YAW gets its
+ *  own factor so turning agility is tunable without touching the pitch feel. Roll (ixx) never
+ *  carried a factor. Exported for the deterministic turn-rate oracle (tests/turnRate.test.ts). */
+export const YAW_ADDED_MASS = 1.6;
+export const PITCH_ADDED_MASS = 1.6;
+/** Rapier body-level angular damping (constructor .setAngularDamping). Acts on yaw IN ADDITION to
+ *  TUN.phys.yawDamp — the turn-rate model must include it (effective decay = yawDamp + this). */
+export const BODY_ANGULAR_DAMPING = 0.15;
+
+/** Yaw (about +Y) box inertia of the intact hull — EXACTLY the constructor's formula, exported
+ *  pure so the turn-rate tests cannot silently drift from the game (shared single source). */
+export function yawInertia(build: ShipBuild): number {
+  const mass = build.grid.totalMass();
+  const [nx, , nz] = build.grid.dims;
+  const l = (nx - BOWSPRIT_MARGIN_VOX) * VOXEL_SIZE;
+  const w = nz * VOXEL_SIZE;
+  return (mass / 12) * (l * l + w * w) * YAW_ADDED_MASS;
+}
+
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
  * Buoyancy/flood/drag forces are applied at probe points every fixed step;
@@ -450,13 +470,13 @@ export class Ship implements ContactTarget {
     const h = hullHeightMeters(build);
     const w = nz * VOXEL_SIZE;
 
-    // box-approximated principal inertia about the COM. Pitch/yaw carry a
-    // 1.6× added-mass factor: a hull drags entrained water with it when it
-    // pitches, and the bare box value let the brig hobby-horse in the swell
-    // (raised again round 8 with the rest of the "substantial" pass)
+    // box-approximated principal inertia about the COM. Pitch/yaw each carry their own added-mass
+    // factor: a hull drags entrained water with it when it pitches/yaws, and the bare box value let
+    // the brig hobby-horse in the swell (raised again round 8 with the rest of the "substantial"
+    // pass). Round 12 SP3 split the shared 1.6 literal — see YAW_ADDED_MASS / PITCH_ADDED_MASS.
     const ixx = (mass / 12) * (w * w + h * h);
-    const iyy = (mass / 12) * (l * l + w * w) * 1.6;
-    const izz = (mass / 12) * (l * l + h * h) * 1.6;
+    const iyy = yawInertia(build); // yaw factor split out (round 12 SP3) — see YAW_ADDED_MASS
+    const izz = (mass / 12) * (l * l + h * h) * PITCH_ADDED_MASS;
     this.inertia = [ixx, iyy, izz];
     this.inertiaBox = [ixx, iyy, izz];
     this.inertia0Real = build.grid.massProperties().inertia;
@@ -464,7 +484,7 @@ export class Ship implements ContactTarget {
     const desc = R.RigidBodyDesc.dynamic()
       .setTranslation(spawn.x, spawn.y, spawn.z)
       .setLinearDamping(0.02)
-      .setAngularDamping(0.15)
+      .setAngularDamping(BODY_ANGULAR_DAMPING)
       .setAdditionalMassProperties(
         mass,
         { x: com[0], y: com[1], z: com[2] },
