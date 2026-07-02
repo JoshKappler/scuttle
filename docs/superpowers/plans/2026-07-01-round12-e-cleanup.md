@@ -894,3 +894,42 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - C:\Users\joshu\OneDrive\desktop\projects\scuttle\src\sim\islandCollider.ts
 - C:\Users\joshu\OneDrive\desktop\projects\scuttle\CLAUDE.md
 - C:\Users\joshu\OneDrive\desktop\projects\scuttle\src\render\shipVisual.ts (read-only reference — `setCutaway`/`updateCutawayCull` contracts)
+
+---
+
+### Completion note (executor agent E, 2026-07-01)
+
+All 8 tasks executed exactly as planned; no deviations from the spec. All anchors matched
+the plan's quoted code (small line-number drift only, as expected from wave-1/D churn).
+
+**Commits (oldest → newest):**
+1. `28a5f59` chore(tunables): delete dead TUN.flood.render skirtDepth/blendBand + their dev-panel sliders
+2. `c338790` chore(sim): delete unwired islandCollider.ts (surfaceBandVoxels) + its test
+3. `28fa0f6` refactor(main): extract aim-arc UI -> render/aimUI.ts (pure move)
+4. `fba252d` refactor(main): extract cutaway controller -> render/cutawayController.ts (pure move)
+5. `3910827` refactor(main): extract player ship-swap flow -> game/shipSwap.ts (pure move)
+6. `0e7a540` docs: CLAUDE.md round-12 note (cleanup/extractions) + LAW #3 CB verification
+
+Build + test gate passed before every commit. Final state: `npm run build` clean (tsc
+--noEmit + vite build, `noUnusedLocals` enforced), `npm run test` → 64 files / 500 passed /
+1 skipped. `src/main.ts`: 2442 → 2181 lines (−261, net of the three new construction sites
+this file now owns).
+
+Task 3 (render/post.ts liveness) confirmed LIVE by grep (imported main.ts:9, constructed
+~line 427, driven by `post.setSize`/`post.setSun`/`post.render()`) — noted as a trailer in
+the Task 4 commit per plan.
+
+In-browser verification (Playwright @ :5173, screenshots in the projects ROOT as
+`scuttle-r12e-*.png`): menu boot, sandbox start, sailing (W/A/D), aim (RMB) + fire (F) with
+HUD readouts live from `aimUI.gunReadout()`, cutaway (X) toggle + restore on both the
+starting Cutter and a swapped Brig, the full ship-swap path via both `DEBUG.shipSwap.
+swapPlayerShip()` directly and the port-screen "Buy" button (Cutter→Brig→Sloop, gun counts
+changed 6→16→12, HUD tier label updated, toast fired), re-opening the port after a swap,
+and Esc pause/resume. Zero new console errors/warnings at any step — the only messages
+ever seen were a pre-existing `favicon.ico` 404 and a `pointer lock` warning triggered by
+Playwright's synthetic click on Resume (a browser-automation artifact of programmatic
+clicks lacking a "real" user gesture context; unrelated to any touched code — pointer-lock
+call sites were never part of this extraction).
+
+LAW #3 (leeway drag at the centre of buoyancy) was already corrected by agent C
+(commit `3bb27b1`, pre-dating this wave) — verified current, left untouched.
