@@ -23,6 +23,39 @@ export interface ChunkMesh {
   ironIndexCount: number;
 }
 
+/**
+ * Round-12 SP4 pooling: an optional grow-ONLY output buffer a caller can pass to `meshChunk` via
+ * `into` to skip allocating fresh Float32Array/Uint32Array output on every remesh. Only
+ * `render/shipVisual.ts` (the hot damage-driven remesh path) passes one — debris/character/
+ * islands keep the default fresh-array behavior (spawn-time only, and the returned arrays there
+ * outlive a single frame, so aliasing a shared scratch would be unsafe for them). The caller must
+ * consume (copy out of) the returned `ChunkMesh`'s arrays BEFORE the next `meshChunk(..., into)`
+ * call — they are `subarray` VIEWS over `into`'s buffers, reused/regrown in place next call.
+ */
+export interface MeshScratch {
+  positions: Float32Array;
+  normals: Float32Array;
+  colors: Float32Array;
+  indices: Uint32Array;
+}
+
+/** A fresh grow-only scratch buffer, sized for a typical chunk (grows 1.5× on overflow). */
+export function createMeshScratch(vertCap = 2048, idxCap = 4096): MeshScratch {
+  return {
+    positions: new Float32Array(vertCap * 3),
+    normals: new Float32Array(vertCap * 3),
+    colors: new Float32Array(vertCap * 3),
+    indices: new Uint32Array(idxCap),
+  };
+}
+
+function ensureF32(buf: Float32Array, needed: number): Float32Array {
+  return buf.length >= needed ? buf : new Float32Array(Math.ceil(needed * 1.5));
+}
+function ensureU32(buf: Uint32Array, needed: number): Uint32Array {
+  return buf.length >= needed ? buf : new Uint32Array(Math.ceil(needed * 1.5));
+}
+
 const AO_FACTOR = [0.5, 0.68, 0.84, 1.0];
 
 /** Vertex AO level 0..3 from the two edge neighbors + corner neighbor. */
@@ -37,12 +70,23 @@ function vertexAo(side1: boolean, side2: boolean, corner: boolean): number {
 const scratchMask = new Int32Array(CHUNK_SIZE * CHUNK_SIZE);
 const scratchAo: (number[] | undefined)[] = new Array(CHUNK_SIZE * CHUNK_SIZE);
 
+// Module-level per-CALL accumulators (round-12 SP4), reset (`.length = 0`) at the top of every
+// meshChunk instead of `const positions: number[] = []` etc. allocating 5 fresh arrays per call —
+// same non-reentrancy rationale as scratchMask/scratchAo above (one synchronous sweep at a time).
+const scratchPositions: number[] = [];
+const scratchNormals: number[] = [];
+const scratchColors: number[] = [];
+const scratchWoodIdx: number[] = [];
+const scratchIronIdx: number[] = [];
+
 /**
  * Greedy-mesh one chunk. `visible(x,y,z)` is an OPTIONAL cutaway predicate (ship-local cell coords):
  * a cell is treated as present for face-emission ONLY where it is solid AND `visible` returns true.
  * Making the cut-away half read as EMPTY makes the mesher auto-emit the newly-exposed INTERNAL faces
  * of the surviving cells → a SOLID capped cross-section of whole voxels (ballast cap = solid iron, no
  * holes), so no GPU clip plane is needed for the hull. Omitting the predicate is the unchanged build.
+ * `into` (round-12 SP4, optional) — see `MeshScratch` — reuses a grow-only output buffer instead of
+ * allocating fresh typed arrays for the returned `ChunkMesh` (only `shipVisual.ts` passes one).
  */
 export function meshChunk(
   grid: VoxelGrid,
@@ -50,6 +94,7 @@ export function meshChunk(
   cy: number,
   cz: number,
   visible?: (x: number, y: number, z: number) => boolean,
+  into?: MeshScratch,
 ): ChunkMesh | null {
   const ox = cx * CHUNK_SIZE;
   const oy = cy * CHUNK_SIZE;
@@ -60,13 +105,13 @@ export function meshChunk(
   const solidVis = (x: number, y: number, z: number): boolean =>
     grid.isSolid(x, y, z) && (!visible || visible(x, y, z));
 
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const colors: number[] = [];
+  const positions = scratchPositions; positions.length = 0;
+  const normals = scratchNormals; normals.length = 0;
+  const colors = scratchColors; colors.length = 0;
   // wood (and every non-iron material) vs IRON/ballast faces, kept in separate index lists so the
   // renderer can split them into two opaque/translucent geometry groups (cutaway ballast = solid).
-  const woodIdx: number[] = [];
-  const ironIdx: number[] = [];
+  const woodIdx = scratchWoodIdx; woodIdx.length = 0;
+  const ironIdx = scratchIronIdx; ironIdx.length = 0;
 
   // Sweep each axis d, both directions. u, v are the in-plane axes.
   for (let d = 0; d < 3; d++) {
@@ -160,7 +205,30 @@ export function meshChunk(
 
   if (positions.length === 0) return null;
   // wood faces first, iron faces at the tail → the iron run is the last `ironIdx.length` indices.
-  const indices = new Uint32Array(woodIdx.length + ironIdx.length);
+  const totalIdx = woodIdx.length + ironIdx.length;
+  if (into) {
+    // grow-only reuse (round-12 SP4): grow `into`'s buffers in place when this chunk's data
+    // outgrows them (1.5× slack so a further growth spurt doesn't thrash), else reuse as-is.
+    // The RETURNED arrays are `subarray` VIEWS — the caller must consume them before the next
+    // `meshChunk(..., into)` call reuses the same backing buffers.
+    into.positions = ensureF32(into.positions, positions.length);
+    into.normals = ensureF32(into.normals, normals.length);
+    into.colors = ensureF32(into.colors, colors.length);
+    into.indices = ensureU32(into.indices, totalIdx);
+    into.positions.set(positions, 0);
+    into.normals.set(normals, 0);
+    into.colors.set(colors, 0);
+    into.indices.set(woodIdx, 0);
+    into.indices.set(ironIdx, woodIdx.length);
+    return {
+      positions: into.positions.subarray(0, positions.length),
+      normals: into.normals.subarray(0, normals.length),
+      colors: into.colors.subarray(0, colors.length),
+      indices: into.indices.subarray(0, totalIdx),
+      ironIndexCount: ironIdx.length,
+    };
+  }
+  const indices = new Uint32Array(totalIdx);
   indices.set(woodIdx, 0);
   indices.set(ironIdx, woodIdx.length);
   return {

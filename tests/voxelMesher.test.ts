@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { meshChunk, meshGrid } from "../src/render/voxelMesher";
+import { createMeshScratch, meshChunk, meshGrid } from "../src/render/voxelMesher";
 import { createGrid } from "../src/sim/voxelGrid";
 import { OAK, PINE, ROCK } from "../src/sim/materials";
 import { VOXEL_SIZE } from "../src/core/constants";
@@ -82,5 +82,74 @@ describe("meshGrid", () => {
     const m = meshGrid(createGrid(2, 2, 2));
     expect(m.positions.length).toBe(0);
     expect(m.indices.length).toBe(0);
+  });
+});
+
+describe("meshChunk with a pooled `into` scratch (round-12 SP4)", () => {
+  it("yields identical data to the default (fresh-array) call", () => {
+    const g = createGrid(16, 16, 16);
+    for (let x = 0; x < 3; x++) for (let z = 0; z < 2; z++) g.set(x, 0, z, OAK);
+    g.set(4, 2, 0, ROCK); // a second, differently-shaped island in the same chunk
+
+    const fresh = meshChunk(g, 0, 0, 0)!;
+    const scratch = createMeshScratch();
+    const pooled = meshChunk(g, 0, 0, 0, undefined, scratch)!;
+
+    expect(Array.from(pooled.positions)).toEqual(Array.from(fresh.positions));
+    expect(Array.from(pooled.normals)).toEqual(Array.from(fresh.normals));
+    expect(Array.from(pooled.colors)).toEqual(Array.from(fresh.colors));
+    expect(Array.from(pooled.indices)).toEqual(Array.from(fresh.indices));
+    expect(pooled.ironIndexCount).toBe(fresh.ironIndexCount);
+  });
+
+  it("the output views alias the SAME scratch buffers (no fresh allocation)", () => {
+    const g = createGrid(16, 16, 16);
+    g.set(0, 0, 0, OAK);
+    const scratch = createMeshScratch();
+    const out = meshChunk(g, 0, 0, 0, undefined, scratch)!;
+    // subarray() shares the underlying ArrayBuffer with the source it was sliced from.
+    expect(out.positions.buffer).toBe(scratch.positions.buffer);
+    expect(out.indices.buffer).toBe(scratch.indices.buffer);
+  });
+
+  it("a later, SMALLER chunk reuses the same (already-grown) capacity without shrinking it", () => {
+    const g = createGrid(16, 16, 16);
+    for (let x = 0; x < 8; x++) g.set(x, 0, 0, OAK); // a wide bar → several quads
+    const scratch = createMeshScratch(1, 1); // start tiny so growth is exercised
+    const big = meshChunk(g, 0, 0, 0, undefined, scratch)!;
+    const grownPositions = scratch.positions;
+    expect(grownPositions.length).toBeGreaterThanOrEqual(big.positions.length);
+
+    const g2 = createGrid(16, 16, 16);
+    g2.set(0, 0, 0, OAK); // a single cube — far fewer verts/indices
+    const small = meshChunk(g2, 0, 0, 0, undefined, scratch)!;
+    expect(small.positions.length).toBe(6 * 4 * 3);
+    expect(scratch.positions).toBe(grownPositions); // capacity kept, not reallocated smaller
+  });
+
+  it("re-meshing a GROWN chunk correctly enlarges the scratch (grow-only, 1.5× slack)", () => {
+    const scratch = createMeshScratch(1, 1); // deliberately undersized
+    const g1 = createGrid(16, 16, 16);
+    g1.set(0, 0, 0, OAK);
+    const small = meshChunk(g1, 0, 0, 0, undefined, scratch)!;
+    expect(small.positions.length / 3).toBe(6 * 4);
+
+    const g2 = createGrid(16, 16, 16);
+    // several disconnected cubes: greedy merge can't collapse them into one big quad run, so this
+    // reliably produces MORE faces (not just bigger merged ones) than the single small cube above.
+    for (let i = 0; i < 6; i++) g2.set(i * 2, 0, 0, OAK);
+    const big = meshChunk(g2, 0, 0, 0, undefined, scratch)!;
+    // the grown result must still be internally consistent — no truncation from a stale capacity.
+    expect(big.indices.length).toBeGreaterThan(small.indices.length);
+    for (const idx of big.indices) expect(idx).toBeLessThan(big.positions.length / 3);
+  });
+
+  it("debris/character/island callers (no `into`) still get FRESH, non-shared arrays", () => {
+    const g = createGrid(16, 16, 16);
+    g.set(0, 0, 0, OAK);
+    const a = meshChunk(g, 0, 0, 0)!;
+    const b = meshChunk(g, 0, 0, 0)!;
+    expect(a.positions).not.toBe(b.positions); // each call owns its own buffer
+    expect(Array.from(a.positions)).toEqual(Array.from(b.positions));
   });
 });

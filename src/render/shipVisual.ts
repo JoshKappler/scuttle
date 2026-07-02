@@ -13,7 +13,7 @@ import {
   TRUNNION_OUT_B,
   type GunFacing,
 } from "../game/gunnery";
-import { meshChunk } from "./voxelMesher";
+import { createMeshScratch, meshChunk, type MeshScratch } from "./voxelMesher";
 import { CompartmentFluid } from "./compartmentFluid";
 import { SailVisual, type WindLike } from "./sailVisual";
 import { CANVAS } from "../sim/materials";
@@ -415,6 +415,13 @@ export class ShipVisual {
    *  stay synchronous (gameplay correct); only the visible mesh trails by a frame or two. A chunk re-
    *  dirtied while still queued stays a single entry (Set), so nothing is re-meshed twice or dropped. */
   private pendingRemesh = new Set<string>();
+  /** Round-12 SP4 pooling: one shared grow-only output buffer for EVERY chunk remesh this ship
+   *  performs — `meshChunk(..., into)` fills it and returns subarray views, consumed synchronously
+   *  below (copied into that chunk's own geometry buffers) before the next remeshChunk call reuses
+   *  it, so chunks never alias each other's data. Replaces a fresh Float32Array/Uint32Array
+   *  allocation on every damage-driven remesh with one array-copy into (usually) already-sized
+   *  per-chunk buffers. */
+  private meshScratch: MeshScratch = createMeshScratch();
   /** Max chunks re-meshed per render frame on the damage path. Each meshChunk is a full 16³ greedy
    *  sweep (~0.3–1 ms); 3 keeps the per-frame mesh cost well under a frame while draining a typical
    *  ram's dirty set in 2–4 frames. The EXPLICIT remeshAll() (cutaway toggle / construction) ignores
@@ -469,38 +476,109 @@ export class ShipVisual {
     this.sails?.refreshDamage();
   }
 
+  /** Manual bounding sphere from the CHUNK's cell-space AABB (round-12 SP4) — a fixed, O(1)
+   *  conservative bound (the whole 16³ chunk volume, a superset of whatever it actually contains),
+   *  replacing `computeBoundingSphere()`'s per-vertex scan. That scan would also be WRONG once a
+   *  chunk's buffers carry pooled slack: it reads the raw typed array, including any stale tail
+   *  beyond the live vertex count. */
+  private static chunkBoundingSphere(cx: number, cy: number, cz: number): THREE.Sphere {
+    const s = CHUNK_SIZE * VOXEL_SIZE;
+    return new THREE.Sphere(
+      new THREE.Vector3((cx + 0.5) * s, (cy + 0.5) * s, (cz + 0.5) * s),
+      (s * Math.sqrt(3)) / 2,
+    );
+  }
+
   private remeshChunk(key: string): void {
     const [cx, cy, cz] = key.split(",").map(Number);
+    // hullVisible composes the ALWAYS-ON canvas exclusion (cloth planes replace the cubes) with the
+    // LIVE cutaway predicate (read per call, incl. the damage-driven refresh() path) so a chunk
+    // carved during cutaway re-meshes with the cut still applied — cutaway + live damage for free.
+    // `this.meshScratch` (round-12 SP4): meshChunk fills the SHARED grow-only buffer and returns
+    // subarray views — consumed synchronously below (copied into this chunk's OWN geometry buffers)
+    // before any other remeshChunk call reuses the scratch, so there is no cross-chunk aliasing.
+    const data = meshChunk(this.build.grid, cx, cy, cz, this.hullVisible, this.meshScratch);
     const old = this.chunkMeshes.get(key);
+    if (!data) {
+      if (old) {
+        this.group.remove(old);
+        old.geometry.dispose();
+        this.chunkMeshes.delete(key);
+      }
+      return;
+    }
+
+    // split into a WOOD group (hull material) + an IRON group (solid ballast material). The mesher
+    // packs iron indices at the tail, so wood = [0, woodCount), iron = [woodCount, total). Only when
+    // the chunk actually holds iron do we use the two-material array (else a plain single material).
+    const total = data.indices.length;
+    const ironCount = data.ironIndexCount;
+    const woodCount = total - ironCount;
+    const nFloats = data.positions.length; // vertex count × 3
+    const material = ironCount > 0 ? [this.hullMaterial, this.ironMaterial] : this.hullMaterial;
+    const bsphere = ShipVisual.chunkBoundingSphere(cx, cy, cz);
+
+    // Reuse the existing geometry's BUFFERS when this chunk's new data still fits their current
+    // capacity (the slack a prior realloc left): an in-place `.set()` + group rebuild avoids the
+    // dispose()/new BufferGeometry()/4×new BufferAttribute() churn on every damage-driven remesh of
+    // a chunk that's already been meshed once (the common case — a ram re-touches the same handful
+    // of chunks repeatedly). Overflow (a chunk growing past its prior peak, e.g. port repair
+    // regrowing canvas, or the very first mesh) falls back to dispose + realloc with 1.5× slack.
+    const oldGeo = old?.geometry;
+    const posAttr = oldGeo?.getAttribute("position") as THREE.BufferAttribute | undefined;
+    const idxAttr = oldGeo?.getIndex() as THREE.BufferAttribute | undefined;
+    const fits = !!oldGeo && !!posAttr && !!idxAttr &&
+      (posAttr.array as Float32Array).length >= nFloats && (idxAttr.array as Uint32Array).length >= total;
+
+    if (fits && old && oldGeo && posAttr && idxAttr) {
+      const normAttr = oldGeo.getAttribute("normal") as THREE.BufferAttribute;
+      const colorAttr = oldGeo.getAttribute("color") as THREE.BufferAttribute;
+      (posAttr.array as Float32Array).set(data.positions, 0);
+      (normAttr.array as Float32Array).set(data.normals, 0);
+      (colorAttr.array as Float32Array).set(data.colors, 0);
+      (idxAttr.array as Uint32Array).set(data.indices, 0);
+      posAttr.needsUpdate = true;
+      normAttr.needsUpdate = true;
+      colorAttr.needsUpdate = true;
+      idxAttr.needsUpdate = true;
+      oldGeo.clearGroups();
+      if (ironCount > 0) {
+        if (woodCount > 0) oldGeo.addGroup(0, woodCount, 0);
+        oldGeo.addGroup(woodCount, ironCount, 1);
+      }
+      // the pooled buffers may carry slack beyond `total` — bound the draw explicitly (groups
+      // already do for the iron case; a single-material chunk has no groups to bound it).
+      oldGeo.setDrawRange(0, total);
+      oldGeo.boundingSphere = bsphere;
+      old.material = material;
+      return;
+    }
+
     if (old) {
       this.group.remove(old);
       old.geometry.dispose();
       this.chunkMeshes.delete(key);
     }
-    // hullVisible composes the ALWAYS-ON canvas exclusion (cloth planes replace the cubes) with the
-    // LIVE cutaway predicate (read per call, incl. the damage-driven refresh() path) so a chunk
-    // carved during cutaway re-meshes with the cut still applied — cutaway + live damage for free.
-    const data = meshChunk(this.build.grid, cx, cy, cz, this.hullVisible);
-    if (!data) return;
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
-    geo.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
-    geo.setAttribute("color", new THREE.BufferAttribute(data.colors, 3));
-    geo.setIndex(new THREE.BufferAttribute(data.indices, 1));
-    // split into a WOOD group (hull material) + an IRON group (solid ballast material). The mesher
-    // packs iron indices at the tail, so wood = [0, woodCount), iron = [woodCount, total). Only when
-    // the chunk actually holds iron do we use the two-material array (else a plain single material).
-    let mesh: THREE.Mesh;
-    const total = data.indices.length;
-    const ironCount = data.ironIndexCount;
+    // 1.5× slack over the CURRENT data so a further growth spurt (e.g. one more repaired sail bay)
+    // doesn't immediately re-overflow and thrash straight back into this realloc path.
+    const posCap = Math.ceil((nFloats / 3) * 1.5) * 3;
+    const idxCap = Math.ceil(total * 1.5);
+    const posBuf = new Float32Array(posCap); posBuf.set(data.positions, 0);
+    const normBuf = new Float32Array(posCap); normBuf.set(data.normals, 0);
+    const colorBuf = new Float32Array(posCap); colorBuf.set(data.colors, 0);
+    const idxBuf = new Uint32Array(idxCap); idxBuf.set(data.indices, 0);
+    geo.setAttribute("position", new THREE.BufferAttribute(posBuf, 3));
+    geo.setAttribute("normal", new THREE.BufferAttribute(normBuf, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(colorBuf, 3));
+    geo.setIndex(new THREE.BufferAttribute(idxBuf, 1));
     if (ironCount > 0) {
-      const woodCount = total - ironCount;
       if (woodCount > 0) geo.addGroup(0, woodCount, 0);
       geo.addGroup(woodCount, ironCount, 1);
-      mesh = new THREE.Mesh(geo, [this.hullMaterial, this.ironMaterial]);
-    } else {
-      mesh = new THREE.Mesh(geo, this.hullMaterial);
     }
+    geo.setDrawRange(0, total); // bound to the live data — the buffers carry 1.5× slack
+    geo.boundingSphere = bsphere;
+    const mesh = new THREE.Mesh(geo, material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     this.group.add(mesh);
