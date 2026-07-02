@@ -329,19 +329,12 @@ export const TUN = {
      *  hole equalises fast → inside ≈ outside → no jarring exposed wall at the breach), and only shows
      *  for a small hole (interior well below the sea) or transiently while filling. */
     render: {
-      /** max metres the side skirt drops below the pool surface (the body's visible depth/substance).
-       *  Clamped to the compartment's actual floor depth, so a shallow pool shows a shallow body. */
-      skirtDepth: 1.6,
       /** opacity of the top water sheet (0..1). Mostly opaque so it reads as the sea surface, with a
        *  touch of translucency so the timber beneath isn't a hard cut. */
       topOpacity: 0.92,
       /** opacity of the side skirt (0..1) at full exposure — a little less than the top so the depth
        *  reads as a darker body wall, not a second bright sheet. */
       skirtOpacity: 0.8,
-      /** metres of level-difference (interior pool below local sea) over which the skirt fades from
-       *  fully HIDDEN (inside ≈ sea, big-hole case → no exposed wall) up to fully shown (small hole,
-       *  inside well below the sea). Smaller = the wall pops in sooner as the level drops. */
-      blendBand: 0.7,
       /** gentle surface shimmer amplitude (m) of the shared Gerstner-style ripple on the flood top —
        *  the "moving water" life, kept small so the pool reads calm (a room, not the open sea). */
       shimmer: 0.05,
