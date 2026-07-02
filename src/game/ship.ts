@@ -232,6 +232,13 @@ export function yawInertia(build: ShipBuild): number {
   return (mass / 12) * (l * l + w * w) * YAW_ADDED_MASS;
 }
 
+/** Turn-heel soft-knockdown fade: 1 below 60% of the cap, linearly to 0 AT the cap — the couple
+ *  can never PUSH her past turnHeelCap (buoyant righting then wins). Extracted pure for the
+ *  round-12 capsize-guard test; used verbatim by applyForces. */
+export function turnHeelDeepeningFade(heelDeg: number, cap: number): number {
+  return Math.min(Math.max((cap - heelDeg) / (cap * 0.4), 0), 1);
+}
+
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
  * Buoyancy/flood/drag forces are applied at probe points every fixed step;
@@ -1238,7 +1245,7 @@ export class Ship implements ContactTarget {
       // it on the side that would push her FURTHER over (heelT and the current lean share a sign).
       // So the steady lean parks at ~cap on every hull and the couple physically cannot drive her
       // past it — the light, tight-turning Cutter no longer overshoots into a knockdown.
-      const fade = Math.min(Math.max((cap - heelDeg) / (cap * 0.4), 0), 1); // 1 below 0.6·cap → 0 at cap
+      const fade = turnHeelDeepeningFade(heelDeg, cap); // 1 below 0.6·cap → 0 at cap (pure, unit-tested)
       // aLat>0 ⇒ couple leans the +Z rail down (heelSin>0). Only damp the couple when it would deepen
       // the existing lean; if she's already heeled the other way it's free to right her toward centre.
       const deepening = aLat * heelSin >= 0 ? fade : 1;
