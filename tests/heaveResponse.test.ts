@@ -56,4 +56,15 @@ describe("heave step response (round-12 SP5 guard — must stay green through th
     expect(r.settle).toBeGreaterThan(5.5);
     expect(r.settle).toBeLessThan(9.5);
   });
+
+  it("damping no longer moves with the buoyancy multiplier (the SP5 decoupling)", () => {
+    const c0 = heaveDampingCoef(AREA, MASS);
+    const saved = TUN.phys.buoyancy;
+    try {
+      TUN.phys.buoyancy = 1.0; // would have shifted c by √1.5 before round 12
+      expect(heaveDampingCoef(AREA, MASS)).toBe(c0);
+    } finally {
+      TUN.phys.buoyancy = saved;
+    }
+  });
 });

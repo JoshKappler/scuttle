@@ -100,12 +100,14 @@ export class SeverDebounce {
 }
 
 /** Heave/pitch/roll damping coefficient c (N·s/m) for the wet waterplane: c = 2·ζ·√(k·m) with the
- *  LIVE hydrostatic stiffness k. Pure + exported so the step-response guard can characterize the
- *  response without Rapier (tests/heaveResponse.test.ts — same pattern as SeverDebounce). The
- *  `wet` saturation and the per-area distribution over the waterplane moments stay at the call
- *  site in applyForces. */
+ *  PURE hydrostatic stiffness k = ρ·g·A_waterplane. ROUND-12 SP5: TUN.phys.buoyancy is deliberately
+ *  NOT in here — lift keeps the ×buoyancy feel multiplier, damping no longer silently tracks it, so
+ *  the two knobs are independent. TUN.phys.heaveDamp was recalibrated 0.2 → 0.2·√1.5 in the same
+ *  change, so the shipped response at buoyancy = 1.5 is numerically identical:
+ *  2·0.2·√(1.5·k·m) ≡ 2·(0.2·√1.5)·√(k·m). Pure + exported for the step-response guard
+ *  (tests/heaveResponse.test.ts). `wet`/area distribution stays at the call site in applyForces. */
 export function heaveDampingCoef(waterplaneArea: number, mass: number): number {
-  const k = WATER_DENSITY * G * waterplaneArea * TUN.phys.buoyancy; // the live heave stiffness
+  const k = WATER_DENSITY * G * waterplaneArea;
   return 2 * TUN.phys.heaveDamp * Math.sqrt(Math.max(k * mass, 1));
 }
 

@@ -27,13 +27,15 @@ export const TUN = {
     /** global multiplier on per-voxel Archimedes lift. 1.5 was the playtest's
      *  preferred feel ("immediately makes things more realistic"). */
     buoyancy: 1.5,
-    /** heave damping RATIO ζ: per submerged column the hull resists vertical motion
-     *  with c = 2·ζ·√(k·m) against the LIVE hydrostatic stiffness, distributed over the
-     *  waterplane so the SAME coefficient also damps pitch & roll (a bow plunging into a
-     *  wave drags water = pitch damping). 0.2 was the playtest's preferred feel ("heave
-     *  ... looks the best (and most intense) at the lowest setting of .2") — lightly
-     *  damped so she rides the swell with life but never builds a resonant hobby-horse. */
-    heaveDamp: 0.2,
+    /** heave damping RATIO ζ, referenced to the PURE hydrostatic stiffness k = ρ·g·A_waterplane
+     *  (round 12 SP5: the `buoyancy` multiplier is factored OUT of the damping pairing, so moving
+     *  `buoyancy` no longer silently moves the damping coefficient). Per submerged column the hull
+     *  resists vertical motion with c = 2·ζ·√(k·m), distributed over the waterplane so the SAME
+     *  coefficient also damps pitch & roll (a bow plunging into a wave drags water = pitch damping).
+     *  0.2·√1.5 ≈ 0.245 reproduces the shipped feel EXACTLY — the playtest's preferred 0.2 ("heave
+     *  ... looks the best (and most intense) at the lowest setting of .2") was tuned against k×1.5,
+     *  and 2·0.2·√(1.5·k·m) ≡ 2·(0.2·√1.5)·√(k·m). */
+    heaveDamp: 0.2 * Math.sqrt(1.5),
     /** yaw angular damping (×yaw inertia) — the water + rudder resisting a spin. The one
      *  rotational axis with no buoyant restoring of its own, so it keeps a light damper. SHIP-FEEL
      *  pass: eased 0.7→0.6 so the stronger rudder (phys.rudderGain) settles at a higher steady yaw
