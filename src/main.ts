@@ -14,7 +14,7 @@ import { WeatherController } from "./render/weather";
 import { stormFromSeaScale } from "./render/weatherMath";
 import { CloudDome } from "./render/clouds";
 import { islandGritUniforms } from "./render/islandVisual";
-import { buildCutter, buildSloop, type ShipBuild } from "./sim/shipwright";
+import { buildCutter, buildSloop } from "./sim/shipwright";
 import { tierById, SHIP_TIERS, tierOrder } from "./game/shipyard";
 import { pickEnemyTier } from "./sim/fleetSpawn";
 import { ShipVisual } from "./render/shipVisual";
@@ -48,6 +48,7 @@ import { createSpray } from "./render/spray";
 import { TUN } from "./core/tunables";
 import { AimUI } from "./render/aimUI";
 import { CutawayController } from "./render/cutawayController";
+import { ShipSwap } from "./game/shipSwap";
 import { createDevPanel } from "./render/devPanel";
 import { Economy } from "./sim/economy";
 import { createPortScreen } from "./render/portScreen";
@@ -557,7 +558,7 @@ async function main() {
       current: currentTier,
     }),
     onSwapShip: (id) => {
-      swapPlayerShip(id);
+      shipSwap.swapPlayerShip(id);
       audio.playUi("ship_ready"); // only fires on an actual shipyard purchase
     },
   });
@@ -569,7 +570,7 @@ async function main() {
     settings = { ...s.settings };
     sandboxBest = s.sandboxBest ?? 0; // carry the persisted best into this session
     if (s.shipTier !== currentTier) {
-      swapPlayerShip(s.shipTier); // rebuild the saved hull (also sets currentTier + re-applies upgrades)
+      shipSwap.swapPlayerShip(s.shipTier); // rebuild the saved hull (also sets currentTier + re-applies upgrades)
     } else {
       port.syncAfterLoad(); // same hull → just re-apply owned upgrades + mirror gold
     }
@@ -592,40 +593,35 @@ async function main() {
   // (the start/pause menu is created at the top of main(); the player's choice was
   // awaited there and is applied just below, once the world is fully built.)
 
-  // ---- hull swap (shipyard purchase / save restore / respawn) ----
-  // Rebuild the player ship as a fresh hull, keeping world position/heading, and
-  // re-point every system that holds a player-ship reference. (function decls so the
-  // port/menu closures above can call them; only ever invoked at runtime.)
-  function swapPlayerShip(tierId: ShipTierId): void {
-    currentTier = tierId;
-    rebuildPlayerShip(tierById(tierId).build());
-    port.syncAfterLoad(); // account-wide upgrades land on the new hull
-  }
-  function rebuildPlayerShip(build: ShipBuild): void {
-    const at = sloop.body.translation();
-    const rot = sloop.body.rotation();
-    world.removeShip(sloop); // scene + geometry + rigid-body cleanup
-    const visual = new ShipVisual(build);
-    const fresh = new Ship(physics, build, visual, { x: at.x, y: Math.max(at.y, 0.5), z: at.z });
-    fresh.body.setRotation(rot, true);
-    fresh.onSevered = (isl) => isl.forEach((i) => debris.spawn(i, fresh));
-    fresh.onCannonLost = (pi) => debris.spawnFallingCannon(fresh, pi);
-    fresh.onMastFelled = () => gs.msg.post("YOUR MAST GOES BY THE BOARD!");
-    fresh.onRudderHit = (hp) => {
-      visual.chipRudder(hp / 3);
-      gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
-    };
-    world.addShip(fresh);
-    sloop = fresh;
-    world.focus = fresh; // keep the buoyancy LOD focus on the live player hull
-    sloopVisual = visual;
-    port.setShip(fresh);
-    fleet.setTarget(fresh);
-    character.setShip(fresh);
-    rebindPlayerRenderHooks();
-    rebuildFloodSegments(); // new hull → new compartment count → rebuild the flood readout
-    cutawayCtl.onShipSwapped(); // carry the X cutaway onto the freshly-built hull
-  }
+  // ---- hull swap (shipyard purchase / save restore / respawn): game/shipSwap.ts (round 12) ----
+  // The full rebind list lives there; these callbacks hand it the main-owned live bindings.
+  const shipSwap = new ShipSwap({
+    physics,
+    world,
+    port,
+    fleet,
+    character,
+    debris,
+    msg: gs.msg,
+    dock: islands, // IslandField.nearestDock — respawn teleports seaward of the home pier
+    binding: {
+      getShip: () => sloop,
+      setShip: (ship, visual) => {
+        sloop = ship;
+        sloopVisual = visual;
+      },
+      getTier: () => currentTier,
+      setTier: (id) => {
+        currentTier = id;
+      },
+      rebindRenderHooks: () => rebindPlayerRenderHooks(),
+      rebuildFloodSegments: () => rebuildFloodSegments(),
+      reapplyCutaway: () => cutawayCtl.onShipSwapped(),
+      setAtWheel: (v) => {
+        atWheel = v;
+      },
+    },
+  });
   function rebindPlayerRenderHooks(): void {
     sloopProfile = makeProfileTex(sloop.build.grid, sloop.build.deckY);
     ocean.setHullProfile(0, sloopProfile.data, sloopProfile.nx, sloopProfile.nz, sloopProfile.sizeX, sloopProfile.sizeZ);
@@ -636,22 +632,6 @@ async function main() {
     _dynShips[0].sizeZ = sloopProfile.sizeZ;
     aimUI.rebuildAimLines(); // resize the broadside trajectory-preview pool to the new hull's gun count
     prevGunsReady = -1; // new hull → re-baseline the reload-bell tracker (no spurious ring)
-  }
-  // Respawn a fresh hull of the current tier in clear water just seaward of the home
-  // dock, and re-seat the captain at the wheel. (Used by the sink penalty.)
-  function respawnPlayerAtPort(): void {
-    rebuildPlayerShip(tierById(currentTier).build());
-    const tr = sloop.body.translation();
-    const dock = islands.nearestDock(tr.x, tr.z);
-    if (dock) {
-      sloop.body.setTranslation({ x: dock.x + 54, y: 0.6, z: dock.z }, true);
-      sloop.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true); // bow SEAWARD (+x) — sail away from the dock
-    }
-    sloop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    sloop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    port.syncAfterLoad();
-    character.reseat();
-    atWheel = true; // back at the helm
   }
 
   // rig damage feedback (round 7): masts fall, rudders splinter. The enemy
@@ -896,7 +876,7 @@ async function main() {
       } else {
         gs.msg.post("scuttled — a fresh hull awaits.");
       }
-      respawnPlayerAtPort();
+      shipSwap.respawnPlayerAtPort();
       saveCurrent();
       respawning = false;
     }
@@ -1068,6 +1048,7 @@ async function main() {
     islands,
     economy,
     port,
+    shipSwap, // hull-swap flow (game/shipSwap.ts) — lets scripted checks swap tiers directly
     perf, // PerfMonitor — DEBUG.perf.gpuInfo tells you GPU name + software flag
     TUN, // live tunables (also lets Playwright tune crush/flood knobs during verification)
     get spike() {
@@ -1886,7 +1867,7 @@ async function main() {
       const cfg = choice.cfg;
       forcedEnemyTier = cfg.enemyTier === "mixed" ? null : (cfg.enemyTier as ShipTierId);
       TUN.fleet.enemyCount = Math.max(0, Math.min(MAXVIS, Math.round(cfg.enemyCount)));
-      if (cfg.shipTier !== currentTier) swapPlayerShip(cfg.shipTier as ShipTierId);
+      if (cfg.shipTier !== currentTier) shipSwap.swapPlayerShip(cfg.shipTier as ShipTierId);
       gs.startGame("sandbox");
     }
     // apply the saved default camera (settings were just restored by applySave above)
