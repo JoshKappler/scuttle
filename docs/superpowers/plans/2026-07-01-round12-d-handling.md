@@ -749,3 +749,96 @@ Analysis to encode (verified in Architecture): `aLat = clamp(vF·ω, ±3)` was a
 - `C:\Users\joshu\OneDrive\desktop\projects\scuttle\src\core\tunables.ts` — `phys.yawDamp`, new `phys.rudderLeverExp`
 - `C:\Users\joshu\OneDrive\desktop\projects\scuttle\tests\sailing.test.ts` — the stub-ship pattern the new harness extends (fake gains `grid.dims`)
 - `C:\Users\joshu\OneDrive\desktop\projects\scuttle\src\game\debris.ts` — READ-ONLY: verify wave-1 `removeRigFor(ship)` signature before Task 6
+
+---
+
+## Completion note (executor agent D, 2026-07-01)
+
+All 8 tasks executed exactly as planned; the numeric model in the plan's Architecture section
+predicted every test result to within the pre-computed bands on the FIRST run of each new/updated
+test file — no calibration surprises, no contingencies fired (Task 5's righting-at-cap guard
+passed cutter+frigate on the first try; `turnHeelCap` was never touched).
+
+**Commits (all on `main`, HEAD, not pushed — orchestrator pushes):**
+1. `2fd3250` test(handling): 1-DOF per-tier turn-rate oracle + characterization of current feel
+2. `f60cfad` feat(handling): yaw added-mass factor 1.6 -> 1.3 (pitch keeps 1.6)
+3. `a1ddf16` feat(handling): ease TUN.phys.yawDamp 0.6 -> 0.4
+4. `0e7bc2b` feat(handling): Cutter-anchored hull-length rudder lever; tier turn times hit spec
+5. `f8659ad` test(handling): turn-heel capsize guard at round-12 turn rates
+6. `e474445` feat(ship): port repair re-steps FELLED masts + full post-repair refresh
+7. `3067d7f` docs(pacing): round-12 pacing audit - numbers per tier, zero TUN nudges applied
+
+**Final measured turn-rate table** (`tests/turnRate.test.ts`, deterministic 1-DOF model reading the
+live shipped `TUN`):
+
+| tier | t90 (s) | spec target | pass? |
+|---|---|---|---|
+| Cutter | 2.47 | 2-3 s | yes |
+| Sloop | 2.85 | (monotonic gate only) | yes |
+| Brig | 4.50 | (monotonic gate only) | yes |
+| Frigate | 5.50 | 5-6 s | yes |
+
+Strictly monotonic across all four tiers (own test asserts this). Matches the plan's Task 4
+prediction to 2 decimal places — the 1-DOF calibration model was exact, not an estimate.
+
+**Deviations from the plan:** none of substance.
+- Minor: merged the two adjacent `YAW_ADDED_MASS` doc-comment blocks (Task 1's original comment +
+  Task 2's "extend its comment" instruction) into one clean block rather than leaving two stacked
+  `/** */` comments — cosmetic only, same content.
+- Minor: added one sentence to the pre-existing constructor comment above `ixx/iyy/izz` (Task 1
+  didn't ask for this, but leaving "Pitch/yaw carry a 1.6× added-mass factor" verbatim after
+  splitting the two constants would have been stale/misleading — updated it to name
+  `YAW_ADDED_MASS`/`PITCH_ADDED_MASS` instead of a bare "1.6×").
+- The pacing report (Task 7) independently re-verified every cited constant against source rather
+  than trusting the plan's numbers verbatim (per "verify each number against source before
+  writing"). All checked out unchanged from the plan's Architecture section EXCEPT the
+  envelope/displacing volumes, which I measured directly (Cutter 215.1 m³ / Sloop 449.8 / Brig
+  1241.7 / Frigate 2113.8 m³, via `build.envelopeVolume`) rather than reusing the plan's
+  slightly different "241 m³ / 2149 m³" figures (likely a different volume metric) — used my
+  measured values in the shipped report for accuracy per THE RULE.
+
+**Contract produced:** `Ship.onRigRepair?: (ship: Ship) => void`, fired from `repairSails()` only
+when the repair plan includes a currently-felled mast (`plan.some((m) => !this.mastAlive[m.mi])`).
+NOT wired into `main.ts`/`game/shipSwap.ts` — per the master orchestration plan, that one-line
+wiring (`fresh.onRigRepair = (s) => debris.removeRigFor(s);` at each player-ship creation site) is
+the orchestrator's wave-2-tail commit, after E lands. Confirmed `DebrisManager.removeRigFor(ship:
+Ship): void` exists in `src/game/debris.ts` with exactly that signature (wave-1 agent B) before
+consuming it.
+
+**`repairSails()` fell-aware path:** confirmed landed — `planRigRepair` (pure, unit-tested in
+`tests/repairSails.test.ts`, 4/4 passing) now handles both standing-mast regrowth (unchanged
+behavior) AND felled-mast full re-stepping gated on `MAST_SUPPORT_MIN_FRAC` footing survival
+(mirrors `flushDamage`'s felling rule). `repairSails()` itself now also re-enters restored cells
+into the Rapier hull voxel collider, the packed surface set, buoyancy columns/mass properties, and
+the walkable deck collider — closing a pre-existing gap that affected standing-mast repair too
+(previously repaired rig was intangible to contact and weightless until the next unrelated carve
+forced a recompute).
+
+**Pacing changes made:** none (Task 7 report explicitly justifies zero `TUN` nudges — the one real
+finding, turn/reposition time on big hulls, is what Tasks 1-4 of this same plan fixed).
+
+**Build/test:** `npm run build` clean (tsc + vite) and `npm run test` green at every commit
+(final: 64 files / 495 passed / 1 skipped, up from the wave-1 baseline of 62/481/1 — the delta is
+exactly this plan's 5 new test files: `turnRate`, `turnHeel`, `repairSails` + the `sailing`/
+`ship.ts` edits contributing zero new/broken tests of their own). Isolated re-run of
+`brig.test.ts`/`manOfWar.test.ts`/`manOfWarFloat.test.ts` (the known CPU-load flake candidates)
+also green — no flake observed this session, but always worth an isolated re-run if the merged
+Gate-2 tree shows red there.
+
+**Working tree:** clean at hand-off (`git status --porcelain` empty). Nothing pushed — orchestrator
+pushes per the wave protocol.
+
+**For the orchestrator at the wave-2 tail (after E lands):**
+1. Land the `onRigRepair` wiring: one line at each player-ship creation site in `main.ts` (initial
+   build, the respawn re-wire, and `swapPlayerShip`/`game/shipSwap.ts`'s `rebuildPlayerShip`) —
+   `fresh.onRigRepair = (s) => debris.removeRigFor(s);` (adjust the receiver name to whatever E's
+   `shipSwap.ts` extraction actually calls its debris manager / fresh-ship binding).
+2. In-browser Gate-2 pass (this plan's Task 8 deliberately deferred it here since the wiring above
+   doesn't exist until the orchestrator lands it): stopwatch turn feel per tier against the table
+   above, hard-turn bank to ~cap with no capsize, low-speed pivot feel (authority intentionally
+   rose ~1.7-2.3× — `rudderLeverExp`/`rudderLowFloor` in `TUN.phys` are the live re-tune knobs if
+   it reads twitchy), and specifically: shoot a mast down, dock, repair, confirm the mast regrows
+   AND the floating rig-debris despawns (needs step 1 wired first).
+3. No dev-panel slider exists for `TUN.phys.rudderLeverExp` — it's editable only via the console
+   (`DEBUG.TUN.phys.rudderLeverExp = ...`) or code. A one-line slider addition in `main.ts`'s dev
+   panel section is optional polish, not required.
