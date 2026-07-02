@@ -860,8 +860,9 @@ async function main() {
     if (prevGunsReady >= 0 && gunsReady > prevGunsReady) audio.playUi("reload_bell", { volume: 0.5 });
     prevGunsReady = gunsReady;
     // ship-vs-ship destruction now runs inside world.step (world.contact.stepAll), not here.
-    // pass the live hulls so a FALLING MAST staves in whatever it lands on (its own deck / another ship).
-    debris.update(dt, t, waves, [sloop, ...fleet.enemies]);
+    // pass the live hulls so a FALLING MAST staves in whatever it lands on (its own deck / another ship);
+    // `wind` (round-12 SP1) drives rigDriftForce so felled sails drift downwind while afloat.
+    debris.update(dt, t, waves, [sloop, ...fleet.enemies], wind);
     charSpike?.update(dt, controls.cameraYaw());
 
     // enemy sunk → plunder + unlock that class for the shipyard (proving your guns

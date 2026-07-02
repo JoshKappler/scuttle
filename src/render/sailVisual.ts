@@ -34,6 +34,12 @@ const SEG_V = 12;
 const BELLY_PER_M = 0.17;
 /** Sheets thinner than this many cells are degenerate slivers — skip them. */
 const MIN_SHEET_CELLS = 4;
+/** Draped (felled-rig) droop depth per meter of sheet width — deeper than the taut standing
+ *  belly (BELLY_PER_M) since a fallen sheet has lost its lacing tension. */
+const DROOP_PER_M = 0.3;
+/** Waterlogged canvas tint for felled-rig debris — no shader, no sun glow, just a flat,
+ *  desaturated, darker cloth so it reads as dead weight, not a working sail. */
+const DRAPED_COLOR = 0x5c5f4e;
 
 /** Minimal wind shape (matches game/sailing.ts `Wind` — dir = blows TOWARD, unit-ish). */
 export interface WindLike {
@@ -319,4 +325,77 @@ export class SailVisual {
     geo.setIndex(new THREE.BufferAttribute(indices, 1));
     return geo;
   }
+}
+
+/**
+ * FELLED-RIG debris (spec SP1 item 5a): a limp, DRAPED variant of the sail sheets for a
+ * severed mast/canvas island (`game/debris.ts spawnMast`). No throttle shader, no wind billow,
+ * no occupancy mask (a severed island's cells are fixed at spawn — whatever CANVAS survived the
+ * sever is all there ever will be) — just a baked-in droop (deeper + asymmetric vs the taut
+ * standing belly, since the lacing tension is gone) and a flat waterlogged tint. `cells` are
+ * ALREADY re-based to the debris body's own local grid origin (island cells minus its bbox
+ * min, like `meshChunk`'s regrid in `spawnMast`) — same coordinate convention as the standing
+ * rig, so the returned meshes parent directly into the debris group alongside the cube mesh.
+ * One shared material (no textures/uniforms) keeps a big derelict cheap to draw.
+ */
+export function buildDrapedSheets(cells: RigCell[]): THREE.Mesh[] {
+  const meshes: THREE.Mesh[] = [];
+  const material = new THREE.MeshStandardMaterial({
+    color: DRAPED_COLOR,
+    roughness: 1,
+    side: THREE.DoubleSide,
+  });
+  for (const sheetCells of splitSheets(cells)) {
+    if (sheetCells.length < MIN_SHEET_CELLS) continue;
+    const bounds = sheetBounds(sheetCells);
+    if (!bounds) continue;
+    const mesh = new THREE.Mesh(drapedGeometry(bounds), material);
+    mesh.castShadow = true;
+    meshes.push(mesh);
+  }
+  return meshes;
+}
+
+/** Like `SailVisual.sheetGeometry` but the belly is BAKED into the vertex positions (no
+ *  shader/uniforms) and hangs from the TOP edge (v=1, sag ∝ (1−v)) rather than being pinned taut
+ *  at both yards — reads as a loose sheet dangling off a broken spar. */
+function drapedGeometry(b: SheetBounds): THREE.BufferGeometry {
+  const nu = SEG_U + 1;
+  const nv = SEG_V + 1;
+  const positions = new Float32Array(nu * nv * 3);
+  const normals = new Float32Array(nu * nv * 3);
+  const widthM = b.w * VOXEL_SIZE;
+  const droop = widthM * DROOP_PER_M;
+  for (let iv = 0; iv < nv; iv++) {
+    const v = iv / SEG_V;
+    const y = (b.y0 + v * b.h) * VOXEL_SIZE;
+    const hang = 1 - v; // 0 at the top edge (still pinned), 1 at the loose bottom
+    for (let iu = 0; iu < nu; iu++) {
+      const u = iu / SEG_U;
+      const i = iv * nu + iu;
+      const sag = droop * hang * Math.sin(u * Math.PI);
+      positions[i * 3] = (b.x + 0.5) * VOXEL_SIZE + sag;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = (b.z0 + u * b.w) * VOXEL_SIZE;
+      normals[i * 3] = 1;
+    }
+  }
+  const indices = new Uint16Array(SEG_U * SEG_V * 6);
+  let k = 0;
+  for (let iv = 0; iv < SEG_V; iv++) {
+    for (let iu = 0; iu < SEG_U; iu++) {
+      const a = iv * nu + iu;
+      const bb = a + 1;
+      const c = a + nu;
+      const d = c + 1;
+      indices[k++] = a; indices[k++] = bb; indices[k++] = d;
+      indices[k++] = a; indices[k++] = d; indices[k++] = c;
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  geo.computeVertexNormals(); // the baked sag bends the surface — normals must follow it
+  return geo;
 }

@@ -6,11 +6,14 @@ import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { MATERIALS, SPAR, CANVAS } from "../sim/materials";
 import { createGrid } from "../sim/voxelGrid";
 import { meshChunk } from "../render/voxelMesher";
+import { buildDrapedSheets } from "../render/sailVisual";
+import type { RigCell } from "../render/sailMath";
 import { CHUNK_SIZE } from "../core/constants";
 import type { Island } from "../sim/connectivity";
 import type { Effects } from "../render/effects";
 import type { Physics } from "./physics";
 import type { Ship } from "./ship";
+import type { Wind } from "./sailing";
 
 /**
  * Severed hull islands become dynamic bodies with their own voxel meshes.
@@ -39,6 +42,36 @@ interface DebrisPiece {
    *  delay so it never craters its OWN deck on the spawn frame (it spawns AT the mast foot, overlapping
    *  the hull). Counts down in update(); damage probing starts once it reaches 0. */
   impactArm?: number;
+  /** Mast-only: total CANVAS face area (m²) this piece carried off the ship — the denominator for
+   *  the wind-drift force (round-12 SP1). 0/undefined for a bare-SPAR piece (no sail to catch wind). */
+  sailAreaM2?: number;
+  /** Mast-only: the ship this rig piece was severed FROM — lets port repair despawn exactly this
+   *  ship's floating wreckage via `removeRigFor` (round-12 SP1 contract for wave-2 agent D). */
+  source?: Ship;
+}
+
+/** Wind-drift force on a felled mast/sail piece (round-12 SP1): a felled rig's surviving canvas
+ *  still catches wind above the waterline, so it drifts downwind while afloat instead of sitting
+ *  dead in the water. Pure + unit-tested (no THREE/Rapier): scales with the piece's exposed
+ *  canvas area and the wind speed, and EASES TO ZERO as the piece's own downwind speed approaches
+ *  `RIG_DRIFT_CAP_SPEED` — a soft speed limiter (well under `TUN.crush.vBreak` = 4) so this reads
+ *  as a gentle drift, never a shove that could ram anything. `downwindSpeed` may be negative (the
+ *  piece moving upwind) — the remaining-headroom term then clamps to 1 (full force), never runaway
+ *  above it. */
+export const RIG_DRIFT_CAP_SPEED = 2; // m/s
+const RIG_DRIFT_COEFF = 4; // N per m² of exposed canvas per m/s of wind
+export function rigDriftForce(
+  areaM2: number,
+  exposedFrac: number,
+  windSpeed: number,
+  downwindSpeed: number,
+): number {
+  if (areaM2 <= 0 || windSpeed <= 0) return 0;
+  const frac = Math.min(Math.max(exposedFrac, 0), 1);
+  if (frac <= 0) return 0;
+  const remaining = Math.min(Math.max(1 - downwindSpeed / RIG_DRIFT_CAP_SPEED, 0), 1);
+  if (remaining <= 0) return 0;
+  return RIG_DRIFT_COEFF * areaM2 * frac * windSpeed * remaining;
 }
 
 // Defensive clamp for ONE inherited velocity component: spawned debris copies the source ship's
@@ -247,19 +280,27 @@ export class DebrisManager {
       mass += MATERIALS[c.mat].density * VOXEL_VOLUME;
     }
 
-    // re-grid at the bbox origin and greedy-mesh it (the felled spar's real voxels).
+    // re-grid at the bbox origin and greedy-mesh it (the felled spar's real voxels). CANVAS cells
+    // are tracked separately (round-12 SP1): they're excluded from the cube mesh (a draped cloth
+    // sheet replaces them below) same as the standing rig's hull mesher exclusion.
     const gnx = maxX - minX + 1;
     const gny = maxY - minY + 1;
     const gnz = maxZ - minZ + 1;
     const grid = createGrid(gnx, gny, gnz);
-    for (const c of island.cells) grid.set(c.x - minX, c.y - minY, c.z - minZ, c.mat);
+    const canvasCells: RigCell[] = [];
+    for (const c of island.cells) {
+      const lx = c.x - minX, ly = c.y - minY, lz = c.z - minZ;
+      grid.set(lx, ly, lz, c.mat);
+      if (c.mat === CANVAS) canvasCells.push({ x: lx, y: ly, z: lz });
+    }
+    const hideCanvas = (x: number, y: number, z: number) => grid.get(x, y, z) !== CANVAS;
 
     const group = new THREE.Group();
     const meshMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
     for (let cx = 0; cx <= Math.floor((gnx - 1) / CHUNK_SIZE); cx++) {
       for (let cy = 0; cy <= Math.floor((gny - 1) / CHUNK_SIZE); cy++) {
         for (let cz = 0; cz <= Math.floor((gnz - 1) / CHUNK_SIZE); cz++) {
-          const data = meshChunk(grid, cx, cy, cz);
+          const data = meshChunk(grid, cx, cy, cz, hideCanvas);
           if (!data) continue;
           const geo = new THREE.BufferGeometry();
           geo.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
@@ -271,6 +312,13 @@ export class DebrisManager {
           group.add(m);
         }
       }
+    }
+    // felled canvas: a limp, waterlogged DRAPED sheet per surviving bay (no billow shader — it's
+    // dead weight now), parented into the same group so it rides the debris body's pose.
+    let sailAreaM2 = 0;
+    if (canvasCells.length > 0) {
+      for (const m of buildDrapedSheets(canvasCells)) group.add(m);
+      sailAreaM2 = canvasCells.length * VOXEL_SIZE * VOXEL_SIZE;
     }
     this.scene.add(group);
 
@@ -354,7 +402,28 @@ export class DebrisManager {
       mast: true,
       liftMul: TUN.rig.fallFloatBuoy,
       impactArm: 0.25, // brief delay so it can't crater its own deck on the spawn frame
+      sailAreaM2, // 0 for a bare-SPAR piece — rigDriftForce no-ops on it
+      source: ship, // lets port repair despawn exactly this ship's floating wreckage (removeRigFor)
     });
+  }
+
+  /**
+   * Round-12 SP1 CONTRACT for wave-2 agent D: port repair restoring a FULLY DISMASTED ship
+   * (`ship.repairSails` re-stamping felled masts) must clear away that ship's now-stale floating
+   * rig debris — otherwise the just-repaired standing rig and an orphaned floating stub coexist.
+   * Despawns every `mast`-routed piece tagged with this ship (spawnMast's `source`), mirroring the
+   * natural end-of-lifetime cleanup path in `update()` exactly (scene.remove + drop the debrisBodies
+   * handle + removeRigidBody). A ship with no floating rig (nothing shot down yet) no-ops.
+   */
+  removeRigFor(ship: Ship): void {
+    for (let i = this.pieces.length - 1; i >= 0; i--) {
+      const p = this.pieces[i];
+      if (!p.mast || p.source !== ship) continue;
+      this.scene.remove(p.mesh);
+      this.physics.debrisBodies.delete(p.body.handle); // drop the stale handle (recycled by Rapier)
+      this.physics.world.removeRigidBody(p.body);
+      this.pieces.splice(i, 1);
+    }
   }
 
   /** Shared falling-cannon barrel geometry/material (one ~2 m iron tube), built once. */
@@ -507,8 +576,10 @@ export class DebrisManager {
   /** Buoyancy + lifetime for every piece. Call each fixed step. `targets` (optional) are the live
    *  ship hulls a FALLING MAST can stave in as it lands (deck / another ship) — voxel-crush via
    *  ship.crush on the ½·fallMass·v² budget (THE LAW #4: energy-budgeted breaking, no preset damage).
-   *  Omitted (or empty) ⇒ masts just float, no landing damage (back-compat for any 3-arg caller). */
-  update(dt: number, simTime: number, waves: Wave[], targets: Ship[] = []): void {
+   *  Omitted (or empty) ⇒ masts just float, no landing damage (back-compat for any 3-arg caller).
+   *  `wind` (round-12 SP1, optional — omitted ⇒ no drift, back-compat) drives `rigDriftForce` on
+   *  mast pieces so a felled sail catches the breeze and drifts downwind while afloat. */
+  update(dt: number, simTime: number, waves: Wave[], targets: Ship[] = [], wind?: Wind | null): void {
     for (let i = this.pieces.length - 1; i >= 0; i--) {
       const p = this.pieces[i];
       p.age += dt;
@@ -557,6 +628,15 @@ export class DebrisManager {
         wet = Math.max(wet, sub);
         const f = ((WATER_DENSITY * G * p.volume * lift) / p.probes.length) * sub;
         p.body.addForceAtPoint({ x: 0, y: f, z: 0 }, { x: wx, y: wy, z: wz }, true);
+      }
+      // WIND DRIFT (round-12 SP1): a felled mast's surviving canvas catches the wind above the
+      // waterline and drifts downwind — `wet` (0 fully surfaced, 1 fully submerged) stands in for
+      // the exposed-canvas fraction. Applied at COM (not per-probe): a gentle nudge, never a shove.
+      if (wind && p.mast && p.sailAreaM2) {
+        const v = p.body.linvel();
+        const downwind = v.x * wind.dirX + v.z * wind.dirZ;
+        const force = rigDriftForce(p.sailAreaM2, 1 - wet, wind.speed, downwind);
+        if (force > 0) p.body.addForce({ x: wind.dirX * force, y: 0, z: wind.dirZ * force }, true);
       }
       if (wet > 0) {
         const v = p.body.linvel();
