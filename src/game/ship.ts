@@ -65,6 +65,12 @@ function hullHeightMeters(build: ShipBuild): number {
 export const SEVER_QUIET = 12;
 export const SEVER_MAX_STALE = 180;
 
+/** Steps of no-carving (~0.5 s) after which the breach ORIFICE LIST is FROZEN (round 12 SP4-B):
+ *  membership then rebuilds only on an explicit breachListDirty event (a new hole, a plugged
+ *  plank, a hold flipping open). While carving is active the list also refreshes on every ~10 Hz
+ *  flood-geom tick, as belt-and-suspenders. Heads (sea/pool levels) keep the 10 Hz cadence always. */
+export const BREACH_FREEZE_QUIET = 30;
+
 /**
  * Pure debounce for the expensive full-grid connectivity sever scan (findSevered). It must fire once
  * carving PAUSES (a chunk has been carved free and should drop off as debris) — but NOT on every carve
@@ -331,13 +337,20 @@ export class Ship implements ContactTarget {
    *  was dozens-to-hundreds of swell evals EVERY substep for the whole (long) flood phase. The physics
    *  swell (λ≥14 m) and the ship pose both move imperceptibly in ~100 ms — exactly like the buoyancy
    *  LOD and the poolY recompute this file already throttles — so refreshing the heads at 10 Hz and
-   *  reusing them in between is behaviour-preserving. The BreachInput objects are pooled (rebuilt in
-   *  place) so a sustained flood allocates nothing. `breachListDirty` forces an off-cadence rebuild the
-   *  instant the breach set changes (a new hole / a plugged one / a shed chunk) so inflow starts at
-   *  once instead of waiting up to 5 substeps for the next tick. Deterministic: step-counted only. */
+   *  reusing them in between is behaviour-preserving. Round 12 SP4-B split this into a FROZEN orifice
+   *  list (rebuildOrifices — membership + local geometry, rebuilt only on breachListDirty / during
+   *  active carving) and a ~10 Hz head refresh (refreshBreachHeads — lattice-sampled sea heads).
+   *  Deterministic: step-counted + sim-time only. */
   private breachInputs: BreachInput[] = []; // the LIVE list passed to floodStep (length == live count)
   private breachPool: BreachInput[] = [];   // owns the objects permanently so rebuilds never reallocate
   private breachListDirty = true;
+  /** FROZEN orifice geometry (round 12 SP4-B): each breach cell / hatch as ship-LOCAL centre metres
+   *  + area + head offset, rebuilt by rebuildOrifices ONLY when the breach set changes (or on the
+   *  geom tick within BREACH_FREEZE_QUIET steps of a carve). refreshBreachHeads re-resolves the
+   *  cheap per-orifice heads (localToWorld + a lattice sample) from this list at ~10 Hz — replacing
+   *  the fused rebuild that re-ran an exact Gerstner inversion per cell forever while flooded. */
+  private orificeList: { compartmentId: number; area: number; lx: number; ly: number; lz: number; dy: number }[] = [];
+  private orificePool: { compartmentId: number; area: number; lx: number; ly: number; lz: number; dy: number }[] = [];
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
@@ -741,14 +754,19 @@ export class Ship implements ContactTarget {
     // world-Y — still the dominant flood cost on a badly-holed big hull even after the native-sort fix
     // (a Man-o'-War compartment is ~60k cells). Throttle it to ~10 Hz (every 6th substep); the inflow
     // calc reuses the cached poolY between recomputes (imperceptible — the pool barely moves in 100 ms).
-    // The per-cell breach/hatch HEADS (a localToWorld + a Gerstner surfaceHeight per orifice) ride the
-    // SAME cadence: rebuilt here when the geom tick comes round (or the instant the breach set changed),
-    // reused every substep in between. On a hull holed wide open that turns hundreds of swell evals/step
-    // into the same hundreds once per ~6 steps — see breachInputs. Order matters: refresh poolY FIRST,
+    // The per-cell breach/hatch HEADS (a localToWorld + a sea-level sample per orifice) ride the
+    // SAME cadence: refreshed when the geom tick comes round (or the instant the breach set changed),
+    // reused every substep in between — see breachInputs. Order matters: refresh poolY FIRST,
     // then resolve the heads against the fresh poolY.
     const geomTick = this.floodGeomTick++ % 6 === 0;
     if (geomTick) this.updateFloodGeom();
-    if (geomTick || this.breachListDirty) this.rebuildBreachInputs(waves, t);
+    // SP4-B: the orifice LIST is FROZEN once carving has been quiet ~0.5 s — membership can only
+    // change via events that set breachListDirty. While carving is active it also refreshes on the
+    // geom tick (belt-and-suspenders). HEADS keep the same ~10 Hz cadence as always, sampling the
+    // sea from the SP4-A lattice instead of exact per-cell inversions.
+    const listStale = this.breachListDirty || (geomTick && this.framesSinceCarve < BREACH_FREEZE_QUIET);
+    if (listStale) this.rebuildOrifices();
+    if (geomTick || listStale) this.refreshBreachHeads(waves, t);
 
     // floodStep now carries BOTH the breach inflow AND the inter-hold SILL OVERFLOW (this.openings): the
     // designed bulkhead-top gaps (seeded from build.sillOpenings) + any shot-through holes. Water crosses
@@ -756,7 +774,7 @@ export class Ship implements ContactTarget {
     // gone, replaced by that one hydrostatic rule (round-8 flooding rewrite).
     floodStep(this.build.compartments, this.openings, this.breachInputs, dt);
     // An OPEN hold (housing destroyed) is part of the sea: keep it drained even if a neighbour spills into
-    // it through a bulkhead opening (its own breach inflow is already skipped in rebuildBreachInputs).
+    // it through a bulkhead opening (its own breach inflow is already skipped in rebuildOrifices).
     let anyOpen = false;
     for (const c of this.build.compartments) if (c.open) { c.waterVolume = 0; anyOpen = true; }
 
@@ -783,60 +801,77 @@ export class Ship implements ContactTarget {
     }
   }
 
-  /**
-   * Resolve every breach-cell + hatch orifice into its two-reservoir head and (re)pack them into the
-   * reused `breachInputs` list. Called from updateFlooding at the ~10 Hz floodGeom cadence (or the
-   * instant the breach set changed) — NOT every 60 Hz substep — because each cell costs a localToWorld
-   * + a Gerstner `surfaceHeight` swell eval, and a wide-open hull has dozens-to-hundreds of them; the
-   * swell (λ≥14 m) and the ship pose both move imperceptibly in ~100 ms (same basis as the buoyancy LOD
-   * and the poolY throttle). BreachInput objects come from `breachPool`, grown once and reused in place,
-   * so a sustained flood allocates nothing. `breachInputs.length` is set to the live count so floodStep's
-   * `for…of` sees exactly the active orifices. Clears `breachListDirty`. */
-  private rebuildBreachInputs(waves: Wave[], t: number): void {
-    const inputs = this.breachInputs;
-    inputs.length = 0;
-    const p = this.tmpV;
-    // Per-CELL orifice area: every breach cell pushes its own orifice below, so a compartment's total
-    // inflow scales with the NUMBER of its punctured cells (a 1-cell nick vs a 30-cell gash differ
-    // ~30×) AND with each cell's depth (the √(2g·dh) head term: a deep hole floods faster). This is
-    // the user's severity model — small/high holes the pump wins, a big low chunk outpaces it.
-    const cellArea = VOXEL_SIZE * VOXEL_SIZE * TUN.flood.inflowScale;
-
+  /** Rebuild the FROZEN orifice list: which breach cells / hatches exist, their ship-local centres,
+   *  raw areas and head offsets (dy = the raised hatch coaming; 0 for a hull hole). Runs only when
+   *  the breach set can have changed (breachListDirty: registerBreaches / plugBreach / a hold
+   *  flipping open) or on the geom tick while carving is active (< BREACH_FREEZE_QUIET steps).
+   *  TUN.flood.inflowScale is applied at head-refresh time so the dev-panel knob stays live at the
+   *  same ~10 Hz it always had. Pooled — a sustained flood allocates nothing. */
+  private rebuildOrifices(): void {
+    const list = this.orificeList;
+    list.length = 0;
+    const push = (compartmentId: number, area: number, lx: number, ly: number, lz: number, dy: number) => {
+      const i = list.length;
+      let o = this.orificePool[i];
+      if (o) { o.compartmentId = compartmentId; o.area = area; o.lx = lx; o.ly = ly; o.lz = lz; o.dy = dy; }
+      else { o = { compartmentId, area, lx, ly, lz, dy }; this.orificePool[i] = o; }
+      list.push(o);
+    };
+    const COAMING = 0.55; // m — raised hatch lip, so deck wash doesn't flood an undamaged hold
     for (const c of this.build.compartments) {
       if (c.open) continue; // a torn-open hold is part of the sea — no inflow, it stays drained
-      const poolY = this.floodGeom.get(c.id)?.poolY ?? -Infinity;
-
       // each hull hole is its own orifice (a low hole floods while a high one on the same
-      // compartment drains): sea above the hole drives IN, the pool above it drives OUT.
+      // compartment drains). Per-CELL area → total inflow scales with the punctured cell COUNT
+      // (a 1-cell nick vs a 30-cell gash differ ~30×) AND each cell's depth (the √(2g·dh) head
+      // term) — the severity model: small/high holes the pump wins, a big low chunk outpaces it.
       const cells = this.breachCells.get(c.id);
-      if (cells && cells.length > 0) {
+      if (cells) {
         for (const [x, y, z] of cells) {
-          this.localToWorld([(x + 0.5) * VOXEL_SIZE, (y + 0.5) * VOXEL_SIZE, (z + 0.5) * VOXEL_SIZE], p);
-          const extHead = surfaceHeight(waves, p.x, p.z, t) - p.y; // sea above the hole
-          const intHead = poolY - p.y; // internal pool above the hole
-          if (extHead > 0 || intHead > 0) this.pushBreach(c.id, cellArea, extHead, intHead);
+          push(c.id, VOXEL_SIZE * VOXEL_SIZE, (x + 0.5) * VOXEL_SIZE, (y + 0.5) * VOXEL_SIZE, (z + 0.5) * VOXEL_SIZE, 0);
         }
       }
-
-      // deck hatch: an orifice at the coaming lip (raised, so deck wash doesn't flood the hold).
-      // Two-way for free — the sea floods in when it tops the coaming; the pool drains out the
-      // same lip once she's rolled far enough that the hatch goes under on the low side.
+      // deck hatch: an orifice at the coaming lip. Two-way for free — floods in over the coaming,
+      // drains out the same lip once she's rolled far enough.
       if (c.hatchArea > 0) {
-        const COAMING = 0.55; // m
         const hx = (c.bboxMin[0] + c.bboxMax[0]) / 2;
-        this.localToWorld(
-          [(hx + 0.5) * VOXEL_SIZE, (this.build.deckY + 0.5) * VOXEL_SIZE, (this.build.grid.dims[2] / 2) * VOXEL_SIZE],
-          p,
+        push(
+          c.id,
+          c.hatchArea,
+          (hx + 0.5) * VOXEL_SIZE,
+          (this.build.deckY + 0.5) * VOXEL_SIZE,
+          (this.build.grid.dims[2] / 2) * VOXEL_SIZE,
+          COAMING,
         );
-        const holeY = p.y + COAMING;
-        const extHead = surfaceHeight(waves, p.x, p.z, t) - holeY;
-        const intHead = poolY - holeY;
-        if (extHead > 0 || intHead > 0) {
-          this.pushBreach(c.id, c.hatchArea * TUN.flood.inflowScale, extHead, intHead);
-        }
       }
     }
     this.breachListDirty = false;
+  }
+
+  /** Re-resolve every frozen orifice into its two-reservoir head and repack the pooled
+   *  `breachInputs` (only orifices with a positive head are ACTIVE — same filter the old fused
+   *  rebuild applied). The sea level comes from the SP4-A lattice (bilinear, ~10 flops) instead of
+   *  an exact ~40-trig Gerstner inversion per cell; falls back to the exact inversion when no valid
+   *  fill exists (headless/oracle, or the first substep of a run — flood runs before applyForces).
+   *  Same ~10 Hz cadence as before, so flood behaviour is preserved. */
+  private refreshBreachHeads(waves: Wave[], t: number): void {
+    this.breachInputs.length = 0;
+    const p = this.tmpV;
+    const scale = TUN.flood.inflowScale;
+    const useCache = this.waveCache.valid(t);
+    let lastComp = -1;
+    let poolY = -Infinity;
+    for (const o of this.orificeList) {
+      if (o.compartmentId !== lastComp) {
+        lastComp = o.compartmentId;
+        poolY = this.floodGeom.get(o.compartmentId)?.poolY ?? -Infinity;
+      }
+      this.localToWorld([o.lx, o.ly, o.lz], p);
+      const holeY = p.y + o.dy;
+      const sea = useCache ? this.waveCache.sample(p.x, p.z) : surfaceHeight(waves, p.x, p.z, t);
+      const extHead = sea - holeY; // sea above the hole drives IN
+      const intHead = poolY - holeY; // pool above the hole drives OUT
+      if (extHead > 0 || intHead > 0) this.pushBreach(o.compartmentId, o.area * scale, extHead, intHead);
+    }
   }
 
   /** Append one resolved orifice to `breachInputs`, reusing a pooled BreachInput (no per-step alloc). */
@@ -1570,6 +1605,7 @@ export class Ship implements ContactTarget {
       // HOUSING DESTROYED → open to the sea.
       c.open = true;
       c.waterVolume = 0; // drains; compartmentFluid hides a dry hold so the body collapses
+      this.breachListDirty = true; // the orifice set changed (an open hold's holes leave it) — unfreeze
       for (const cell of c.cells) {
         if (this.enclosed.delete(cell)) {
           const x = cell % nx, z = Math.floor(cell / (nx * ny));
