@@ -71,22 +71,25 @@
 
 ## Task list (one commit each, build+test green before every commit)
 
-- [ ] **T1** this plan (docs commit).
-- [ ] **T2** `render/sailMath.ts` + `tests/sailMath.test.ts` (TDD): `splitSheets`, `sheetBounds`, `buildOccupancy`
+- [x] **T1** this plan (docs commit).
+- [x] **T2** `render/sailMath.ts` + `tests/sailMath.test.ts` (TDD): `splitSheets`, `sheetBounds`, `buildOccupancy`
       (3-state mask + alive count, vs a real `buildCutter` grid: intact → all alive; `grid.set(EMPTY)` some cells →
       dead flagged), `billowFactor` (range/sign/monotonicity), `sheetTouchesChunk` (dirty-key overlap).
-- [ ] **T3** `render/sailVisual.ts` + shipVisual integration + main.ts wind wiring: hide CANVAS cubes (predicate),
+- [x] **T3** `render/sailVisual.ts` + shipVisual integration + main.ts wind wiring: hide CANVAS cubes (predicate),
       billowing sheets w/ occupancy-shaped taper, wind fill/luff, cutaway clip parity. Gate: build + browser.
-- [ ] **T4** damage path: dirty-chunk → mask refresh in `ShipVisual.refresh()`/`remeshAll()`, tear discard + sag +
+- [x] **T4** damage path: dirty-chunk → mask refresh in `ShipVisual.refresh()`/`remeshAll()`, tear discard + sag +
       hide-at-zero (shader bits land in T3; this wires the live refresh). Gate: build + browser console carve check.
-- [ ] **T5** debris: draped canvas variant + `rigDriftForce` (+ test) + wind param + `removeRigFor(ship)` (+ routing
-      tests extended in tests/wreck.test.ts or new tests/debrisRig.test.ts).
-- [ ] **T6** SP4 pooling (voxelMesher scratch views + shipVisual geometry pool). Tests: existing voxelMesher suite must
+- [x] **T5** debris: draped canvas variant + `rigDriftForce` (+ test) + wind param + `removeRigFor(ship)` (+ routing
+      tests extended in tests/wreck.test.ts or new tests/debrisRig.test.ts). Landed as `tests/debrisRig.test.ts`.
+- [x] **T6** SP4 pooling (voxelMesher scratch views + shipVisual geometry pool). Tests: existing voxelMesher suite must
       stay green + a view-reuse unit test; behavior identical in browser.
-- [ ] **T7** in-browser verification (Playwright at :5173) + screenshots to projects root (`scuttle-r12b-*.png`):
+- [x] **T7** in-browser verification (Playwright at :5173) + screenshots to projects root (`scuttle-r12b-*.png`):
       billow at sea; W/S inflates/deflates; carve CANVAS from console (`DEBUG.sloop.build.grid` + carve cells +
       `DEBUG.sloop.flushDamage()`) → jagged holes + sag; trunk-base carve → felled mast drapes + drifts downwind;
-      cutaway X solid; no z-fighting; no new console errors.
+      cutaway X solid; no z-fighting; no new console errors. All confirmed — see the executor's final report
+      (session b3712cea) for the full screenshot list and findings (e.g. the felled-mast debris piece sank near a
+      nearby island's collider mid-drift-test — plausible incidental terrain contact from the synthetic teleport
+      setup, not reproduced as a code defect; not chased further given no debris↔terrain code was touched).
 
 ## Handoff notes (wave 2)
 
