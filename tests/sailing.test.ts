@@ -20,7 +20,7 @@ function fakeShip(): { ship: Ship; net: { x: number; z: number } } {
   const ship = {
     body,
     submergedFrac: 1,
-    build: { masts: [{ x: 0, z: 0, h: 4 }] },
+    build: { masts: [{ x: 0, z: 0, h: 4 }], grid: { dims: [128, 70, 26] } }, // cutter dims → rudder lever ≡ 1
     mastAlive: [true],
     sailIntegrity: [1],
     comLocal: [0, 0, 0],

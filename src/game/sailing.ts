@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { TUN } from "../core/tunables";
+import { VOXEL_SIZE } from "../core/constants";
+import { BOWSPRIT_MARGIN_VOX } from "../sim/shipwright";
 import type { Ship } from "./ship";
 
 /**
@@ -11,6 +13,19 @@ export interface Wind {
   dirX: number; // direction the wind blows TOWARD (unit)
   dirZ: number;
   speed: number; // m/s
+}
+
+/** The Cutter's effective hull length (m) — (nx − BOWSPRIT_MARGIN_VOX)·VOXEL_SIZE of buildCutter's
+ *  128-wide grid. The rudder-lever normalization anchor: the Cutter is UNCHANGED by the lever. */
+export const RUDDER_LEVER_L0 = 21;
+
+/** ROUND-12 SP3 — hull-length rudder lever (L/L0)^exp. Physical: rudder force × lever arm grows
+ *  with hull length; the existing torque model already scales with mass, so the calibrated residual
+ *  is sub-linear (exp 0.35 — see the round-12 agent-D plan arithmetic). Uses the SAME effective
+ *  length convention as ship.ts yawInertia (grid X minus the empty bowsprit margin). */
+export function rudderLever(ship: Ship): number {
+  const l = (ship.build.grid.dims[0] - BOWSPRIT_MARGIN_VOX) * VOXEL_SIZE;
+  return Math.pow(Math.max(l, 1) / RUDDER_LEVER_L0, TUN.phys.rudderLeverExp);
 }
 
 export class SailingController {
@@ -142,7 +157,7 @@ export class SailingController {
     // SHIP-FEEL pass: the old fixed 0.5 base coefficient is now the live TUN.phys.rudderGain knob
     // (default 2.0 ≈ 4× the old authority → about half the turning circle, paired with a lighter
     // yawDamp). The upgrade multiplier still stacks on top.
-    const yaw = this.rudder * flow * mass * TUN.phys.rudderGain * ship.rudderEff * ship.rudderPower;
+    const yaw = this.rudder * flow * mass * TUN.phys.rudderGain * rudderLever(ship) * ship.rudderEff * ship.rudderPower;
     body.addTorque({ x: 0, y: yaw, z: 0 }, true);
   }
 }

@@ -61,6 +61,13 @@ export const TUN = {
      *  without way on (playtest: "very hard to line up shots, everything moves so slow"). Replaces the
      *  hard-coded 1.5 base that used to live in sailing.ts. */
     rudderLowFloor: 2.5,
+    /** ROUND-12 SP3 — hull-length RUDDER LEVER exponent. Rudder torque gains a factor
+     *  (L/L0)^rudderLeverExp with L = the hull's effective length and L0 = the Cutter's (21 m), so
+     *  authority grows with ship size instead of falling off with L² (steady rate ∝ gain·lever/(l²+w²)).
+     *  Cutter-anchored: the Cutter's feel is UNCHANGED (lever ≡ 1); calibrated with yawDamp 0.4 +
+     *  yaw added-mass 1.3 so tests/turnRate.test.ts lands cutter ~2.5 s / frigate ~5.5 s to 90°.
+     *  0 = no lever (pre-round-12); 1 = full physical rudder-arm ∝ L (overshoots the tier targets). */
+    rudderLeverExp: 0.35,
     /** SHIP-FEEL pass — EXTRA roll damping about the ship's FORE-AFT axis only (×roll inertia·wet),
      *  on top of the shared heaveDamp ζ. This stiffens the side-to-side ROLL (less idle wallow and
      *  straight-line sway) WITHOUT over-damping heave/pitch (which the playtest liked light at 0.2).

@@ -4,9 +4,9 @@ import { TUN } from "../src/core/tunables";
 import { YAW_ADDED_MASS } from "../src/game/ship";
 import { timeTo90, CRUISE } from "./helpers/yawHarness";
 
-// ROUND-12 SP3 CHARACTERIZATION: pins the CURRENT shipped handling before the retune.
-// EXPECTED TO CHANGE: the retune tasks (inertia → yawDamp → rudder lever) update EXPECT +
-// the knob-pin step by step until the spec targets land (Cutter 2–3 s, Frigate 5–6 s).
+// ROUND-12 SP3 ACCEPTANCE ORACLE: characterization is over (this file walked the retune from the
+// pre-round-12 shipped feel through inertia → yawDamp → rudder lever); it now PINS the spec
+// targets (Cutter 2–3 s, Frigate 5–6 s to 90°, monotonic between).
 const builds = {
   cutter: buildCutter(),
   sloop: buildSloop(),
@@ -15,12 +15,13 @@ const builds = {
 } as const;
 type Tier = keyof typeof builds;
 
-// predicted (1-DOF model, verified numerically): cutter 2.47, sloop 2.98, brig 5.20, frigate 6.78
+// ROUND-12 SP3 TARGETS (spec): cutter 2-3 s, frigate 5-6 s, monotonic between.
+// predicted (1-DOF model, verified numerically): cutter 2.47, sloop 2.85, brig 4.50, frigate 5.50
 const EXPECT: Record<Tier, [number, number]> = {
-  cutter: [2.1, 2.9],
-  sloop: [2.6, 3.4],
-  brig: [4.7, 5.7],
-  frigate: [6.3, 7.3],
+  cutter: [2.0, 3.0],
+  sloop: [2.3, 3.4],
+  brig: [4.0, 5.0],
+  frigate: [5.0, 6.0],
 };
 
 describe("turn rate — time to 90° heading at cruise, full rudder (deterministic 1-DOF yaw model)", () => {
@@ -28,6 +29,7 @@ describe("turn rate — time to 90° heading at cruise, full rudder (determinist
     expect(TUN.phys.yawDamp).toBe(0.4);
     expect(TUN.phys.rudderGain).toBe(2.0);
     expect(TUN.phys.rudderLowFloor).toBe(2.5);
+    expect(TUN.phys.rudderLeverExp).toBe(0.35);
     expect(YAW_ADDED_MASS).toBe(1.3);
   });
 
