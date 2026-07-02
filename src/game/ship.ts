@@ -99,6 +99,16 @@ export class SeverDebounce {
   }
 }
 
+/** Heave/pitch/roll damping coefficient c (N·s/m) for the wet waterplane: c = 2·ζ·√(k·m) with the
+ *  LIVE hydrostatic stiffness k. Pure + exported so the step-response guard can characterize the
+ *  response without Rapier (tests/heaveResponse.test.ts — same pattern as SeverDebounce). The
+ *  `wet` saturation and the per-area distribution over the waterplane moments stay at the call
+ *  site in applyForces. */
+export function heaveDampingCoef(waterplaneArea: number, mass: number): number {
+  const k = WATER_DENSITY * G * waterplaneArea * TUN.phys.buoyancy; // the live heave stiffness
+  return 2 * TUN.phys.heaveDamp * Math.sqrt(Math.max(k * mass, 1));
+}
+
 // Buoyancy wave-FIELD (the fleet's old CPU wall). surfaceHeight() is a ~40-trig Gerstner inversion,
 // and a Man-o'-War has ~8,450 hull columns spaced 0.25 m apart — but the PHYSICS swell is band-limited
 // to λ≥14 m and SMOOTH, so sampling it per column was a ~56×/axis OVERSAMPLE. applyForces instead
@@ -261,8 +271,6 @@ export class Ship implements ContactTarget {
    *  local value only changes when the hull is CARVED, so cache it and recompute lazily only then
    *  (−1 = dirty). The world Y still tracks the live pose via the cheap corner transform. */
   private hullTopLocalY = -1;
-  /** live heave stiffness k = ρg·waterplaneArea·buoyancy (N/m), set each step for damping. */
-  private heaveStiffness = 0;
 
   private phys: Physics;
   private deckCollider: RAPIER.Collider | null = null;
@@ -992,8 +1000,6 @@ export class Ship implements ContactTarget {
     body.addTorque({ x: torqueX, y: 0, z: torqueZ }, true);
     this.submergedFrac = this.totalCellVolume > 0 ? submergedVolume / this.totalCellVolume : 0;
     this.bowSpray.wet = bowMaxX > -Infinity; // r18: anything in the water this step?
-    // live hydrostatic heave stiffness for the critical-damping term in the drag block
-    this.heaveStiffness = WATER_DENSITY * G * waterplane * TUN.phys.buoyancy;
     // live turn-heel lever: COM height above the centre of buoyancy (both world Y). This
     // is the real arm the magic `turnHeelArm` faked — it shrinks as she rises, grows as
     // she settles, and tracks flooding/damage for free. Guarded to a small positive.
@@ -1062,8 +1068,9 @@ export class Ship implements ContactTarget {
       // heave force AND the pitch/roll couples at once — no separate pitchDamp/rollDamp.
       // The damping matrix is a sum of area·u·uᵀ (u = [1,−rz,rx]) → provably dissipative.
       // cArea is calibrated so PURE heave equals the old critical-ratio 2·ζ·√(k·m)·vY.
-      const cHeave = 2 * Math.sqrt(Math.max(this.heaveStiffness * mass, 1));
-      const cArea = aSub > 1e-6 ? (TUN.phys.heaveDamp * cHeave * wet) / aSub : 0;
+      // (extracted to heaveDampingCoef — pure + unit-tested; see tests/heaveResponse.test.ts)
+      const cHeave = heaveDampingCoef(waterplane, mass);
+      const cArea = aSub > 1e-6 ? (cHeave * wet) / aSub : 0;
       const fY = -cArea * (vY * aSub + om.z * sMx - om.x * sMz);
       const dampTX = cArea * (vY * sMz + om.z * sxz - om.x * szz); // opposes roll (world X)
       const dampTZ = -cArea * (vY * sMx + om.z * sxx - om.x * sxz); // opposes pitch (world Z)
