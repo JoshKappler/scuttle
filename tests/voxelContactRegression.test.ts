@@ -197,3 +197,37 @@ describe("local-normal classification (round-12 fix)", () => {
     expect(Math.abs(imp.z)).toBeLessThan(0.3 * Math.abs(imp.x));
   });
 });
+
+describe("REST robustness — scrape friction + degenerate-axis separation (round-12 fix)", () => {
+  it("two hulls grinding side-by-side shed relative slide speed and separate without damage", () => {
+    const contact = new VoxelContact();
+    const { A, B } = mkPair({ x: 0, y: 0, z: 5 }, { x: 0, y: 0, z: 0 }, 7.5);
+    let sep = -1;
+    for (let i = 0; i < 10; i++) { if (!step(contact, A, B)) { sep = i; break; } }
+    expect(sep).toBeGreaterThanOrEqual(0);        // lateral de-pen expels the press within 10 steps
+    expect(A.removed).toHaveLength(0);            // a slide is never damage
+    expect(B.removed).toHaveLength(0);
+    expect(A.vel.z).toBeLessThan(4.99);           // friction shed some of A's slide…
+    expect(A.vel.z).toBeGreaterThan(4.5);         // …but only a small bite (no stop, no reversal)
+    expect(B.vel.z).toBeGreaterThan(0.005);       // equal-and-opposite share dragged B along
+    expect(B.vel.z).toBeLessThan(0.5);
+    // momentum conserved exactly — the friction pair is equal-and-opposite:
+    expect(2e5 * (5 - A.vel.z)).toBeCloseTo(2e5 * B.vel.z, -1);
+  });
+
+  it("a pressed pair with degenerate COM line AND vertical thin axis still separates (no deadlock)", () => {
+    const contact = new VoxelContact();
+    // A 2³ block lodged into the TOP of an 8³ block, horizontally concentric: the COM→COM line has
+    // zero horizontal length and the contact's thin axis is vertical (zero horizontal projection).
+    // Before the fallback chain, NEITHER push-out fired — welded forever (the true finding-4 bug).
+    const B = new SimTarget(solidBlock(8, OAK), { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, 2e5, true, 1);
+    const A = new SimTarget(solidBlock(2, OAK), { x: 3, y: 7.2, z: 3 }, { x: 0, y: 0, z: 0 }, 1e3, true, 1);
+    let sep = -1;
+    for (let i = 0; i < 25; i++) { if (!contact.resolveContact(A, B, DT)) { sep = i; break; } }
+    expect(sep).toBeGreaterThanOrEqual(0);        // escapes horizontally within 25 steps
+    expect(A.removed).toHaveLength(0);
+    expect(B.removed).toHaveLength(0);
+    expect(A.impulses).toHaveLength(0);           // position-only — no fling from a still press
+    expect(A.pos.y).toBeCloseTo(7.2, 9);          // the vertical is NEVER touched (horizontal-only law)
+  });
+});

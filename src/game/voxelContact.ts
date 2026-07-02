@@ -5,6 +5,14 @@ import { breakImpulse, splitClosingImpulse } from "../sim/crush";
 import type { Ship } from "./ship";
 import type { Effects } from "../render/effects";
 
+/** REST-regime tangential friction: fraction of the tangential relative speed shed per step as a
+ *  reduced-mass impulse pair jT = μ·vTan·SCRAPE_FRICTION (≈70%/s relative-slide decay at 60 Hz).
+ *  Equal-and-opposite (momentum-conserving) and strictly ≤ μ·vTan, so it can only SHRINK the slide
+ *  — never reverse or fling; horizontal at COM height (yaw, never roll); heavier = harder to shove
+ *  (Δv = jT/m); a no-op on terrain's applyImpulseAtPoint, so a grounded scrape just bleeds the
+ *  ship's slide. Round-12 handoff: candidate for promotion to TUN.crush.scrapeFriction. */
+const SCRAPE_FRICTION = 0.02;
+
 /**
  * Ship-vs-ship deformable contact — the Teardown rule. Ship-ship pairs are pulled OUT of Rapier's
  * rigid solver (physics.ts), so the hulls freely interpenetrate and the real voxel overlap is
@@ -328,76 +336,87 @@ export class VoxelContact {
         this.effects.impactDebris(this.pt2, this.imp, Math.min(removed * TUN.crush.fling, 40));
       }
     } else if (depth >= TUN.crush.minDepth) {
-      // ---- REST regime: too slow to break → DELETE the closing velocity + push the hulls apart so no
-      // two voxels share space. This is the "the final voxel that won't break stops the ram dead" the
-      // player asked for: once breaking has bled the approach below vBreak, the solid layer it can't
-      // pay to break cancels the rest of the closing and expels the lodged hull.
+      // ---- REST regime: too slow to break → DELETE the closing velocity + push the hulls apart so
+      // no two voxels share space — "the final voxel that won't break stops the ram dead": once
+      // breaking has bled the approach below vBreak, the layer it can't pay to break cancels the
+      // rest of the closing and expels the lodged hull.
       //
-      // Direction is the HORIZONTAL line between the two COMs — NOT the geometric push-out axis, which
-      // FLIPS when one hull engulfs another (a deep-lodged ram would then be shoved further IN, the
-      // bug behind "the nose rotates straight through the voxels"). The COM line never flips and points
-      // sensibly along the ram for any lodge. HORIZONTAL only so buoyancy keeps owning the vertical (a
-      // downward shove used to ram a holed victim past the −12 m "sunk" line → premature respawn).
-      // Against terrain (huge mB) the inverse-mass split puts ~all the de-penetration on the ship.
+      // Push-out direction: the HORIZONTAL COM→COM line — NOT the geometric push-out axis, which
+      // FLIPS when one hull engulfs another (a deep-lodged ram would be shoved further IN, the
+      // "nose rotates straight through the voxels" bug). The COM line never flips — but it CAN be
+      // degenerate (hulls horizontally concentric), so it now falls back, ROBUSTLY and never to a
+      // deadlock: → the contact's horizontal thin axis (ov.axis) → the centroid→B-COM line → +x as
+      // a deterministic last resort (pathological perfectly-stacked case only). HORIZONTAL only so
+      // buoyancy keeps owning the vertical (a downward shove used to ram a holed victim past the
+      // −12 m "sunk" line → premature respawn). Against terrain (huge mB) the inverse-mass split
+      // puts ~all the de-penetration on the ship.
       let nx = this.comB.x - this.comA.x, nz = this.comB.z - this.comA.z;
-      const hlen = Math.hypot(nx, nz);
+      let nlen = Math.hypot(nx, nz);
+      if (nlen <= 1e-4) { nx = ov.axis[0]; nz = ov.axis[2]; nlen = Math.hypot(nx, nz); }
+      if (nlen <= 1e-4) { nx = this.comB.x - cx; nz = this.comB.z - cz; nlen = Math.hypot(nx, nz); }
+      if (nlen <= 1e-4) { nx = 1; nz = 0; nlen = 1; }
+      nx /= nlen; nz /= nlen;
       const invA = mB / (mA + mB), invB = mA / (mA + mB); // inverse-mass split (terrain huge mB → invA≈1, invB≈0)
       const cap = TUN.crush.maxDepenSpeed * dt;            // per-step positional ceiling (HORIZONTAL)
-      if (hlen > 1e-4) {
-        nx /= hlen; nz /= hlen;
-        this.velAt(this.comA, lvA, avA, cx, cy, cz, this.vA);
-        this.velAt(this.comB, lvB, avB, cx, cy, cz, this.vB);
-        vClose = (this.vA.x - this.vB.x) * nx + (this.vA.z - this.vB.z) * nz;
-        if (vClose > 0) {
-          // full inelastic cancel of the (sub-vBreak) closing — they stop moving INTO each other.
-          const jv = mu * Math.min(vClose, TUN.crush.biteDvCap);
-          this.pushAtComHeight(a, cx, cz, this.comA.y, -nx, -nz, jv);
-          this.pushAtComHeight(b, cx, cz, this.comB.y, nx, nz, jv);
-          force = jv / dt;
-        }
-        // POSITION de-penetration, inverse-mass split. Strong enough to actually EXPEL a lodged hull
-        // (depen + maxDepenSpeed raised) — the overlap only ever decreases because the closing above is
-        // zeroed first, so it can't re-penetrate: the two hulls converge to "pressed together, not
-        // sharing space" within a few steps instead of the ram coasting through forever. Position-only
-        // (no velocity added) so a hard separation still can't "jar" / fling them.
-        const corr = Math.min(depth * TUN.crush.depen, cap);
-        const moveA = corr * invA, moveB = corr * invB; // terrain's huge mB → moveA≈corr, moveB≈0
-        const ta = a.translation();
-        a.setTranslation({ x: ta.x - nx * moveA, y: ta.y, z: ta.z - nz * moveA });
-        const tb = b.translation();
-        b.setTranslation({ x: tb.x + nx * moveB, y: tb.y, z: tb.z + nz * moveB }); // no-op for terrain
+
+      this.velAt(this.comA, lvA, avA, cx, cy, cz, this.vA);
+      this.velAt(this.comB, lvB, avB, cx, cy, cz, this.vB);
+      const rvx = this.vA.x - this.vB.x, rvz = this.vA.z - this.vB.z; // horizontal relative velocity at the contact
+      vClose = rvx * nx + rvz * nz;
+      if (vClose > 0) {
+        // full inelastic cancel of the (sub-vBreak) closing — they stop moving INTO each other.
+        const jv = mu * Math.min(vClose, TUN.crush.biteDvCap);
+        this.pushAtComHeight(a, cx, cz, this.comA.y, -nx, -nz, jv);
+        this.pushAtComHeight(b, cx, cz, this.comB.y, nx, nz, jv);
+        force = jv / dt;
       }
 
-      // OFF-AXIS push-out (the side-scrape / parallel-rub blind spot). The COM→COM cancel + de-pen above
-      // only resolves motion projected on the COM line; a GLANCING scrape carries most of its velocity
-      // PERPENDICULAR to that line (two hulls grinding side-by-side, COMs roughly abeam), so neither the
-      // cancel nor the COM-line push-out fires meaningfully and the weak separation lets her slide
-      // straight through the side. detectContacts already hands us the contact's thin SEPARATING axis
-      // (ov.axis, signed A→B), which IS the genuine push-out for a side-on overlap. Resolve along its
-      // HORIZONTAL projection too — but ONLY when the COM line is degenerate for this contact (its
-      // horizontal share of ov.axis is small), so for a normal bow-on ram (axis ≈ COM line) this is a
-      // no-op and the engulf-flip hazard the COM-line rule guards against can't bite (we gate on |axis·n|
-      // being LOW, i.e. exactly when the two directions disagree — the scrape — not when they agree).
-      // Position-only, same maxDepenSpeed cap, closing already zeroed above → can only shrink the overlap
-      // (never re-penetrate or fling). HORIZONTAL only, so buoyancy keeps owning the vertical.
+      // TANGENTIAL scrape friction (round 12): the cancel + de-pen only act along n̂; a grinding
+      // side-scrape carries most of its relative velocity PERPENDICULAR to n̂ and used to slide on
+      // forever (and, before local-normal classification, tear the sides off instead). Shed a small
+      // fixed fraction of the tangential relative speed per step (see SCRAPE_FRICTION above).
+      const tvx0 = rvx - vClose * nx, tvz0 = rvz - vClose * nz;
+      const tlen = Math.hypot(tvx0, tvz0);
+      if (tlen > 1e-3) {
+        const tx = tvx0 / tlen, tz = tvz0 / tlen;
+        const jT = mu * tlen * SCRAPE_FRICTION;
+        this.pushAtComHeight(a, cx, cz, this.comA.y, -tx, -tz, jT);
+        this.pushAtComHeight(b, cx, cz, this.comB.y, tx, tz, jT);
+        force += jT / dt;
+      }
+
+      // POSITION de-penetration, inverse-mass split — unchanged mechanics, but it now ALWAYS has a
+      // valid axis (the fallback chain above), so a degenerate press can no longer deadlock. Strong
+      // enough to EXPEL a lodged hull; the overlap only ever decreases because the closing above is
+      // zeroed first, so it can't re-penetrate. Position-only (no velocity added) so a hard
+      // separation still can't "jar" / fling.
+      const corr = Math.min(depth * TUN.crush.depen, cap);
+      const moveA = corr * invA, moveB = corr * invB; // terrain's huge mB → moveA≈corr, moveB≈0
+      const ta = a.translation();
+      a.setTranslation({ x: ta.x - nx * moveA, y: ta.y, z: ta.z - nz * moveA });
+      const tb = b.translation();
+      b.setTranslation({ x: tb.x + nx * moveB, y: tb.y, z: tb.z + nz * moveB }); // no-op for terrain
+
+      // OFF-AXIS push-out (the corner-clip blind spot): when the genuine separating axis (ov.axis,
+      // the contact's thin face normal) DISAGREES with the push axis (|axis·n̂| low — a glancing
+      // corner-clip, not a bow-on ram), also resolve along its horizontal projection, faded in as
+      // the disagreement grows (no double-counting). If n̂ already fell back to ov.axis above,
+      // align is 1 and this is a no-op. Position-only, same cap, closing already zeroed → can only
+      // shrink the overlap. HORIZONTAL only, so buoyancy keeps owning the vertical.
       let axx = ov.axis[0], axz = ov.axis[2];
       const axLen = Math.hypot(axx, axz);
       if (axLen > 1e-4) {
         axx /= axLen; axz /= axLen;
-        // alignment of the (horizontal) separating axis with the COM line; near 1 = bow-on (skip), near
-        // 0 = side-scrape (the COM line did ~nothing along the real push-out → resolve along the axis).
-        const align = hlen > 1e-4 ? Math.abs(axx * nx + axz * nz) : 0;
+        const align = Math.abs(axx * nx + axz * nz);
         if (align < 0.5) {
-          // de-weight by how degenerate the COM line was (full off-axis correction at align 0, fading to
-          // none by align 0.5 where the COM-line push-out already covers it) → no double-counting.
           const w = 1 - align / 0.5;
-          const corr = Math.min(depth * TUN.crush.depen, cap) * w;
-          if (corr > 0) {
-            const moveA = corr * invA, moveB = corr * invB;
-            const ta = a.translation();
-            a.setTranslation({ x: ta.x - axx * moveA, y: ta.y, z: ta.z - axz * moveA });
-            const tb = b.translation();
-            b.setTranslation({ x: tb.x + axx * moveB, y: tb.y, z: tb.z + axz * moveB }); // no-op for terrain
+          const corr2 = Math.min(depth * TUN.crush.depen, cap) * w;
+          if (corr2 > 0) {
+            const mvA2 = corr2 * invA, mvB2 = corr2 * invB;
+            const ta2 = a.translation();
+            a.setTranslation({ x: ta2.x - axx * mvA2, y: ta2.y, z: ta2.z - axz * mvA2 });
+            const tb2 = b.translation();
+            b.setTranslation({ x: tb2.x + axx * mvB2, y: tb2.y, z: tb2.z + axz * mvB2 }); // no-op for terrain
           }
         }
       }
