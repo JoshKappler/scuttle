@@ -34,6 +34,13 @@ export interface ContactScratch {
   bCells: Int32Array;
   /** World-space contact points (A cell centres), flat [x,y,z,...] — for per-contact velocity. */
   points: Float32Array;
+  /** OPTIONAL per-contact local contact normals (world, unit), flat [x,y,z,...]: the outward
+   *  occupancy-gradient normal of B's surface at the contacted B cell — the 6-neighbourhood
+   *  empty-face sum, normalized, rotated into world by B's quat. ALL-ZERO for a contact against
+   *  an INTERIOR B cell (deep engulf — no empty face) — callers must fall back to their aggregate
+   *  closing direction there. Filled only when the buffer is provided (voxelContact always
+   *  provides it; older callers/tests may omit). */
+  normals?: Float32Array;
 }
 
 export interface ContactResult {
@@ -87,6 +94,7 @@ const _aMax: [number, number, number] = [0, 0, 0];
 const _world: [number, number, number] = [0, 0, 0];
 const _blocal: [number, number, number] = [0, 0, 0];
 const _bc: [number, number, number] = [0, 0, 0];
+const _gn: [number, number, number] = [0, 0, 0];
 
 export function detectContacts(
   a: HullView,
@@ -166,6 +174,28 @@ export function detectContacts(
     scratch.aCells[o] = ax; scratch.aCells[o + 1] = ay; scratch.aCells[o + 2] = az;
     scratch.bCells[o] = fx; scratch.bCells[o + 1] = fy; scratch.bCells[o + 2] = fz;
     scratch.points[o] = wx; scratch.points[o + 1] = wy; scratch.points[o + 2] = wz;
+    if (scratch.normals) {
+      // Local outward surface normal of B at the contacted cell: the occupancy gradient of its
+      // 6-neighbourhood (each empty/out-of-bounds face contributes its direction), normalized,
+      // rotated into world by B's quat. isSolid is bounds-checked by the impl, so a grid-boundary
+      // face correctly reads as exposed. An interior cell (deep engulf) has no empty face →
+      // all-zero, and the caller (voxelContact) falls back to its aggregate closing direction for
+      // that contact — exactly the old behavior for the deep-lodge case the COM-line rule owns.
+      let gx = 0, gy = 0, gz = 0;
+      if (!b.isSolid(fx - 1, fy, fz)) gx -= 1;
+      if (!b.isSolid(fx + 1, fy, fz)) gx += 1;
+      if (!b.isSolid(fx, fy - 1, fz)) gy -= 1;
+      if (!b.isSolid(fx, fy + 1, fz)) gy += 1;
+      if (!b.isSolid(fx, fy, fz - 1)) gz -= 1;
+      if (!b.isSolid(fx, fy, fz + 1)) gz += 1;
+      const gl = Math.hypot(gx, gy, gz);
+      if (gl > 0) {
+        qRot(b.quat[0], b.quat[1], b.quat[2], b.quat[3], gx / gl, gy / gl, gz / gl, _gn);
+        scratch.normals[o] = _gn[0]; scratch.normals[o + 1] = _gn[1]; scratch.normals[o + 2] = _gn[2];
+      } else {
+        scratch.normals[o] = 0; scratch.normals[o + 1] = 0; scratch.normals[o + 2] = 0;
+      }
+    }
     count++;
 
     if (wx < oMinX) oMinX = wx; if (wx > oMaxX) oMaxX = wx;

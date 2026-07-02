@@ -29,6 +29,15 @@ function scratch(capacity: number): ContactScratch {
   };
 }
 
+function scratchN(capacity: number): ContactScratch {
+  return {
+    aCells: new Int32Array(capacity * 3),
+    bCells: new Int32Array(capacity * 3),
+    points: new Float32Array(capacity * 3),
+    normals: new Float32Array(capacity * 3),
+  };
+}
+
 /** Read contact i's A cell out of a filled scratch. */
 function aCell(s: ContactScratch, i: number): [number, number, number] {
   return [s.aCells[i * 3], s.aCells[i * 3 + 1], s.aCells[i * 3 + 2]];
@@ -180,5 +189,63 @@ describe("detectContacts", () => {
     const align = Math.abs((r!.axis[0] * nx + r!.axis[2] * nz) / nlen);
     expect(align).toBeLessThan(1);         // not perfectly aligned → COM-line push-out alone is imperfect
     expect(nz / nlen).toBeGreaterThan(0);  // a real perpendicular (Z) component the X push-out must add
+  });
+});
+
+describe("detectContacts — per-contact local surface normals (round 12)", () => {
+  it("flat-wall contact: every normal is unit, faces A; interior face cells are EXACTLY (-1,0,0)", () => {
+    const a = block(4, [0, 0, 0], ID); // A's x=3 layer meets…
+    const b = block(4, [3, 0, 0], ID); // …B's x=0 face
+    const s = scratchN(64);
+    const r = detectContacts(a, b, 1, 0, s);
+    expect(r).not.toBeNull();
+    expect(r!.count).toBe(16);
+    let interiorChecked = false;
+    for (let i = 0; i < r!.count; i++) {
+      const nx0 = s.normals![i * 3], ny0 = s.normals![i * 3 + 1], nz0 = s.normals![i * 3 + 2];
+      expect(Math.hypot(nx0, ny0, nz0)).toBeCloseTo(1, 5); // unit
+      expect(nx0).toBeLessThan(0);                          // every contacted cell exposes -x (toward A)
+      const bc = bCell(s, i);
+      if (bc[0] === 0 && bc[1] === 1 && bc[2] === 1) {      // an interior face cell → exact face normal
+        expect(nx0).toBeCloseTo(-1, 5);
+        expect(ny0).toBeCloseTo(0, 5);
+        expect(nz0).toBeCloseTo(0, 5);
+        interiorChecked = true;
+      }
+    }
+    expect(interiorChecked).toBe(true);
+  });
+
+  it("deep engulf: contacts against INTERIOR B cells report zero normals (caller falls back)", () => {
+    const b = block(6, [0, 0, 0], ID);
+    const a = block(2, [2, 2, 2], ID); // fully inside B — every contacted B cell has 6 solid neighbours
+    const s = scratchN(64);
+    const r = detectContacts(a, b, 1, 0, s);
+    expect(r).not.toBeNull();
+    expect(r!.count).toBe(8);
+    for (let i = 0; i < r!.count * 3; i++) expect(s.normals![i]).toBe(0);
+  });
+
+  it("rotated B: the local face normal is rotated into world space", () => {
+    const flip: [number, number, number, number] = [0, 1, 0, 0]; // 180° yaw about the grid corner
+    const a = block(4, [0, 0, 0], ID);
+    const b = block(4, [7, 0, 4], flip); // local (x,z) → world (7−x, 4−z): occupies x[3,7) z[0,4)
+    const s = scratchN(64);
+    const r = detectContacts(a, b, 1, 0, s);
+    expect(r).not.toBeNull();
+    expect(r!.count).toBe(16);
+    let checked = false;
+    for (let i = 0; i < r!.count; i++) {
+      const bc = bCell(s, i);
+      if (bc[0] === 3 && bc[1] === 1 && bc[2] === 2) {
+        // B-LOCAL outward is (+1,0,0) (the local +x face is the wall A touches); yawed 180°
+        // it must land at world (−1,0,0) — still pointing out of the wall toward A.
+        expect(s.normals![i * 3]).toBeCloseTo(-1, 5);
+        expect(s.normals![i * 3 + 1]).toBeCloseTo(0, 5);
+        expect(s.normals![i * 3 + 2]).toBeCloseTo(0, 5);
+        checked = true;
+      }
+    }
+    expect(checked).toBe(true);
   });
 });
