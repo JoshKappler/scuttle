@@ -2217,9 +2217,10 @@ async function main() {
       controls.aiming
         ? { bearing: aimBearing(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
         : null,
+      wind, // round-12 cloth sails: billow fill/luff from wind-vs-heading
     );
     for (const u of fleet.units) {
-      u.ship.visual.animate(world.simTime, u.captain.sailing.rudder, u.captain.sailing.sailSet);
+      u.ship.visual.animate(world.simTime, u.captain.sailing.rudder, u.captain.sailing.sailSet, null, wind);
     }
 
     const tr = sloop.body.translation();

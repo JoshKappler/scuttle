@@ -15,6 +15,8 @@ import {
 } from "../game/gunnery";
 import { meshChunk } from "./voxelMesher";
 import { CompartmentFluid } from "./compartmentFluid";
+import { SailVisual, type WindLike } from "./sailVisual";
+import { CANVAS } from "../sim/materials";
 import type { Compartment } from "../sim/compartments";
 import type { ShipBuild } from "../sim/shipwright";
 
@@ -70,6 +72,20 @@ export class ShipVisual {
   /** Real clipped, world-leveled, sloshing flood fluid (round 14): replaced the
    *  emissive blue compartment cubes. */
   private fluid: CompartmentFluid;
+
+  /** Round-12 SP1 cloth sails: one billowing plane per sail sheet, derived from
+   *  `build.sailVoxels` + the LIVE grid (render/sailVisual.ts). The CANVAS voxels stay
+   *  in the grid (sim truth unchanged) — the hull mesher just skips drawing them as
+   *  cubes (see hullVisible below). Null only during construction's first remeshAll. */
+  private sails: SailVisual | null = null;
+
+  /** The hull mesher's cell-visibility predicate: CANVAS cells are ALWAYS hidden from
+   *  the cubic hull mesh (the cloth planes replace them), composed with the live
+   *  cutaway cull when the X cut is on. NOTE: the walkable deck collider
+   *  (game/ship.ts) calls meshChunk with NO predicate — its behavior is unchanged. */
+  private hullVisible = (x: number, y: number, z: number): boolean =>
+    this.build.grid.get(x, y, z) !== CANVAS &&
+    (this.cutawayPredicate ? this.cutawayPredicate(x, y, z) : true);
 
   /** Real CC0 plank photos (ambientCG), shared by every ship. */
   private static deckTex: THREE.Texture | null = null;
@@ -196,6 +212,12 @@ export class ShipVisual {
     });
     this.remeshAll();
     this.addRig();
+    // cloth sails over the (now cube-hidden) CANVAS voxels — parented to the ship
+    // group so they ride the pose exactly like the chunk meshes.
+    this.sails = new SailVisual(build);
+    this.group.add(this.sails.group);
+    // seed the sails with the current cutaway clip (mirrors the cannon-material seed).
+    this.sails.setClipPlane(this.cutawayPlane);
     // per-voxel flood fluid: water fills the compartment's interior cells (lowest world-Y
     // first), parented under the ship group. Replaces the round-14 clipped plane the player
     // saw as "blue rectangles not bound to the inside" — and the older deck-parallel cubes.
@@ -212,19 +234,23 @@ export class ShipVisual {
   }
 
   /** Per-frame mesh animation: the rudder + wheel answer the helm (smoothed, correct
-   *  sense: port turn → trailing edge to port), and the cannon barrels track the aim
-   *  (elevation AND traverse) on the aiming side. The masts/yards/sails are voxels now,
-   *  so there is no more sail flutter/fill here — `_sailSet` is kept only so the call
-   *  signature is unchanged for callers (it no longer drives anything). */
+   *  sense: port turn → trailing edge to port), the cannon barrels track the aim
+   *  (elevation AND traverse) on the aiming side, and the CLOTH SAILS billow —
+   *  `sailSet` drives their throttle inflation again (round 12 SP1) and the optional
+   *  `wind` (dir + speed, the game's live wind object) sets fill vs luff from
+   *  wind-vs-heading. Omitting `wind` keeps the old 4-arg call working (neutral fill). */
   animate(
     time: number,
     rudderNorm: number,
-    _sailSet: number,
+    sailSet: number,
     aim?: { bearing: 1 | -1 | GunFacing; elevationDeg: number; traverseDeg: number } | null,
+    wind?: WindLike | null,
   ): void {
     const dt = Math.min(Math.max(time - this.lastAnimT, 0), 0.1);
     this.lastAnimT = time;
     this.dispRudder += (rudderNorm - this.dispRudder) * Math.min(dt * 6, 1);
+    // cloth sails: throttle + wind response (visual-only; the sim reads the voxels).
+    this.sails?.update(time, sailSet, wind ?? null, this.group.quaternion);
 
     // live shade-floor knob; while cut away, lift it hard so the exposed interior reads
     // (the cut faces point INTO the hull, away from sun + sky, so without this they go black).
@@ -306,6 +332,8 @@ export class ShipVisual {
     // in the opened hull; CompartmentFluid's custom shader was given clipping:true + the clip includes
     // so the plane actually bites instead of silently no-opping.
     this.fluid.setClipPlane(plane);
+    // the cloth sails are smooth meshes like the cannons → clip them with the same plane.
+    this.sails?.setClipPlane(plane);
     this.cutawayOn = !!plane; // animate() lifts the shade floor while cut away
 
     if (plane) {
@@ -404,9 +432,13 @@ export class ShipVisual {
     // then clear the grid's flag set — the queue, not dirtyChunks, now owns the outstanding work.
     const dirty = this.build.grid.dirtyChunks;
     if (dirty.size > 0) {
+      // sail damage rides the SAME dirty-key stream: sheets whose voxel AABB a dirty
+      // chunk touches rebuild their occupancy texture (jagged tears + sag + hide-at-0).
+      this.sails?.notifyDirtyChunks(dirty);
       for (const key of dirty) this.pendingRemesh.add(key);
       dirty.clear();
     }
+    this.sails?.refreshDamage(); // no-op unless a sheet was marked above (or by remeshAll)
     if (this.pendingRemesh.size === 0) return;
     // Drain up to the budget this frame; the rest carry to subsequent frames (each frame stays smooth).
     let done = 0;
@@ -429,8 +461,12 @@ export class ShipVisual {
     // a deliberate whole-hull pass (construction / cutaway toggle): every chunk is now freshly meshed,
     // so clear BOTH the grid's dirty flags AND any budgeted backlog — otherwise a queued pre-toggle
     // chunk would later re-mesh WITHOUT honoring the (now-changed) cut and reopen the half-cut bug.
+    // The cleared dirty set never reached notifyDirtyChunks, so rebuild EVERY sail mask too (covers
+    // port repair's restored canvas + keeps the sheets honest across any whole-hull pass).
     this.build.grid.dirtyChunks.clear();
     this.pendingRemesh.clear();
+    this.sails?.markAllDirty();
+    this.sails?.refreshDamage();
   }
 
   private remeshChunk(key: string): void {
@@ -441,9 +477,10 @@ export class ShipVisual {
       old.geometry.dispose();
       this.chunkMeshes.delete(key);
     }
-    // read the cutaway predicate LIVE each call (incl. the damage-driven refresh() path) so a chunk
+    // hullVisible composes the ALWAYS-ON canvas exclusion (cloth planes replace the cubes) with the
+    // LIVE cutaway predicate (read per call, incl. the damage-driven refresh() path) so a chunk
     // carved during cutaway re-meshes with the cut still applied — cutaway + live damage for free.
-    const data = meshChunk(this.build.grid, cx, cy, cz, this.cutawayPredicate ?? undefined);
+    const data = meshChunk(this.build.grid, cx, cy, cz, this.hullVisible);
     if (!data) return;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
