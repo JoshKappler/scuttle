@@ -36,4 +36,15 @@ describe("planCarve", () => {
     const r = planCarve({ dims: [5, 5, 5], isSolid: () => false, strengthAt: () => 1, origin: [2, 2, 2], dir: null, energy: 1e9, maxCells: 99 });
     expect(r.cells.length).toBe(0);
   });
+  it("pooled scratch carries NOTHING across calls (same call → same result after unrelated calls)", () => {
+    const mk = () => planCarve({ ...uniform([30, 1, 30], 2), origin: [15, 0, 15], dir: [1, 0, 0], energy: 50 * C, maxCells: 999 });
+    const first = mk();
+    // dirty the pooled heap + seen set with unrelated, differently-shaped work…
+    planCarve({ ...uniform([9, 9, 9], 8), origin: [4, 4, 4], dir: [0, 1, 0], energy: 200 * C, maxCells: 7 });
+    planCarve({ dims: [5, 5, 5], isSolid: () => false, strengthAt: () => 1, origin: [2, 2, 2], dir: null, energy: 1e9, maxCells: 99 });
+    // …then the identical call must be bit-identical (determinism survives pooling).
+    const again = mk();
+    expect(again.cells).toEqual(first.cells);
+    expect(again.spent).toBe(first.spent);
+  });
 });
