@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
-import { CHUNK_SIZE, G, MAX_CARVE_CELLS, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
+import { CHUNK_SIZE, FIXED_DT, G, MAX_CARVE_CELLS, VOXEL_SIZE, VOXEL_VOLUME, WATER_DENSITY } from "../core/constants";
 import { TUN } from "../core/tunables";
 import { surfaceHeight, type Wave } from "../sim/gerstner";
 import { makeVoxelColumns, updateVoxelColumns, enclosedCellSet, type VoxelColumn } from "../sim/buoyancy";
@@ -119,10 +119,87 @@ export function heaveDampingCoef(waterplaneArea: number, mass: number): number {
 // the big-amplitude waves are long → finely sampled, the short 14 m wave carries only ~7 cm so even
 // its interpolation error is ~1 cm). The distance² thresholds fold the old near/far LOD into the
 // lattice spacing (a far ship's swell can be coarser still). THE LAW #1 holds — it is still the
-// analytic swell, just spatially down-sampled.
+// analytic swell, just spatially down-sampled. The lattice is additionally CACHED across substeps
+// (round 12 SP4-A — see WaveFieldCache/WAVE_FIELD_MAX_AGE_S).
 const BUOY_LOD_NEAR2 = 70 * 70; // ≤70 m from the player: finest lattice
 const BUOY_LOD_FAR2 = 140 * 140; // >140 m: coarsest lattice
 const BUOY_FIELD_M = 2.5; // m — base wave-field lattice spacing (≪ the 14 m min swell wavelength)
+
+/** Substep-cache lifetime of the buoyancy wave lattice (s) — ~15 Hz refresh (round 12 SP4-A).
+ *  Error bound of serving a stale fill: the physics swell is band-limited to λ≥14 m; its largest
+ *  component (λ=150 m, a=1.5 m, ω≈0.64 rad/s) moves ≤ a·ω·Δt ≈ 6.4 cm in 66.7 ms, the λ=14 m
+ *  component ≤ ~1 cm — ≤ ¼ voxel of waterline, refreshed every 4 substeps so it is a 1/15 s
+ *  LATENCY on the swell input, never a drift (same basis as the 10 Hz flood-geometry throttle).
+ *  Sim-time (not wall-clock) so it stays deterministic and gap-safe. */
+export const WAVE_FIELD_MAX_AGE_S = 4 * FIXED_DT;
+
+/** The per-ship coarse Gerstner lattice, CACHED across substeps (round 12 SP4-A). Previously the
+ *  lattice was refilled — one surfaceHeight (~40-trig inversion) per node — EVERY substep per ship;
+ *  now it refills only when the SNAPPED window moves or the fill exceeds WAVE_FIELD_MAX_AGE_S.
+ *  Because the window is snapped to the world lattice, the movement/rotation threshold falls out of
+ *  the snapping: the window is bit-identical until the posed hull AABB drifts past a lattice cell
+ *  (≥ h ≈ 2.5 m at the finest LOD). filledT = −Infinity ⇒ refresh-on-FIRST-use, so step-1 results
+ *  are identical to the uncached path. Pure (no Rapier/THREE) — unit-tested in
+ *  tests/waveFieldCache.test.ts, same pattern as SeverDebounce. */
+export class WaveFieldCache {
+  field = new Float64Array(0);
+  x0 = 0;
+  z0 = 0;
+  nx = 0;
+  nz = 0;
+  h = BUOY_FIELD_M;
+  /** sim-time of the last fill; −Infinity = never filled. */
+  filledT = -Infinity;
+
+  /** Guarantee a usable fill covering [minX..maxX]×[minZ..maxZ] at spacing h for sim-time t.
+   *  Window snapping + margins are IDENTICAL to the old inline fill (origin −h, count +2). */
+  ensure(waves: Wave[], t: number, minX: number, minZ: number, maxX: number, maxZ: number, h: number): void {
+    const x0 = Math.floor(minX / h) * h - h;
+    const z0 = Math.floor(minZ / h) * h - h;
+    const nx = Math.ceil((maxX - x0) / h) + 2;
+    const nz = Math.ceil((maxZ - z0) / h) + 2;
+    if (
+      x0 === this.x0 && z0 === this.z0 && nx === this.nx && nz === this.nz && h === this.h &&
+      t - this.filledT < WAVE_FIELD_MAX_AGE_S
+    ) {
+      return; // cache hit: same snapped window, samples fresh enough
+    }
+    this.x0 = x0; this.z0 = z0; this.nx = nx; this.nz = nz; this.h = h;
+    const need = nx * nz;
+    if (this.field.length < need) this.field = new Float64Array(need);
+    const f = this.field;
+    for (let iz = 0; iz < nz; iz++) {
+      const zc = z0 + iz * h;
+      const row = iz * nx;
+      for (let ix = 0; ix < nx; ix++) f[row + ix] = surfaceHeight(waves, x0 + ix * h, zc, t);
+    }
+    this.filledT = t;
+  }
+
+  /** Is there a fill trustworthy for sim-time t? (false ⇒ callers fall back to the exact
+   *  inversion — the headless/oracle path and the very first flood step of a run). */
+  valid(t: number): boolean {
+    return this.nx >= 2 && this.nz >= 2 && t - this.filledT <= WAVE_FIELD_MAX_AGE_S + 1e-9;
+  }
+
+  /** Bilinear read; indices clamped at the window edge exactly like the old inline read. */
+  sample(wx: number, wz: number): number {
+    const invH = 1 / this.h;
+    const u = (wx - this.x0) * invH;
+    const v = (wz - this.z0) * invH;
+    let iu = u | 0;
+    if (iu < 0) iu = 0; else if (iu > this.nx - 2) iu = this.nx - 2;
+    let iv = v | 0;
+    if (iv < 0) iv = 0; else if (iv > this.nz - 2) iv = this.nz - 2;
+    const fu = u - iu;
+    const fv = v - iv;
+    const f = this.field;
+    const b = iv * this.nx + iu;
+    const h0 = f[b] + (f[b + 1] - f[b]) * fu;
+    const h1 = f[b + this.nx] + (f[b + this.nx + 1] - f[b + this.nx]) * fu;
+    return h0 + (h1 - h0) * fv;
+  }
+}
 
 /**
  * A ship: ONE dynamic rigid body + voxel grid + compartments + visual.
@@ -264,9 +341,10 @@ export class Ship implements ContactTarget {
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
-  /** Coarse buoyancy wave-height lattice (perf): a reused scratch grown on demand, filled with
-   *  surfaceHeight samples over the hull each step and bilinearly read per column. See applyForces. */
-  private waveField = new Float64Array(0);
+  /** Coarse buoyancy wave lattice, CACHED across substeps (round 12 SP4-A) — refilled only on a
+   *   snapped-window move or at WAVE_FIELD_MAX_AGE_S (~15 Hz). Also read by the breach-head sampler
+   *   (SP4-B) with an exact-inversion fallback when invalid. See WaveFieldCache. */
+  private readonly waveCache = new WaveFieldCache();
   /** Cached LOCAL hull-top Y (m): the tallest non-SPAR voxel's top face, for hullAabbTopWorldY (the
    *  enemy-wreck cull). The scan that finds it (descending past the tall SPAR mast tower) is ~10^5
    *  cell reads, and the fleet ran it for every enemy EVERY substep — a steady combat-CPU wall. The
@@ -879,11 +957,10 @@ export class Ship implements ContactTarget {
     // a smooth λ≥14 m swell). The headless / oracle path (no focus) keeps EXACT per-column sampling, so
     // determinism + the vitest tests are bit-identical. See BUOY_FIELD_M.
     const useField = focusX !== undefined && focusZ !== undefined;
-    let fX0 = 0, fZ0 = 0, fNX = 0, fNZ = 0, fH = BUOY_FIELD_M;
     if (useField) {
       // world XZ AABB that bounds EVERY column centre: transform the 8 corners of the local grid
-      // envelope (every column lies inside it). Snap the origin to the world lattice so the sample
-      // points are stable frame-to-frame (no temporal popping as she moves), + one cell of margin.
+      // envelope (every column lies inside it). The cache snaps the origin to the world lattice so
+      // sample points are stable frame-to-frame (no temporal popping as she moves).
       const [gnx, gny, gnz] = this.build.grid.dims;
       const ex = gnx * VOXEL_SIZE, ey = gny * VOXEL_SIZE, ez = gnz * VOXEL_SIZE;
       let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
@@ -893,45 +970,22 @@ export class Ship implements ContactTarget {
         if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
         if (cz < minZ) minZ = cz; if (cz > maxZ) maxZ = cz;
       }
-      // a far ship's swell can be coarser still (it's tiny on screen) — fold the old distance LOD into
-      // the lattice spacing rather than a separate reuse cache.
+      // a far ship's swell can be coarser still (it's tiny on screen) — fold the old distance LOD
+      // into the lattice spacing rather than a separate reuse cache.
       const fdx = tr.x - focusX!, fdz = tr.z - focusZ!;
       const fd2 = fdx * fdx + fdz * fdz;
-      fH = fd2 > BUOY_LOD_FAR2 ? BUOY_FIELD_M * 2.4 : fd2 > BUOY_LOD_NEAR2 ? BUOY_FIELD_M * 1.6 : BUOY_FIELD_M;
-      fX0 = Math.floor(minX / fH) * fH - fH;
-      fZ0 = Math.floor(minZ / fH) * fH - fH;
-      fNX = Math.ceil((maxX - fX0) / fH) + 2;
-      fNZ = Math.ceil((maxZ - fZ0) / fH) + 2;
-      const need = fNX * fNZ;
-      if (this.waveField.length < need) this.waveField = new Float64Array(need);
-      const wf = this.waveField;
-      for (let iz = 0; iz < fNZ; iz++) {
-        const zc = fZ0 + iz * fH;
-        const row = iz * fNX;
-        for (let ix = 0; ix < fNX; ix++) wf[row + ix] = surfaceHeight(waves, fX0 + ix * fH, zc, t);
-      }
+      const fH = fd2 > BUOY_LOD_FAR2 ? BUOY_FIELD_M * 2.4 : fd2 > BUOY_LOD_NEAR2 ? BUOY_FIELD_M * 1.6 : BUOY_FIELD_M;
+      // ROUND 12 SP4-A: refill only on a snapped-window move / at ~15 Hz — not every substep.
+      this.waveCache.ensure(waves, t, minX, minZ, maxX, maxZ, fH);
     }
-    const invH = 1 / fH;
     for (const col of this.columns) {
       // column anchor (its lowest cell) → world
       const aw = this.tmpV.set(col.x, col.cellY[0], col.z).applyQuaternion(this.tmpQ);
       const wx = aw.x + tr.x;
       const wz = aw.z + tr.z;
       const anchorWY = aw.y + tr.y;
-      // bilinear read off the coarse lattice (game), or an EXACT inversion (headless/oracle).
-      let surfaceY: number;
-      if (useField) {
-        const u = (wx - fX0) * invH, v = (wz - fZ0) * invH;
-        let iu = u | 0; if (iu < 0) iu = 0; else if (iu > fNX - 2) iu = fNX - 2;
-        let iv = v | 0; if (iv < 0) iv = 0; else if (iv > fNZ - 2) iv = fNZ - 2;
-        const fu = u - iu, fv = v - iv;
-        const wf = this.waveField, b = iv * fNX + iu;
-        const h0 = wf[b] + (wf[b + 1] - wf[b]) * fu;
-        const h1 = wf[b + fNX] + (wf[b + fNX + 1] - wf[b + fNX]) * fu;
-        surfaceY = h0 + (h1 - h0) * fv;
-      } else {
-        surfaceY = surfaceHeight(waves, wx, wz, t);
-      }
+      // bilinear read off the cached coarse lattice (game), or an EXACT inversion (headless/oracle).
+      const surfaceY = useField ? this.waveCache.sample(wx, wz) : surfaceHeight(waves, wx, wz, t);
       const rx = wx - com0.x; // horizontal lever arm of this column from the COM
       const rz = wz - com0.z;
       const y0 = col.cellY[0];
