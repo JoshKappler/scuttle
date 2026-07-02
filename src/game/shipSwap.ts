@@ -66,6 +66,7 @@ export class ShipSwap {
       visual.chipRudder(hp / 3);
       d.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
     };
+    fresh.onRigRepair = (s) => d.debris.removeRigFor(s); // port re-steps a felled mast → its floating wreckage despawns
     d.world.addShip(fresh);
     d.binding.setShip(fresh, visual); // main.ts re-points its live `sloop`/`sloopVisual` lets
     d.world.focus = fresh; // keep the buoyancy LOD focus on the live player hull

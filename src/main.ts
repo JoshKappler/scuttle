@@ -642,6 +642,7 @@ async function main() {
     sloopVisual.chipRudder(hp / 3);
     gs.msg.post(hp > 0 ? "rudder hit — she answers slow!" : "RUDDER SHOT AWAY!");
   };
+  sloop.onRigRepair = (s) => debris.removeRigFor(s); // port re-steps a felled mast → its floating wreckage despawns
 
   // hull-on-hull: meeting with way on carves voxels out of BOTH ships at the
   // contact point. No toast, no scripted "ramming event" — it's just timber
