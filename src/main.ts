@@ -1,7 +1,4 @@
 import * as THREE from "three";
-import { Line2 } from "three/examples/jsm/lines/Line2.js";
-import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
-import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { Rng } from "./core/rng";
 import { makeWaves, surfaceHeight, applySeaScale } from "./sim/gerstner";
 import { createOcean } from "./render/ocean";
@@ -42,14 +39,14 @@ import {
   type ShipTierId,
 } from "./game/saveState";
 import { Cannons } from "./game/cannons";
-import { muzzleWorld } from "./game/gunnery";
-import { FIXED_DT, G, VOXEL_SIZE } from "./core/constants";
+import { VOXEL_SIZE } from "./core/constants";
 import { CharacterSpike } from "./game/character";
 import { characterPack } from "./game/characterPack";
 import { DebrisManager } from "./game/debris";
 import { Effects } from "./render/effects";
 import { createSpray } from "./render/spray";
 import { TUN } from "./core/tunables";
+import { AimUI } from "./render/aimUI";
 import { createDevPanel } from "./render/devPanel";
 import { Economy } from "./sim/economy";
 import { createPortScreen } from "./render/portScreen";
@@ -638,7 +635,7 @@ async function main() {
     _dynShips[0].profileTex = sloopProfile.tex;
     _dynShips[0].sizeX = sloopProfile.sizeX;
     _dynShips[0].sizeZ = sloopProfile.sizeZ;
-    rebuildAimLines(); // resize the broadside trajectory-preview pool to the new hull's gun count
+    aimUI.rebuildAimLines(); // resize the broadside trajectory-preview pool to the new hull's gun count
     prevGunsReady = -1; // new hull → re-baseline the reload-bell tracker (no spurious ring)
   }
   // Respawn a fresh hull of the current tier in clear water just seaward of the home
@@ -790,7 +787,7 @@ async function main() {
           // WP3: pass a LIVE aim provider, not click-time scalars — each gun in the ripple fires along
           // wherever the aim points at ITS launch instant, so swinging the aim mid-broadside redirects
           // the guns that haven't gone off yet. (The aim-arc preview reads the same controls → line ≡ ball.)
-          cannons.fireBroadside(sloop, aimBearing(), t, () => ({
+          cannons.fireBroadside(sloop, aimUI.aimBearing(), t, () => ({
             elevationDeg: controls.elevationDeg,
             traverseDeg: controls.traverseDeg,
           }));
@@ -806,7 +803,7 @@ async function main() {
     if (fireKeyQueued) {
       fireKeyQueued = false;
       if (gs.phase === "playing" && plugChannel <= 0) {
-        cannons.fireBroadside(sloop, aimBearing(), t, () => ({
+        cannons.fireBroadside(sloop, aimUI.aimBearing(), t, () => ({
           elevationDeg: controls.elevationDeg,
           traverseDeg: controls.traverseDeg,
         }));
@@ -929,7 +926,7 @@ async function main() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
     post.setSize(w, h); // keep the composer's targets in lockstep with the canvas
-    for (const a of aimLines) a.mat.resolution.set(w, h); // fat aim lines size their width in px
+    aimUI.setResolution(w, h); // fat aim lines size their width in px
   };
   window.addEventListener("resize", fitViewport);
   document.addEventListener("fullscreenchange", fitViewport);
@@ -1314,7 +1311,7 @@ async function main() {
     const windBearing = Math.atan2(-wind.dirZ, -wind.dirX) - heading;
     hudEls.windMarker.style.transform = `rotate(${(windBearing * 180) / Math.PI}deg)`;
 
-    hudEls.gunBar.style.width = `${gunReadout().frac * 100}%`;
+    hudEls.gunBar.style.width = `${aimUI.gunReadout().frac * 100}%`;
     // helm indicator: where the rudder is SET (it holds until changed)
     hudEls.rudderInd.style.left = `${50 - sailing.rudder * 42}%`;
 
@@ -1368,7 +1365,7 @@ async function main() {
     hudEls.pumpText.textContent = sloop.pumpOn ? "PUMP ON" : "PUMP OFF";
     hudEls.crewLine.textContent = plugChannel > 0 ? `plugging ${plugChannel.toFixed(1)}s` : "";
 
-    const gun = gunReadout();
+    const gun = aimUI.gunReadout();
     if (plugChannel > 0) {
       hudEls.gunStatus.textContent = "REPAIRING";
       hudEls.gunStatus.className = "";
@@ -1396,165 +1393,18 @@ async function main() {
       : `W/S sails · A/D helm · F fire (or RMB aim + LMB) · E leave wheel · V view · Q spyglass · R plug breach · P pump · G fullscreen · Esc menu · foes ${fleet.enemies.length}`;
   }
 
-  // broadside trajectory preview while aiming (RMB): one arc PER CANNON on
-  // the aiming side (playtest: "all four cannons … should show their
-  // trajectory as well and articulate")
-  const ARC_PTS = 64; // vertices in the preview polyline
-  // integrate the preview at the ball's exact step; record 1 vertex per this
-  // many sim steps → ARC_PTS·ARC_SUB·FIXED_DT ≈ 6.4 s of flight covered. r18: bumped
-  // 4→6 because the faster r18 muzzle (TUN.gun) flies longer, so 4.3 s clipped the arc
-  // short of its splash at normal combat elevations; the flatter shot stays smooth coarser.
-  const ARC_SUB = 6;
-  const aimLines: { line: Line2; geo: LineGeometry; mat: LineMaterial; pos: Float32Array }[] = [];
-  // (Re)build one preview polyline per gun on the larger broadside of the CURRENT hull. MUST run on
-  // every hull swap: the Cutter has ~4 guns/side but the Man-o'-War ~24, and a pool sized once for the
-  // starting Cutter left a Man-o'-War showing only 4 arcs (playtest).
-  // FAT lines (Line2): a plain THREE.Line is locked to 1px on every desktop GL driver and read as
-  // "too faint" — Line2 draws a real screen-space-thick ribbon (linewidth in px, needs resolution).
-  function rebuildAimLines(): void {
-    for (const a of aimLines) {
-      scene.remove(a.line);
-      a.geo.dispose();
-      a.mat.dispose();
-    }
-    aimLines.length = 0;
-    const gunsPerSide = Math.max(
-      sloop.build.cannonPorts.filter((p) => p.side === 1).length,
-      sloop.build.cannonPorts.filter((p) => p.side === -1).length,
-    );
-    for (let i = 0; i < gunsPerSide; i++) {
-      const pos = new Float32Array(ARC_PTS * 3);
-      const geo = new LineGeometry();
-      geo.setPositions(pos); // seed the attribute; updateAimArc refills it each frame
-      // bold red-orange dashes: still reads as a gunner's PREDICTION (round 6.5), now thick + bright
-      // enough to stand out against the sea. linewidth is in PIXELS, so resolution must track the canvas.
-      const mat = new LineMaterial({
-        color: 0xff3a22,
-        linewidth: 3.6,
-        transparent: true,
-        opacity: 0.98,
-        dashed: true,
-        dashSize: 1.4,
-        gapSize: 0.9,
-        depthTest: true,
-      });
-      mat.resolution.set(window.innerWidth, window.innerHeight);
-      const line = new Line2(geo, mat);
-      line.frustumCulled = false;
-      line.visible = false;
-      scene.add(line);
-      aimLines.push({ line, geo, mat, pos });
-    }
-  }
-  rebuildAimLines();
-
-  // which battery the camera bears toward — from the camera's look direction (works
-  // identically first-person or orbit). Looking more along the keel than across it lays
-  // the bow/stern CHASERS; looking across it lays the broadside you're facing.
-  const lookV = new THREE.Vector3();
-  const _aimInv = new THREE.Quaternion(); // reused — aimBearing() runs several times/frame
+  // broadside trajectory preview + battery bearing/readout — extracted to render/aimUI.ts
+  // (round 12, pure move). Reads TUN.gun live so the line ≡ the real shot, as before.
+  const aimUI = new AimUI({
+    scene,
+    camera,
+    controls,
+    cannons,
+    waves,
+    getShip: () => sloop,
+    getSimTime: () => world.simTime,
+  });
   const _camFollow = new THREE.Vector3(); // reused — char third-person follow target each frame
-  type Bearing = 1 | -1 | "fore" | "aft";
-  function aimBearing(): Bearing {
-    const rot2 = sloop.body.rotation();
-    const inv = _aimInv.set(rot2.x, rot2.y, rot2.z, rot2.w).invert();
-    camera.getWorldDirection(lookV).applyQuaternion(inv);
-    if (Math.abs(lookV.x) > Math.abs(lookV.z)) return lookV.x >= 0 ? "fore" : "aft";
-    return lookV.z >= 0 ? 1 : -1;
-  }
-  function gunBears(p: { side: 1 | -1; facing?: "fore" | "aft" }, b: Bearing): boolean {
-    return typeof b === "number" ? !p.facing && p.side === b : p.facing === b;
-  }
-
-  /**
-   * Reload readout for the bottom-right meter. While AIMING (RMB) it reports the battery you're
-   * actually pointing at — what the next shot fires. Otherwise it reports the WHOLE ship's loaded
-   * fraction, so the meter visibly drops and refills after any broadside. (The old meter was keyed
-   * to the camera-look battery even when not aiming, so it read the fore chasers as "ready" while
-   * your broadsides were reloading — i.e. flat-out wrong the moment you weren't looking down a side.)
-   */
-  function gunReadout(): { frac: number; ready: number; total: number } {
-    const aiming = controls.aiming;
-    const key = aimBearing();
-    let total = 0;
-    let ready = 0;
-    let fracSum = 0; // sum of each gun's CONTINUOUS readiness (0 just-fired → 1 loaded)
-    for (let i = 0; i < sloop.build.cannonPorts.length; i++) {
-      if (!sloop.cannonAlive[i]) continue;
-      if (aiming && !gunBears(sloop.build.cannonPorts[i], key)) continue;
-      total++;
-      if (cannons.portReload(sloop, i, world.simTime) <= 0) ready++;
-      // fractional readiness per gun → the bar fills SMOOTHLY (empty→full over the reload) instead of
-      // snapping when a synchronized broadside flips every gun ready at once. ready/total stays the
-      // discrete count for the "LOADING x/y" text and the all-loaded gate.
-      fracSum += cannons.portReloadFrac(sloop, i, world.simTime);
-    }
-    return { frac: total > 0 ? fracSum / total : 0, ready, total };
-  }
-
-  const arcMuzzle = { pos: new THREE.Vector3(), dir: new THREE.Vector3() };
-  function updateAimArc(): void {
-    // the WHOLE broadside, wherever you stand — looking across a side while
-    // holding RMB lays every gun on it (playtest round 6: "regardless of
-    // where you are standing on the ship, it should enter aiming mode for
-    // all cannons and then fire all simultaneously")
-    const portIdxs: number[] = [];
-    if (controls.aiming) {
-      const bearing = aimBearing();
-      sloop.build.cannonPorts.forEach((p, i) => {
-        if (sloop.cannonAlive[i] && gunBears(p, bearing)) portIdxs.push(i);
-      });
-    }
-
-    for (let pi = 0; pi < aimLines.length; pi++) {
-      const arc = aimLines[pi];
-      if (pi >= portIdxs.length) {
-        arc.line.visible = false;
-        continue;
-      }
-      arc.line.visible = true;
-      // PURE-bore trajectory — muzzle velocity along the barrel, NO ship carry
-      // (round 8). The line is redrawn every frame from the MOVING muzzle, so
-      // it lives in the ship's frame; a pure curve co-moving with the ship has
-      // the ball ride along it as both translate together, and it stays aligned
-      // with the visible barrel so you can aim. Folding the ship's velocity in
-      // bent the line off the barrel and away from the ball you actually watch
-      // fly ("30° off, worse with speed"). The carry belongs to the projectile
-      // alone — its launch point is already moving at ship speed. Integrated
-      // with the ball's OWN step (FIXED_DT)/G/drag, sub-sampled 1 vertex per
-      // ARC_SUB steps, so the curve's SHAPE and range match the shot exactly.
-      muzzleWorld(sloop, portIdxs[pi], controls.elevationDeg, controls.traverseDeg, arcMuzzle);
-      // read the SAME live ballistics the ball uses (TUN.gun) so the preview
-      // tracks the dev-panel sliders in lock-step with the real shot.
-      const drag = TUN.gun.drag;
-      const v = arcMuzzle.dir.clone().multiplyScalar(TUN.gun.muzzleSpeed);
-      const p = arcMuzzle.pos.clone();
-      let vi = 0;
-      for (let stepN = 0; vi < ARC_PTS; stepN++) {
-        if (stepN % ARC_SUB === 0) {
-          arc.pos[vi * 3] = p.x;
-          arc.pos[vi * 3 + 1] = p.y;
-          arc.pos[vi * 3 + 2] = p.z;
-          vi++;
-        }
-        const sp = v.length();
-        v.x += -drag * sp * v.x * FIXED_DT;
-        v.y += (-G - drag * sp * v.y) * FIXED_DT;
-        v.z += -drag * sp * v.z * FIXED_DT;
-        p.addScaledVector(v, FIXED_DT);
-        if (p.y < surfaceHeight(waves, p.x, p.z, world.simTime)) {
-          for (let j = vi; j < ARC_PTS; j++) {
-            arc.pos[j * 3] = p.x;
-            arc.pos[j * 3 + 1] = p.y;
-            arc.pos[j * 3 + 2] = p.z;
-          }
-          break;
-        }
-      }
-      arc.geo.setPositions(arc.pos); // push the fresh curve into the fat-line instanced buffers
-      arc.line.computeLineDistances(); // dashes need fresh arc lengths
-    }
-  }
 
   // ship wash lives in the ocean shader now: bow swell + flank white water +
   // a stern trail the foam follows (round 6: the sprite spray "appeared
@@ -2197,7 +2047,7 @@ async function main() {
     // helm pose rides on top of the final mixer state, once per frame —
     // re-posing per fixed step stacked offsets ("arm absolutely spasming")
     character.player?.postPose();
-    const bearNow = aimBearing();
+    const bearNow = aimUI.aimBearing();
     // r18: traverse must be SCREEN-RELATIVE for EVERY battery (mouse-right swings the muzzle
     // to screen-right), not just the broadside. With aimBearing's look dirs, screenRight =
     // cross(look,up): a broadside bears out ±z so aimSideSign = the side (±1, as before); a
@@ -2206,13 +2056,13 @@ async function main() {
     // inverted. (Signs derived against the real barrelDirLocal+input map and checked by
     // re-deriving the known-good broadside ±1 — see the aim-sign oracle.)
     controls.aimSideSign = bearNow === "fore" ? -1 : bearNow === "aft" ? 1 : bearNow;
-    updateAimArc();
+    aimUI.updateAimArc();
     sloopVisual.animate(
       world.simTime,
       sailing.rudder,
       sailing.sailSet,
       controls.aiming
-        ? { bearing: aimBearing(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
+        ? { bearing: aimUI.aimBearing(), elevationDeg: controls.elevationDeg, traverseDeg: controls.traverseDeg }
         : null,
       wind, // round-12 cloth sails: billow fill/luff from wind-vs-heading
     );
